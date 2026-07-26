@@ -4,7 +4,7 @@ Joshu includes a **Schedules** desktop app for managing **Hermes cron jobs** —
 
 ## Not the same as arozOS Task Scheduler
 
-ArozOS ships a stock **Tasks Scheduler** module (AECron) under System Tools. That is a **separate** system:
+ArozOS ships a stock **Tasks Scheduler** module (AECron) under System Tools. That is a **separate** system (and Joshu hides the stock module UI via `HiddenModules` in `joshu-core.patch` — use this Schedules app instead):
 
 | | **Schedules** (Joshu) | **Tasks Scheduler** (stock arozOS) |
 |---|---|---|

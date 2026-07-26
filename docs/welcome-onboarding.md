@@ -4,22 +4,16 @@ First-time setup for Joshu boxes with the **EA v2** layout (`Projects/`, `Triage
 
 Human SOP: [`executive-assistant.md`](executive-assistant.md). Welcome seeds project folders from big-picture priorities and installs morning/evening/weekly Hermes crons (no midday).
 
-**Prefer CLI / headless setup?** See [`env-without-wizard.md`](env-without-wizard.md) for API keys via `instance.env`. If Welcome shows **`draft path unavailable`**, fix ArozOS paths first — [`box-paths.md`](box-paths.md).
-
 ## User flow
 
 1. On first login, **Welcome** auto-opens once per browser session when onboarding is incomplete (see [`arozos/web-overlays-vanilla/aroz-onboarding-launch.js`](../arozos/web-overlays-vanilla/aroz-onboarding-launch.js)).
-2. **Standalone self-host only:** if required API keys are missing, Welcome shows **Connect AI** to save keys to `.joshu/box-secrets/local-env.json`:
-   - **OpenRouter** — jChat + Hindsight LLM (when not in `instance.env`)
-   - **Google Gemini** — file brain (gbrain embeddings), Hindsight embeddings, and jChat microphone (Gemini Live) when voice is enabled
-   Fleet / control-plane boxes skip this — keys are in `/etc/joshu/instance.env` at provision time.
-3. **Optional Day 0:** After Gmail is connected, run **Analyze mail for setup (Day 0)** in **Connectors → Connect apps** to pre-fill the draft from 30 days of mail + calendar. See [`day0-cold-start.md`](day0-cold-start.md).
-4. Seven-step wizard captures priorities, communication (with contact details), online tools, and optional VIPs.
-5. Progress auto-saves on each **Continue** via `PUT /joshu/api/onboarding/draft`.
-6. **Finish setup** writes workspace markdown + `.joshu` profile JSON; **ea-playbook** reads those files on every operational run.
-7. After completion, reopen **Welcome** anytime to edit in the same form — header becomes **Your Joshu profile**, review button **Save changes**. Draft JSON is retained for re-editing.
-
-**Dismiss without completing:** **Finish later** sets `sessionStorage.joshu-onboarding-dismissed` so auto-launch does not reopen until the next browser session.
+2. **Step 1 (Welcome):** intro plus **Open Connectors** — link Gmail/calendar/apps in the Connectors desktop app (same `openModule("Connectors")` path as jMail). Optional anytime; also offered again on Review.
+3. **Standalone self-host only:** if no OpenRouter key is configured, Welcome shows **Connect AI** to save API keys to `.joshu/box-secrets/local-env.json`. On the same step you can optionally add a **Gemini** key for the jChat microphone (Gemini Live). **Control-plane managed boxes skip this** — keys are already in `/etc/joshu/instance.env` at provision time.
+4. **Optional Day 0:** After Gmail is connected, run **Analyze mail for setup (Day 0)** in **Connectors → Connect apps** to pre-fill the draft from 30 days of mail + calendar. See [`day0-cold-start.md`](day0-cold-start.md).
+5. Essentials wizard: big-picture priorities, work/personal email + timezone + working hours. Owner/assistant display names come from box identity / `profile.json` (not a Welcome step).
+6. Progress auto-saves on each **Continue** via `PUT /joshu/api/onboarding/draft`.
+7. **Finish setup** writes workspace markdown + `.joshu` profile JSON; **ea-playbook** reads those files on every operational run. Optional **agent mailbox** can be created on Review via `POST /joshu/api/nylas/agent`.
+8. After completion, reopen **Welcome** anytime to edit in the same form — header becomes **Your Joshu profile**, review button **Save changes**. Draft JSON is retained for re-editing.
 
 **Open manually:** desktop **Welcome** shortcut ([`docs/arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md)), or after **hard factory reset** ([`docs/box-state.md`](box-state.md#hard-factory-reset)) — which also clears Hindsight, gbrain, Composio connections, agent skills in `~/.hermes/skills/`, and EA cron jobs in `~/.hermes/cron/`.
 
@@ -27,59 +21,34 @@ Human SOP: [`executive-assistant.md`](executive-assistant.md). Welcome seeds pro
 
 | # | Step | What the user provides |
 |---|------|------------------------|
-| 0 | Welcome | Intro (or “Review or update” if already completed) |
-| 1 | Connect AI | OpenRouter API key (**standalone**, when not provisioned); **Google Gemini** key for file brain + voice (when not provisioned) |
-| 2 | You & your assistant | Principal name, assistant persona name |
-| 3 | Big picture | Multi-select priorities + optional notes |
-| 4 | Communication | Channel checkboxes **with contact fields** + schedule/rhythm |
-| 5 | Online tools | App checkboxes + notes, do-not-access, optional Nylas agent mailbox |
-| 6 | Key people | Optional VIP rows |
-| 7 | Review | Summary → **Finish setup** or **Save changes** |
+| 0 | Welcome | Intro + **Open Connectors** button (or “Review or update” if already completed) |
+| 1 | Connect AI | OpenRouter API key (**standalone only**, when not provisioned); optional Gemini key for jChat voice |
+| 2 | Big picture | Multi-select priorities + optional notes → `Projects/<slug>/` |
+| 3 | Schedule & email | Work email, optional personal email, IANA timezone, working hours |
+| 4 | Review | Summary → optional agent mailbox → **Finish setup** or **Save changes** |
 
-Step **Connect AI** is omitted when `GET /joshu/api/box-secrets/status` reports `needsConnectAi: false` (all required standalone keys present — from provision or Welcome).
+Step **Connect AI** is omitted when `GET /joshu/api/box-secrets/status` reports `needsConnectAi: false` (fleet / CP boxes with provisioned `OPENROUTER_API_KEY`, or after the key is saved).
 
-### Big picture (step 2)
+### Removed from the UI (still in draft API / Day-0)
 
-Multi-select checkboxes (business owners, parents, contractors, anyone busy). Optional free-text notes.
+Online-tool checkboxes, do-not-access, multi-channel contact picker, update-format / interrupt / batch notes, and VIP rows are **no longer collected in Welcome**. Connect apps via **Connectors**. Soft fields may still exist in `.joshu/onboarding.draft.json` from older runs or Day-0 merge; complete() preserves them if present.
 
-Options are defined in `BIG_PICTURE_PRIORITIES` in [`src/onboarding/options.ts`](../src/onboarding/options.ts), e.g. inbox triage, calendar, travel, family logistics, sales, hiring, etc.
+**Not in the wizard:** SOP §8 “decision authority” (handle solo, spending threshold, etc.) — those remain Week-1 / playbook conversation.
 
-### Communication (step 3)
+### Big picture
 
-Each channel is a checkbox; when checked, a contact field appears (email, phone, handle).
+Multi-select checkboxes. Optional free-text notes (appended to each new project `about.md` as Welcome notes).
 
-| Channel id | Label | Contact collected |
-|------------|-------|-------------------|
-| `work-email` | Work email | Work email address (Daily Brief destination; synced to `profile.json`) |
-| `personal-email` | Personal email | Personal email address |
-| `phone` | Phone call | Phone number |
-| `sms` | Text message (SMS) | Mobile number |
-| `whatsapp` | WhatsApp | WhatsApp number |
-| `telegram` | Telegram | Username |
-| `slack` | Slack | Member ID or workspace |
-| `google-chat` | Google Chat | Email or space |
+Options are defined in `BIG_PICTURE_PRIORITIES` in [`src/onboarding/options.ts`](../src/onboarding/options.ts).
 
-Also on this step (not checkboxes): time zone, working hours, update format (Daily Brief / EOD), **urgent channel** (dropdown of selected channels when available), “interrupt me now” definition, batch vs ad-hoc questions, optional communication notes.
+### Schedule & email
 
-**Not in the wizard:** SOP §8 “decision authority” (handle solo, spending threshold, etc.) — those remain Week-1 / playbook conversation, not Welcome fields.
-
-### Online tools (step 4)
-
-Grouped multi-select checkboxes only (no separate work/personal email fields here — those live on Communication).
-
-| Section | Examples |
-|---------|----------|
-| Email & calendar | Gmail, Google Calendar, Microsoft Outlook, Teams |
-| Docs & cloud | Google Drive + Docs, OneDrive + Office |
-| Social | LinkedIn, X, Instagram, Facebook |
-| Notes & knowledge | Notion, Apple Notes, Obsidian, Evernote, OneNote |
-| Tasks & projects | Todoist, Asana, Trello, Monday.com, Apple Reminders |
-
-Optional: other tools/notes, do-not-access list, **agent mailbox** provisioning via `POST /joshu/api/nylas/agent` (uses work email from Communication when set).
-
-### Key people (step 5)
-
-Optional table: who, priority, gatekeep notes → `workspace/Resources/key-contacts.md`.
+| Field | Purpose |
+|-------|---------|
+| Work email | Daily Brief / pointer destination → `profile.json` `primaryWorkEmail` |
+| Personal email | Optional → `personalEmail` (calendar free/busy union) |
+| Timezone | Required on complete — IANA dropdown (`Intl.supportedValuesOf('timeZone')`) |
+| Working hours | Drive **EA morning / evening / weekly** cron times |
 
 ## Draft data model
 
@@ -90,16 +59,11 @@ Stored at `.joshu/onboarding.draft.json` (see [`src/onboarding/paths.ts`](../src
 | `ownerName`, `assistantName` | string | Required for save/complete |
 | `bigPicturePriorities` | string[] | Checkbox labels |
 | `bigPictureNotes` | string? | |
-| `communicationChannels` | string[] | Channel **ids** (e.g. `work-email`, `sms`) |
-| `communicationContacts` | `Record<string, string>` | Contact per selected channel id |
-| `communicationNotes` | string? | |
-| `onlineTools` | string[] | App labels |
-| `onlineToolsNotes` | string? | |
-| `timezone`, `workingHoursStart`, `workingHoursEnd` | string? | Required `timezone` on complete — **IANA** only (e.g. `America/Los_Angeles`, not `PST`). Saved to `.joshu/nylas/profile.json`; jChat injects owner local time via Temporal ([`src/ianaTimezone.ts`](../src/ianaTimezone.ts)) |
-| `updateFormat`, `urgentChannel`, `interruptMeNowMeans`, `batchQuestions` | string? | |
-| `doNotAccess` | string? | |
-| `vips` | `{ who, priority?, gatekeepNotes? }[]` | |
+| `communicationChannels` | string[] | Channel **ids**; UI sets `work-email` / `personal-email` when emails filled |
+| `communicationContacts` | `Record<string, string>` | Contact per channel id |
+| `timezone`, `workingHoursStart`, `workingHoursEnd` | string? | Required `timezone` on complete — **IANA** only. Saved to `.joshu/nylas/profile.json`; jChat injects owner local time via Temporal ([`src/ianaTimezone.ts`](../src/ianaTimezone.ts)) |
 | `primaryWorkEmail`, `personalEmail` | string? | Legacy; derived from `communicationContacts` on complete |
+| Soft / legacy | various | `onlineTools*`, `doNotAccess`, `updateFormat`, `urgentChannel`, `interruptMeNowMeans`, `batchQuestions`, `communicationNotes`, `vips` — optional; not shown in UI |
 
 On **complete**, work/personal emails resolve into `profile.json` ([`src/onboarding/workspaceWriter.ts`](../src/onboarding/workspaceWriter.ts)).
 
@@ -110,12 +74,13 @@ On **complete**, work/personal emails resolve into `profile.json` ([`src/onboard
 | `.joshu/onboarding.json` | `{ completed: true, completedAt }` |
 | `.joshu/onboarding.draft.json` | Full last answers (kept after complete for re-editing) |
 | `.joshu/identity.json` | Owner + assistant display names |
-| `.joshu/nylas/profile.json` | Timezone, hours, urgent channel, work/personal email |
+| `.joshu/nylas/profile.json` | Timezone, hours, urgent channel (if set), work/personal email |
 | `FILING.md`, `Triage/`, `Projects/other/` | EA v2 bootstrap (if missing) |
 | `Projects/<slug>/` | One folder per Welcome big-picture priority (`about.md`, `todo.md`) |
 | `Projects/_system/summary-email.md` | Morning/evening email template |
 | `.joshu-ea-version` | `ea-layout: 2.0.0` |
 | Hermes cron jobs | **EA morning**, **EA evening**, **EA weekly** (midday removed) via `syncEaCronJobs` — morning/evening prep **`Planning/daily-review-*.md`** + pointer email; owner completes in jChat ("morning review" / "shutdown") |
+| `.joshu/nylas/agent.json` | If agent mailbox created on Review |
 
 ## API
 
@@ -132,8 +97,8 @@ Mounted under `PUBLIC_BASE_PATH` (default `/joshu`). JSON body routes require `e
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/joshu/api/box-secrets/status` | `needsConnectAi`, `needsOpenRouter`, `needsGeminiMl`, `needsEmbeddingsGemini`, `needsGeminiVoice`, `voiceOffered`, `embeddingsProvider`, per-field source |
-| `PUT` | `/joshu/api/box-secrets` | Save keys to `.joshu/box-secrets/local-env.json`; Gemini also sets `HINDSIGHT_API_EMBEDDINGS_GEMINI_API_KEY`; OpenRouter change restarts Hermes gateway (Gemini-only saves do not block Welcome) |
+| `GET` | `/joshu/api/box-secrets/status` | `needsConnectAi`, `needsOpenRouter`, `needsGeminiVoice`, `voiceOffered`, `geminiConfigured`, `standalone`, per-field source |
+| `PUT` | `/joshu/api/box-secrets` | Save `OPENROUTER_API_KEY` and/or `GEMINI_API_KEY` to `.joshu/box-secrets/local-env.json`; sync Hermes; restart gateway when OpenRouter changes |
 
 `POST /complete` is idempotent for updates: re-running refreshes markdown/profile without a second running-log entry.
 
@@ -170,21 +135,12 @@ npm run dev:arozos           # syncs subservice, desktop shortcut, auto-launch s
 
 After UI or API changes: rebuild Welcome (`npm run build:welcome`) and restart Joshu / `dev:arozos` so the subservice serves fresh assets.
 
-## Troubleshooting
-
-| Symptom | Doc |
-|---------|-----|
-| **`draft path unavailable`** on Continue | [`box-paths.md`](box-paths.md) — set `JOSHU_AROZ_USER` to ArozOS login email; ensure `Desktop/` exists |
-| Skip Connect AI / set keys in shell | [`env-without-wizard.md`](env-without-wizard.md) |
-| `gbrain.ok: false` in health | [`box-paths.md`](box-paths.md), [`file-brain.md`](file-brain.md) |
-
 ## Related docs
 
-- [`box-paths.md`](box-paths.md) — filesystem layout on the box
-- [`env-without-wizard.md`](env-without-wizard.md) — secrets without Welcome
 - [`executive-assistant.md`](executive-assistant.md) — full EA operating model
 - [`executive-assistant.md`](executive-assistant.md#project-kanban-multi-step--hitl-2026-06) — project Kanban for multi-step / HITL work (after Day-1 setup)
 - [`docs/hermes-integration.md`](hermes-integration.md) — skills, workspace bootstrap
 - [`docs/box-state.md`](box-state.md) — factory reset vs personal state
 - [`docs/nylas-agent-mailbox.md`](nylas-agent-mailbox.md) — agent inbox provisioning
 - [`docs/arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md) — Welcome shortcut
+- [`docs/connectors-arozos-app.md`](connectors-arozos-app.md) — Connectors desktop app

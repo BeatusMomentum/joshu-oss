@@ -1,0 +1,15 @@
+{
+  "id": "jterm",
+  "name": "jTerm",
+  "version": "0.1.0",
+  "license": "AGPL-3.0",
+  "publisher": "joshu",
+  "entry": "jterm/index.html",
+  "description": "Interactive owner terminal into the Joshu box container (root shell).",
+  "data": {
+    "uses": []
+  },
+  "agent": {
+    "headless": false
+  }
+}

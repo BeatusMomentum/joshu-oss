@@ -7,6 +7,52 @@ index 0f6a7244..8f210393 100644
  src/system/smtp_conf.json
  /src/web/FFmpeg Factory
 +.DS_Store
+diff --git a/src/mod/modules/module.go b/src/mod/modules/module.go
+index 6b64e1f4..f6fed8ac 100644
+--- a/src/mod/modules/module.go
++++ b/src/mod/modules/module.go
+@@ -35,6 +35,29 @@ type ModuleHandler struct {
+ 	tmpDirectory string
+ }
+ 
++// Joshu: stock modules we keep on disk (AGI / Go) but do not expose in the
++// start menu, Module List, or universal access set. Survives AGI reload because
++// every registerModule / RegisterModule path hits this gate.
++var HiddenModules = map[string]bool{
++	"Browser":            true,
++	"Clock":              true,
++	"Image Paste":        true,
++	"IoT Hub":            true,
++	"Management Gateway": true,
++	"Manga":              true,
++	"Memo":               true,
++	"Music":              true,
++	"Photo":              true,
++	"Serverless":         true,
++	"Speedtest":          true,
++	"Tasks Scheduler":    true,
++	"Timer":              true,
++	"Unit Tester":        true,
++	"Video":              true, // Media web app — not "Video Player"
++	"Web Builder":        true,
++	"Web Downloader":     true,
++}
++
+ func NewModuleHandler(userHandler *user.UserHandler, tmpFolderPath string) *ModuleHandler {
+ 	return &ModuleHandler{
+ 		LoadedModule: []*ModuleInfo{},
+@@ -45,6 +68,11 @@ func NewModuleHandler(userHandler *user.UserHandler, tmpFolderPath string) *Modu
+ 
+ //Register endpoint. Provide moduleInfo datastructure or unparsed json
+ func (m *ModuleHandler) RegisterModule(module ModuleInfo) {
++	// Joshu product surface: skip denylisted stock apps (see HiddenModules).
++	if HiddenModules[module.Name] {
++		return
++	}
++
+ 	m.LoadedModule = append(m.LoadedModule, &module)
+ 
+ 	//Add the module into universal module if it is utilities or system tools
 diff --git a/src/setting.go b/src/setting.go
 index 5b6e1194..24f772f9 100644
 --- a/src/setting.go

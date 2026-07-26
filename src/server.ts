@@ -26,7 +26,7 @@ import type { HermesChatMessage } from "./hermesApi.js";
 import { audioMimeForPath, getHermesHomeDir, spawnHermesPython } from "./hermesVoiceRuntime.js";
 import { registerInstanceHealthRoutes } from "./instanceHealth.js";
 import { readHermesGatewayPreference, writeHermesGatewayPreference } from "./hermesGatewayPreference.js";
-import { syncCompanionIdentityFromEnv } from "./companionIdentitySync.js";
+import { hasCompanionIdentityBootstrap, syncCompanionIdentityFromEnv } from "./companionIdentitySync.js";
 import { registerBoxStateRoutes } from "./boxStateApi.js";
 import { registerBoxSecretsRoutes } from "./boxSecrets/routes.js";
 import { registerOnboardingRoutes } from "./onboardingApi.js";
@@ -1210,6 +1210,23 @@ const server = app.listen(PORT, HOST, () => {
     console.log(
       `[joshu] companion identity synced identity=${companionSync.identityWritten} soul=${companionSync.soulWritten} hermesContext=${companionSync.hermesContextWritten}`,
     );
+  } else if (hasCompanionIdentityBootstrap()) {
+    // First-boot race: Aroz user/Desktop may appear after Joshu listen — retry a few times.
+    void (async () => {
+      for (const delayMs of [5_000, 15_000, 30_000, 60_000]) {
+        await new Promise((r) => setTimeout(r, delayMs));
+        const retry = syncCompanionIdentityFromEnv(PROJECT_ROOT, { forceSoul: true });
+        if (retry.identityWritten || retry.soulWritten) {
+          console.log(
+            `[joshu] companion identity synced (deferred ${delayMs}ms) identity=${retry.identityWritten} soul=${retry.soulWritten}`,
+          );
+          return;
+        }
+      }
+      console.warn(
+        "[joshu] companion identity bootstrap present but identity.json still not written after retries",
+      );
+    })();
   }
   void bootstrapCamofoxStartUrl(true);
   void import("./shareChat/triggerSubscribe.js")

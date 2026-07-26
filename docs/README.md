@@ -16,6 +16,7 @@ Docs for **self-hosting** the Joshu box stack, building ArozOS apps, and integra
 | **jWhiteboard** | [`excalidraw-sandbox.md`](excalidraw-sandbox.md) |
 | **Schedules** | [`schedules-arozos-app.md`](schedules-arozos-app.md) |
 | **Welcome** | [`welcome-onboarding.md`](welcome-onboarding.md) |
+| **jTerm** | Owner shell (full container) | [`jterm-arozos-app.md`](jterm-arozos-app.md) |
 | **jMovie** | [`jmovie-arozos-app.md`](jmovie-arozos-app.md) |
 
 Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).

@@ -1,0 +1,75 @@
+@import "@xterm/xterm/css/xterm.css";
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--color-terminal-bg, #0a0a0a);
+  color: var(--color-terminal-green, #5fdd8c);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.jterm-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
+.jterm-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.75rem;
+  background: #111;
+  border-bottom: 1px solid rgba(95, 221, 140, 0.25);
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--color-terminal-amber, #e8c547);
+}
+
+.jterm-banner strong {
+  color: var(--color-terminal-green, #5fdd8c);
+  font-weight: 600;
+}
+
+.jterm-banner .muted {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.jterm-status {
+  white-space: nowrap;
+}
+
+.jterm-status[data-state="connected"] {
+  color: var(--color-terminal-green, #5fdd8c);
+}
+
+.jterm-status[data-state="connecting"],
+.jterm-status[data-state="reconnecting"] {
+  color: var(--color-terminal-yellow, #f6e3a5);
+}
+
+.jterm-status[data-state="disconnected"],
+.jterm-status[data-state="error"] {
+  color: #ff7b72;
+}
+
+.jterm-term {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0.35rem;
+  box-sizing: border-box;
+}
+
+.jterm-term .xterm {
+  height: 100%;
+}
+
+.jterm-term .xterm-viewport {
+  overflow-y: auto !important;
+}

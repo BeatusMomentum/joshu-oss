@@ -396,8 +396,8 @@ This starts or reuses Camofox, builds ArozOS, starts Joshu privately on
 http://127.0.0.1:8787
 ```
 
-Launch **jWeb**, **jChat**, **Connectors**, **jMail**, **Memory**, **Schedules**, or **jMovie** from the ArozOS desktop to
-exercise the same subservice paths used by the VPS sandbox stack. **Schedules** manages Hermes cron jobs (`/joshu/api/cron/*`); see [`docs/schedules-arozos-app.md`](schedules-arozos-app.md). **Hermes Admin** (Kanban, cron, skills, MCP) opens at `/joshu/hermes-admin/` — desktop shortcut or `http://127.0.0.1:8788/joshu/hermes-admin/`; requires `HERMES_BIN` in `.env` and dashboard on `:9119` ([hermes-integration — local dashboard](hermes-integration.md#local-dev-joshu-subpath-proxy)). Stock shortcuts use
+Launch **jWeb**, **jChat**, **Connectors**, **jMail**, **Memory**, **Schedules**, **jTerm**, or **jMovie** from the ArozOS desktop to
+exercise the same subservice paths used by the VPS sandbox stack. **jTerm** is an owner root shell into the box (same `/root/.hermes` as the gateway); see [`docs/jterm-arozos-app.md`](jterm-arozos-app.md). **Schedules** manages Hermes cron jobs (`/joshu/api/cron/*`); see [`docs/schedules-arozos-app.md`](schedules-arozos-app.md). **Hermes Admin** (Kanban, cron, skills, MCP) opens at `/joshu/hermes-admin/` — desktop shortcut or `http://127.0.0.1:8788/joshu/hermes-admin/`; requires `HERMES_BIN` in `.env` and dashboard on `:9119` ([hermes-integration — local dashboard](hermes-integration.md#local-dev-joshu-subpath-proxy)). Stock shortcuts use
 friendly labels (**Files**, **Settings**, **Trash**) — see
 [`docs/arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 

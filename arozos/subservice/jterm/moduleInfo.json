@@ -1,0 +1,15 @@
+{
+  "Name": "jTerm",
+  "Desc": "Owner shell into this Joshu box (full container access)",
+  "Group": "Joshu Apps",
+  "IconPath": "img/joshu/terminal.png",
+  "Version": "0.1.0",
+  "StartDir": "jterm/index.html",
+  "SupportFW": true,
+  "LaunchFWDir": "jterm/index.html",
+  "SupportEmb": false,
+  "LaunchEmb": "",
+  "InitFWSize": [1024, 640],
+  "InitEmbSize": [900, 560],
+  "SupportedExt": []
+}

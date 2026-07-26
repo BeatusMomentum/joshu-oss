@@ -1,6 +1,6 @@
 # Connectors (ArozOS desktop app)
 
-**Connectors** is the app-wide place to manage OAuth connections, Gmail accounts, and connector sync health. jMail, jChat, Hermes, and cron all read the same backend via `GET /joshu/api/connectors/status`.
+**Connectors** is the app-wide place to manage OAuth connections (Gmail, calendar, Slackbot, etc.). Owner 1:1 approval channel is configured in the **Safety** app. jMail, jChat, Hermes, and cron all read the same backend via `GET /joshu/api/connectors/status`.
 
 ## What ships in this repo
 
@@ -31,8 +31,9 @@ Featured toolkit **`slackbot`** is separate from user **`slack`** (approvals / a
 
 1. Open Connectors → Connect apps → **Slackbot** (or `/connectors/index.html#slackbot`).
 2. Generate / copy the Slack app manifest → create the app at api.slack.com.
-3. Paste Client ID, Client Secret, and Verification Token → **Save & Connect**.
-4. Joshu creates the Composio auth config and stores `ac_…` in `.joshu/composio-auth-configs.json` (optional env override: `JOSHU_COMPOSIO_SLACKBOT_AUTH_CONFIG_ID`).
+3. Paste Client ID, Client Secret, **Signing Secret**, and **App-Level Token (`xapp-`)** → **Save & Connect** (or **Save credentials** if already OAuth-connected).
+4. Paste the shown Event Subscriptions URL into the Slack app. Already connected? Use **Configure Slack app** — do not disconnect.
+5. Joshu creates/updates the Composio auth config + webhook endpoint (`ac_…` in `.joshu/composio-auth-configs.json`).
 
 API: `GET/POST /joshu/api/connectors/composio/slackbot/setup`, `GET …/slackbot/manifest`.
 
@@ -53,7 +54,7 @@ Bundled into ArozOS template by `scripts/dev-arozos.sh` and VPS Docker image.
 |------------------|--------|--------|
 | `COMPOSIO_API_KEY` | `DEFAULT_COMPOSIO_API_KEY` in control plane | Required for Connect tab |
 | `COMPOSIO_USER_ID` | Customer slug at provision | Composio OAuth **per box**; ArozOS login unchanged |
-| `NYLAS_API_KEY` | `DEFAULT_NYLAS_API_KEY` in control plane | Agent mailbox row in Connectors overview |
+| `NYLAS_API_KEY` | `DEFAULT_NYLAS_API_KEY` in control plane | Agent mailbox (jMail Setup / Welcome) |
 
 If Connectors shows **NYLAS_API_KEY not configured** or Gmail accounts from another box, set keys in `/etc/joshu/instance.env` and recreate the stack — see [connectors.md](connectors.md).
 
@@ -66,7 +67,7 @@ Base: `/joshu/api/connectors/composio/`
 | GET | `status` | `{ enabled, userId? }` |
 | GET | `toolkits` | List/search providers |
 | GET | `gmail/accounts` | All connected Gmail accounts |
-| POST | `connect` | `{ toolkit, callbackUrl? }` → OAuth popup |
+| POST | `connect` | `{ toolkit, callbackUrl? }` → OAuth popup; callback defaults to `/joshu/oauth-done.html` (“you can close this tab”) |
 | POST | `disconnect` | `{ connectedAccountId }` |
 | POST | `sync` | Refresh Hermes MCP config |
 | POST | `post-connect` | After OAuth: registry + seed Gmail `historyId` (no mail backfill) |
@@ -81,18 +82,13 @@ Legacy jChat paths under `/joshu/api/hermes-chat/composio/*` still work (same ha
 4. **jMail** shows one inbox tab per connected Gmail address.
 5. **Day 0 setup** — after at least one Gmail account is connected, use **Analyze mail for setup (Day 0)** at the bottom of **Connect apps** to sync 30 days of mail + calendar and pre-fill the Welcome onboarding draft. See [`docs/day0-cold-start.md`](day0-cold-start.md).
 
-## Owner 1:1 channel (Overview)
+## Owner 1:1 channel
 
-**Connectors → Overview → Owner 1:1 channel** links Telegram or Slack for HITL write approvals. OAuth for Slack uses the same Composio connection flow as other toolkits.
-
-| Provider | Setup |
-|----------|--------|
-| **Telegram** | Paste chat ID or send `/start` to the action-guard bot |
-| **Slack** | Connect Slack in **Connect apps**, then paste channel ID — self-DM (`D…`) or private channel (`C…`, e.g. `#my-approvals`) |
+Configure Telegram/Slack approval DMs in the **Safety** desktop app (not Connectors). Connect Slack for agent tools via **Connect apps** above if needed; paste the DM/channel ID in Safety.
 
 Slack approvals use **Y/N replies** in that channel (not interactive Block Kit buttons). Approval messages show companion **avatar + name** in the message body via Block Kit. Full flow: [`agent-safety.md` — Slack approval flow](agent-safety.md#slack-approval-flow-v1).
 
-**Hermes Slack chat** (full agent DM/@mention) is separate — configure in **Safety → Hermes Slack chat**, not Connectors. See [hermes-integration — Slack chat](hermes-integration.md#slack-chat-hermes-messaging-gateway).
+**Hermes Slack chat** (full agent DM/@mention) is separate — configure in **Safety → Hermes Slack chat**. See [hermes-integration — Slack chat](hermes-integration.md#slack-chat-hermes-messaging-gateway).
 
 For policy tiers, bypass rules, browser gate, and the **Safety** desktop app, see [`agent-safety.md`](agent-safety.md).
 

@@ -3,13 +3,7 @@ import "@joshu/design-system/tokens.css";
 import "@joshu/design-system/base.css";
 import "./styles.css";
 
-import {
-  BIG_PICTURE_PRIORITIES,
-  COMMUNICATION_CHANNEL_DEFS,
-  communicationChannelLabel,
-  type CommunicationChannelDef,
-  ONLINE_TOOL_SECTIONS,
-} from "@joshu/onboarding/options";
+import { BIG_PICTURE_PRIORITIES } from "@joshu/onboarding/options";
 import { StrictMode, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -17,29 +11,24 @@ const API = "/joshu/api/onboarding";
 const BOX_SECRETS_API = "/joshu/api/box-secrets";
 const NYLAS = "/joshu/api/nylas";
 
-type StepId =
-  | "welcome"
-  | "connect-ai"
-  | "you"
-  | "big-picture"
-  | "communication"
-  | "tools"
-  | "people"
-  | "review";
+/** Essentials-only flow. Soft prefs (tools, VIPs, channel dials) stay in draft JSON if already saved. */
+type StepId = "welcome" | "connect-ai" | "big-picture" | "communication" | "review";
 
-const BASE_STEPS: StepId[] = [
-  "welcome",
-  "you",
-  "big-picture",
-  "communication",
-  "tools",
-  "people",
-  "review",
-];
+const BASE_STEPS: StepId[] = ["welcome", "big-picture", "communication", "review"];
 
 function buildSteps(needsConnectAi: boolean): StepId[] {
   if (!needsConnectAi) return BASE_STEPS;
   return ["welcome", "connect-ai", ...BASE_STEPS.slice(1)];
+}
+
+/** Open Connectors on the ArozOS desktop when embedded; otherwise fall back to a new tab. */
+function openConnectorsApp(): void {
+  const parent = window.parent as Window & { openModule?: (name: string) => void };
+  if (typeof parent.openModule === "function") {
+    parent.openModule("Connectors");
+    return;
+  }
+  window.open("/connectors/index.html", "_blank", "noopener,noreferrer");
 }
 
 type VipRow = { who: string; priority: string; gatekeepNotes: string };
@@ -49,6 +38,7 @@ type Draft = {
   assistantName: string;
   bigPicturePriorities: string[];
   bigPictureNotes: string;
+  /** Kept for API / Day-0 / re-edit compat; UI only edits work + personal email. */
   communicationChannels: string[];
   communicationContacts: Record<string, string>;
   communicationNotes: string;
@@ -66,7 +56,8 @@ type Draft = {
 };
 
 const emptyDraft = (): Draft => ({
-  ownerName: "Dan",
+  // Names come from box identity / profile (no dedicated wizard step).
+  ownerName: "Principal",
   assistantName: "Companion",
   bigPicturePriorities: [],
   bigPictureNotes: "",
@@ -83,11 +74,89 @@ const emptyDraft = (): Draft => ({
   workingHoursStart: "09:00",
   workingHoursEnd: "18:00",
   batchQuestions: "",
-  vips: [{ who: "", priority: "", gatekeepNotes: "" }],
+  vips: [],
 });
+
+const LEGACY_CHANNEL_IDS: Record<string, string> = {
+  Email: "work-email",
+  "Phone call": "phone",
+  "Text message (SMS)": "sms",
+  WhatsApp: "whatsapp",
+  Telegram: "telegram",
+  Slack: "slack",
+  "Google Chat": "google-chat",
+};
+
+function normalizeChannelIds(channels: string[] | undefined): string[] {
+  if (!channels?.length) return [];
+  return channels.map((c) => LEGACY_CHANNEL_IDS[c] ?? c);
+}
+
+/** Keep work/personal emails in sync with communicationContacts for complete(). */
+function withEmailContacts(
+  draft: Draft,
+  emails: { work?: string; personal?: string },
+): Partial<Draft> {
+  const contacts = { ...draft.communicationContacts };
+  const channels = new Set(draft.communicationChannels);
+
+  const work = emails.work?.trim() ?? contacts["work-email"] ?? "";
+  const personal = emails.personal?.trim() ?? contacts["personal-email"] ?? "";
+
+  if (work) {
+    contacts["work-email"] = work;
+    channels.add("work-email");
+  } else {
+    delete contacts["work-email"];
+    channels.delete("work-email");
+  }
+
+  if (personal) {
+    contacts["personal-email"] = personal;
+    channels.add("personal-email");
+  } else {
+    delete contacts["personal-email"];
+    channels.delete("personal-email");
+  }
+
+  return {
+    communicationContacts: contacts,
+    communicationChannels: [...channels],
+  };
+}
 
 function toggleInList(list: string[], item: string): string[] {
   return list.includes(item) ? list.filter((x) => x !== item) : [...list, item];
+}
+
+/** Browser IANA zone list; falls back to a short common set if unsupported. */
+function listIanaTimeZones(): string[] {
+  try {
+    const intl = Intl as typeof Intl & { supportedValuesOf?: (key: string) => string[] };
+    if (typeof intl.supportedValuesOf === "function") {
+      return intl.supportedValuesOf("timeZone");
+    }
+  } catch {
+    /* ignore */
+  }
+  return [
+    "America/Los_Angeles",
+    "America/Denver",
+    "America/Chicago",
+    "America/New_York",
+    "America/Toronto",
+    "America/Sao_Paulo",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "Asia/Tokyo",
+    "Asia/Shanghai",
+    "Asia/Singapore",
+    "Asia/Kolkata",
+    "Australia/Sydney",
+    "Pacific/Auckland",
+    "UTC",
+  ];
 }
 
 function Field({
@@ -133,87 +202,6 @@ function CheckboxGroup({
   );
 }
 
-const LEGACY_CHANNEL_IDS: Record<string, string> = {
-  Email: "work-email",
-  "Phone call": "phone",
-  "Text message (SMS)": "sms",
-  WhatsApp: "whatsapp",
-  Telegram: "telegram",
-  Slack: "slack",
-  "Google Chat": "google-chat",
-};
-
-function normalizeChannelIds(channels: string[] | undefined): string[] {
-  if (!channels?.length) return [];
-  return channels.map((c) => LEGACY_CHANNEL_IDS[c] ?? c);
-}
-
-function ChannelPicker({
-  channels,
-  selected,
-  contacts,
-  onChange,
-}: {
-  channels: CommunicationChannelDef[];
-  selected: string[];
-  contacts: Record<string, string>;
-  onChange: (next: { selected: string[]; contacts: Record<string, string> }) => void;
-}) {
-  const toggle = (id: string) => {
-    if (selected.includes(id)) {
-      const nextContacts = { ...contacts };
-      delete nextContacts[id];
-      onChange({ selected: selected.filter((x) => x !== id), contacts: nextContacts });
-      return;
-    }
-    onChange({ selected: [...selected, id], contacts });
-  };
-
-  const setContact = (id: string, value: string) => {
-    onChange({ selected, contacts: { ...contacts, [id]: value } });
-  };
-
-  return (
-    <div className="welcome-checkboxes">
-      {channels.map((channel) => (
-        <div key={channel.id} className="welcome-channel-row">
-          <label className="welcome-check">
-            <input
-              type="checkbox"
-              checked={selected.includes(channel.id)}
-              onChange={() => toggle(channel.id)}
-            />
-            <span>{channel.label}</span>
-          </label>
-          {selected.includes(channel.id) ? (
-            <div className="welcome-channel-contact">
-              <label htmlFor={`contact-${channel.id}`}>{channel.contactLabel}</label>
-              <input
-                id={`contact-${channel.id}`}
-                type={channel.inputType ?? "text"}
-                placeholder={channel.contactPlaceholder}
-                value={contacts[channel.id] ?? ""}
-                onChange={(e) => setContact(channel.id, e.target.value)}
-              />
-            </div>
-          ) : null}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function formatCommunicationSummary(channels: string[], contacts: Record<string, string>): string {
-  if (!channels.length) return "—";
-  return channels
-    .map((id) => {
-      const label = communicationChannelLabel(id);
-      const contact = contacts[id]?.trim();
-      return contact ? `${label} (${contact})` : label;
-    })
-    .join(", ");
-}
-
 function formatList(items: string[]): string {
   return items.length ? items.join(", ") : "—";
 }
@@ -242,6 +230,16 @@ function App() {
   const steps = useMemo(() => buildSteps(needsConnectAi), [needsConnectAi]);
   const stepId = steps[step] ?? "welcome";
   const lastStep = steps.length - 1;
+  const timeZones = useMemo(() => {
+    const zones = listIanaTimeZones();
+    const current = draft.timezone.trim();
+    // Keep a saved/legacy value visible even if missing from the browser list.
+    if (current && !zones.includes(current)) return [current, ...zones];
+    return zones;
+  }, [draft.timezone]);
+
+  const workEmail = draft.communicationContacts["work-email"] ?? "";
+  const personalEmail = draft.communicationContacts["personal-email"] ?? "";
 
   const load = useCallback(async () => {
     const [statusRes, draftRes, secretsRes] = await Promise.all([
@@ -287,7 +285,7 @@ function App() {
     setGeminiConfigured(Boolean(secrets.geminiConfigured));
     setEmbeddingsGeminiConfigured(Boolean(secrets.embeddingsGeminiConfigured));
     const draftBody = (await draftRes.json()) as {
-      draft?: Partial<Draft> & { primaryWorkEmail?: string; personalEmail?: string } | null;
+      draft?: (Partial<Draft> & { primaryWorkEmail?: string; personalEmail?: string }) | null;
     };
     setDraft((prev) => {
       const pickName = (...candidates: (string | undefined)[]) => {
@@ -304,7 +302,9 @@ function App() {
       if (legacyWork && !contacts["work-email"]) contacts["work-email"] = legacyWork;
       if (legacyPersonal && !contacts["personal-email"]) contacts["personal-email"] = legacyPersonal;
       if (legacyWork && !normalizedChannels.includes("work-email")) normalizedChannels.push("work-email");
-      if (legacyPersonal && !normalizedChannels.includes("personal-email")) normalizedChannels.push("personal-email");
+      if (legacyPersonal && !normalizedChannels.includes("personal-email")) {
+        normalizedChannels.push("personal-email");
+      }
 
       return {
         ...prev,
@@ -351,6 +351,14 @@ function App() {
   };
 
   const patch = (partial: Partial<Draft>) => setDraft((d) => ({ ...d, ...partial }));
+
+  const setWorkEmail = (value: string) => {
+    setDraft((d) => ({ ...d, ...withEmailContacts(d, { work: value, personal: d.communicationContacts["personal-email"] }) }));
+  };
+
+  const setPersonalEmail = (value: string) => {
+    setDraft((d) => ({ ...d, ...withEmailContacts(d, { work: d.communicationContacts["work-email"], personal: value }) }));
+  };
 
   const saveConnectAi = async (): Promise<boolean> => {
     const payload: Record<string, string> = {};
@@ -457,8 +465,8 @@ function App() {
       }
       return;
     }
-    if (stepId === "you" && (!draft.ownerName.trim() || !draft.assistantName.trim())) {
-      setError("Please enter your name and your assistant's name.");
+    if (stepId === "communication" && !draft.timezone.trim()) {
+      setError("Select a time zone.");
       return;
     }
     setBusy(true);
@@ -481,11 +489,6 @@ function App() {
   const back = () => {
     setSavedFlash("");
     setStep((s) => Math.max(s - 1, 0));
-  };
-
-  const finishLater = () => {
-    sessionStorage.setItem("joshu-onboarding-dismissed", "1");
-    window.close?.();
   };
 
   const provisionMailbox = async () => {
@@ -564,10 +567,19 @@ function App() {
               <h2>{alreadyCompleted ? "Review or update" : "Let's get you set up"}</h2>
               <p className="welcome-hint">
                 {alreadyCompleted
-                  ? "Walk through any section to update priorities, communication preferences, or tools. Your assistant reads these from your workspace files."
-                  : `This takes about 10 minutes. We'll capture what you're juggling, how you like to communicate, and which tools you use — then write it where ${draft.assistantName} always reads it first.`}
+                  ? "Walk through any section to update priorities or schedule. Connect apps anytime in Connectors."
+                  : `This takes a few minutes. We'll capture what to help with and when to brief you — then write it where ${draft.assistantName || "your assistant"} always reads it first.`}
               </p>
-              <p className="welcome-hint">You can pause anytime. Progress is saved as you go.</p>
+              <div className="welcome-connectors-callout">
+                <strong>Connect your apps</strong>
+                <p className="welcome-hint">
+                  Link Gmail, calendar, and other tools in Connectors so your assistant can work with your real inbox
+                  and schedule. You can do this now or later.
+                </p>
+                <button type="button" className="primary" onClick={openConnectorsApp}>
+                  Open Connectors
+                </button>
+              </div>
             </>
           )}
 
@@ -603,7 +615,13 @@ function App() {
                   </p>
                   <Field
                     label="Google Gemini API key"
-                    hint={needsEmbeddingsGemini && needsGeminiVoice ? "Required for voice + file brain" : needsEmbeddingsGemini ? "Required for file brain" : "Required for voice"}
+                    hint={
+                      needsEmbeddingsGemini && needsGeminiVoice
+                        ? "Required for voice + file brain"
+                        : needsEmbeddingsGemini
+                          ? "Required for file brain"
+                          : "Required for voice"
+                    }
                   >
                     <input
                       type="password"
@@ -622,30 +640,12 @@ function App() {
             </>
           )}
 
-          {stepId === "you" && (
-            <>
-              <h2>You & your assistant</h2>
-              <Field label="Your name (Principal)">
-                <input
-                  value={draft.ownerName}
-                  onChange={(e) => patch({ ownerName: e.target.value })}
-                />
-              </Field>
-              <Field label="Assistant name">
-                <input
-                  value={draft.assistantName}
-                  onChange={(e) => patch({ assistantName: e.target.value })}
-                />
-              </Field>
-            </>
-          )}
-
           {stepId === "big-picture" && (
             <>
               <h2>Big picture</h2>
               <p className="welcome-hint">
-                What should your assistant help take off your plate? Check everything that applies — business,
-                family, personal, or all of the above.
+                What should your assistant help take off your plate? Each selection becomes a project folder your
+                assistant files work into.
               </p>
               <Field label="What to help with">
                 <CheckboxGroup
@@ -665,182 +665,53 @@ function App() {
 
           {stepId === "communication" && (
             <>
-              <h2>Communication</h2>
+              <h2>Schedule & email</h2>
               <p className="welcome-hint">
-                Select how your assistant should reach you. When you check a channel, add the email,
-                phone number, or handle to use.
+                Work email is where morning/evening briefs go. Time zone and hours set when those cron jobs run.
               </p>
-              <Field label="Your channels">
-                <ChannelPicker
-                  channels={COMMUNICATION_CHANNEL_DEFS}
-                  selected={draft.communicationChannels}
-                  contacts={draft.communicationContacts}
-                  onChange={({ selected, contacts }) =>
-                    patch({ communicationChannels: selected, communicationContacts: contacts })
-                  }
+              <Field label="Work email" hint="Daily brief destination">
+                <input
+                  type="email"
+                  value={workEmail}
+                  onChange={(e) => setWorkEmail(e.target.value)}
+                  placeholder="you@company.com"
                 />
               </Field>
-              <Field label="Other communication notes (optional)">
-                <textarea
-                  value={draft.communicationNotes}
-                  onChange={(e) => patch({ communicationNotes: e.target.value })}
-                  placeholder="Channel rules, backup contacts, when not to ping you, etc."
+              <Field label="Personal email (optional)">
+                <input
+                  type="email"
+                  value={personalEmail}
+                  onChange={(e) => setPersonalEmail(e.target.value)}
+                  placeholder="you@gmail.com"
                 />
               </Field>
               <Field label="Time zone">
-                <input value={draft.timezone} onChange={(e) => patch({ timezone: e.target.value })} />
+                <select
+                  value={draft.timezone}
+                  onChange={(e) => patch({ timezone: e.target.value })}
+                >
+                  {!draft.timezone ? <option value="">Select a time zone</option> : null}
+                  {timeZones.map((tz) => (
+                    <option key={tz} value={tz}>
+                      {tz.replace(/_/g, " ")}
+                    </option>
+                  ))}
+                </select>
               </Field>
               <Field label="Working hours start">
                 <input
                   value={draft.workingHoursStart}
                   onChange={(e) => patch({ workingHoursStart: e.target.value })}
+                  placeholder="09:00"
                 />
               </Field>
               <Field label="Working hours end">
                 <input
                   value={draft.workingHoursEnd}
                   onChange={(e) => patch({ workingHoursEnd: e.target.value })}
+                  placeholder="18:00"
                 />
               </Field>
-              <Field label="How should you receive updates?">
-                <select value={draft.updateFormat} onChange={(e) => patch({ updateFormat: e.target.value })}>
-                  <option>Daily Brief (morning)</option>
-                  <option>Daily Brief + EOD note</option>
-                  <option>EOD note only</option>
-                </select>
-              </Field>
-              <Field label="Urgent channel (interrupt now)" hint="Which channel above means drop everything?">
-                {draft.communicationChannels.length > 0 ? (
-                  <select
-                    value={draft.urgentChannel}
-                    onChange={(e) => patch({ urgentChannel: e.target.value })}
-                  >
-                    <option value="">Select a channel</option>
-                    {draft.communicationChannels.map((id) => (
-                      <option key={id} value={communicationChannelLabel(id)}>
-                        {communicationChannelLabel(id)}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    value={draft.urgentChannel}
-                    onChange={(e) => patch({ urgentChannel: e.target.value })}
-                    placeholder="Select channels above first"
-                  />
-                )}
-              </Field>
-              <Field label={'What counts as "interrupt me now"?'}>
-                <textarea
-                  value={draft.interruptMeNowMeans}
-                  onChange={(e) => patch({ interruptMeNowMeans: e.target.value })}
-                />
-              </Field>
-              <Field label="Batch questions vs ask as they arise?">
-                <textarea
-                  value={draft.batchQuestions}
-                  onChange={(e) => patch({ batchQuestions: e.target.value })}
-                />
-              </Field>
-            </>
-          )}
-
-          {stepId === "tools" && (
-            <>
-              <h2>Online tools</h2>
-              <p className="welcome-hint">
-                Which apps and services does your assistant need to know about? Include anything you rely on
-                day-to-day.
-              </p>
-              {ONLINE_TOOL_SECTIONS.map((section) => (
-                <Field key={section.title} label={section.title}>
-                  <CheckboxGroup
-                    options={section.options}
-                    selected={draft.onlineTools}
-                    onChange={(onlineTools) => patch({ onlineTools })}
-                  />
-                </Field>
-              ))}
-              <Field label="Other tools or notes (optional)">
-                <textarea
-                  value={draft.onlineToolsNotes}
-                  onChange={(e) => patch({ onlineToolsNotes: e.target.value })}
-                  placeholder="e.g. custom CRM, industry-specific apps, login notes"
-                />
-              </Field>
-              <Field label="Anything the assistant should not access?">
-                <textarea value={draft.doNotAccess} onChange={(e) => patch({ doNotAccess: e.target.value })} />
-              </Field>
-              <div className="welcome-mailbox">
-                <strong>Agent mailbox</strong>
-                {nylasProvisioned ? (
-                  <p className="welcome-hint">Ready: {assistantEmail}</p>
-                ) : (
-                  <>
-                    <p className="welcome-hint">
-                      Create a dedicated inbox for {draft.assistantName}. Forward your principal mail here.
-                    </p>
-                    <Field label="Preferred agent email (optional)">
-                      <input
-                        placeholder="assistant@yourdomain.com"
-                        value={agentEmailInput}
-                        onChange={(e) => setAgentEmailInput(e.target.value)}
-                      />
-                    </Field>
-                    <button type="button" className="primary" disabled={busy} onClick={() => void provisionMailbox()}>
-                      Create agent mailbox
-                    </button>
-                  </>
-                )}
-              </div>
-            </>
-          )}
-
-          {stepId === "people" && (
-            <>
-              <h2>Key people (optional)</h2>
-              <p className="welcome-hint">VIPs and gatekeeping notes — skip if you&apos;ll add these later.</p>
-              {draft.vips.map((vip, i) => (
-                <div key={i} className="welcome-vip-row">
-                  <Field label="Who">
-                    <input
-                      value={vip.who}
-                      onChange={(e) => {
-                        const vips = [...draft.vips];
-                        vips[i] = { ...vips[i], who: e.target.value };
-                        patch({ vips });
-                      }}
-                    />
-                  </Field>
-                  <Field label="Priority">
-                    <input
-                      value={vip.priority}
-                      onChange={(e) => {
-                        const vips = [...draft.vips];
-                        vips[i] = { ...vips[i], priority: e.target.value };
-                        patch({ vips });
-                      }}
-                    />
-                  </Field>
-                  <Field label="Gatekeep notes">
-                    <input
-                      value={vip.gatekeepNotes}
-                      onChange={(e) => {
-                        const vips = [...draft.vips];
-                        vips[i] = { ...vips[i], gatekeepNotes: e.target.value };
-                        patch({ vips });
-                      }}
-                    />
-                  </Field>
-                </div>
-              ))}
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => patch({ vips: [...draft.vips, { who: "", priority: "", gatekeepNotes: "" }] })}
-              >
-                Add another
-              </button>
             </>
           )}
 
@@ -848,20 +719,18 @@ function App() {
             <>
               <h2>Review</h2>
               <dl className="welcome-review">
-                <dt>Principal</dt>
-                <dd>{draft.ownerName}</dd>
-                <dt>Assistant</dt>
-                <dd>{draft.assistantName}</dd>
                 <dt>Help with</dt>
                 <dd>{formatList(draft.bigPicturePriorities)}</dd>
-                <dt>Communication</dt>
-                <dd>{formatCommunicationSummary(draft.communicationChannels, draft.communicationContacts)}</dd>
-                <dt>Online tools</dt>
-                <dd>{formatList(draft.onlineTools)}</dd>
-                <dt>Urgent channel</dt>
-                <dd>{draft.urgentChannel || "—"}</dd>
-                <dt>Mailbox</dt>
-                <dd>{nylasProvisioned ? assistantEmail : "Not yet — you can set up in jMail later"}</dd>
+                <dt>Work email</dt>
+                <dd>{workEmail || "—"}</dd>
+                <dt>Time zone</dt>
+                <dd>{draft.timezone || "—"}</dd>
+                <dt>Working hours</dt>
+                <dd>
+                  {draft.workingHoursStart || "—"} – {draft.workingHoursEnd || "—"}
+                </dd>
+                <dt>Agent mailbox</dt>
+                <dd>{nylasProvisioned ? assistantEmail : "Not yet — create below or in jMail later"}</dd>
                 {needsGeminiMl || voiceOffered ? (
                   <>
                     <dt>Gemini (voice + file brain)</dt>
@@ -877,6 +746,38 @@ function App() {
                   </>
                 ) : null}
               </dl>
+
+              <div className="welcome-mailbox">
+                <strong>Agent mailbox</strong>
+                {nylasProvisioned ? (
+                  <p className="welcome-hint">Ready: {assistantEmail}</p>
+                ) : (
+                  <>
+                    <p className="welcome-hint">
+                      Optional: create a dedicated inbox for {draft.assistantName || "your assistant"} to send from.
+                    </p>
+                    <Field label="Preferred agent email (optional)">
+                      <input
+                        placeholder="assistant@yourdomain.com"
+                        value={agentEmailInput}
+                        onChange={(e) => setAgentEmailInput(e.target.value)}
+                      />
+                    </Field>
+                    <button type="button" className="secondary" disabled={busy} onClick={() => void provisionMailbox()}>
+                      Create agent mailbox
+                    </button>
+                  </>
+                )}
+              </div>
+
+              <div className="welcome-connectors-callout">
+                <strong>Apps still to connect?</strong>
+                <p className="welcome-hint">Gmail and calendar live in Connectors.</p>
+                <button type="button" className="secondary" onClick={openConnectorsApp}>
+                  Open Connectors
+                </button>
+              </div>
+
               {needsGeminiMl ? (
                 <div style={{ marginTop: "1rem" }}>
                   <Field label="Google Gemini API key" hint="From aistudio.google.com/apikey">
@@ -908,7 +809,7 @@ function App() {
           )}
 
           <div className="welcome-actions">
-            {step > 0 && step < lastStep ? (
+            {step > 0 ? (
               <button type="button" className="secondary" disabled={busy} onClick={back}>
                 Back
               </button>
@@ -922,11 +823,7 @@ function App() {
               <button type="button" className="secondary" disabled={busy} onClick={() => window.close?.()}>
                 Close
               </button>
-            ) : (
-              <button type="button" className="secondary" disabled={busy} onClick={finishLater}>
-                Finish later
-              </button>
-            )}
+            ) : null}
             {step < lastStep ? (
               <button type="button" className="primary" disabled={busy} onClick={() => void next()}>
                 {stepId === "connect-ai" ? "Save & continue" : "Continue"}

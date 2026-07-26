@@ -82,6 +82,12 @@ COPY patches/arozos ./patches/arozos
 COPY vendor/arozos ./vendor/arozos
 # Fleet: populated by scripts/stage-docker-design-pack.sh before build. OSS: empty marker only.
 COPY .docker-staging/joshu-design /opt/joshu-design
+# Fail closed for branded fleet images — missing pack → vanilla shell on customer boxes.
+ARG JOSHU_REQUIRE_DESIGN_PACK=0
+RUN if [ "${JOSHU_REQUIRE_DESIGN_PACK}" = "1" ]; then \
+      test -f /opt/joshu-design/arozos/web-overlays/aroz-paper-shell.css \
+        || (echo "JOSHU_REQUIRE_DESIGN_PACK=1 but aroz-paper-shell.css missing under /opt/joshu-design" >&2; exit 1); \
+    fi
 
 RUN bash ${APP_DIR}/scripts/apply-arozos-patches.sh \
     && cd ${APP_DIR}/vendor/arozos/src \
@@ -101,6 +107,7 @@ RUN bash ${APP_DIR}/scripts/apply-arozos-patches.sh \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/connectors/ ${AROZ_TEMPLATE}/subservice/connectors/ \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/safety-settings/ ${AROZ_TEMPLATE}/subservice/safety-settings/ \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/welcome/ ${AROZ_TEMPLATE}/subservice/welcome/ \
+    && rsync -a ${APP_DIR}/arozos-subservice-staging/jterm/ ${AROZ_TEMPLATE}/subservice/jterm/ \
     && rsync -a ${APP_DIR}/dist/excalidraw/ ${AROZ_TEMPLATE}/subservice/excalidraw/app/ \
     && rsync -a ${APP_DIR}/dist/hermes-chat/ ${AROZ_TEMPLATE}/subservice/hermes-chat/app/ \
     && rsync -a ${APP_DIR}/dist/hindsight-viewer/ ${AROZ_TEMPLATE}/subservice/hindsight-viewer/app/ \
@@ -111,6 +118,7 @@ RUN bash ${APP_DIR}/scripts/apply-arozos-patches.sh \
     && rsync -a ${APP_DIR}/dist/connectors-app/ ${AROZ_TEMPLATE}/subservice/connectors/app/ \
     && rsync -a ${APP_DIR}/dist/safety-settings/ ${AROZ_TEMPLATE}/subservice/safety-settings/app/ \
     && rsync -a ${APP_DIR}/dist/welcome/ ${AROZ_TEMPLATE}/subservice/welcome/app/ \
+    && rsync -a ${APP_DIR}/dist/jterm/ ${AROZ_TEMPLATE}/subservice/jterm/app/ \
     && bash ${APP_DIR}/scripts/install-proprietary-apps.sh ${AROZ_TEMPLATE}/subservice \
     && chmod +x ${AROZ_TEMPLATE}/subservice/*/start.sh \
     && (python3 ${APP_DIR}/scripts/apply_arozos_joshu_theme.py ${AROZ_TEMPLATE}/web || true)

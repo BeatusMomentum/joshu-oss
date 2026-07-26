@@ -36,19 +36,8 @@ type GmailAccountStatus = {
   mirror?: { threadCount: number; empty: boolean };
 };
 
-type OwnerChannelStatus = {
-  linked?: boolean;
-  provider?: "telegram" | "slack";
-  telegramChatId?: string;
-  slackDmChannelId?: string;
-  gateEnabled?: boolean;
-  gateMode?: string;
-  legacyTelegramFallback?: boolean;
-};
-
 type ConnectorsStatus = {
   registry?: { updatedAt?: string };
-  ownerChannel?: OwnerChannelStatus;
   nylas: {
     configured: boolean;
     provisioned: boolean;
@@ -61,8 +50,6 @@ type ConnectorsStatus = {
     accounts: GmailAccountStatus[];
   };
 };
-
-type Tab = "overview" | "connect";
 
 type Day0Phase =
   | "idle"
@@ -102,22 +89,29 @@ function formatWhen(iso?: string): string {
   return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+/** Top-level page after Composio OAuth (new tab). Served by Joshu static public/. */
+function oauthDoneCallbackUrl(): string {
+  return `${window.location.origin}/joshu/oauth-done.html`;
+}
+
 type SlackbotSetupStatus = {
+  clientId?: string;
   composioEnabled?: boolean;
   authConfigConfigured?: boolean;
   authConfigIdPreview?: string;
   webhookConfigured?: boolean;
   webhookUrl?: string;
+  eventsRequestUrl?: string;
+  eventsUrlIsPublic?: boolean;
   setupRequired?: boolean;
   steps?: string[];
 };
 
 function App() {
-  const [tab, setTab] = useState<Tab>("overview");
   const [status, setStatus] = useState<ConnectorsStatus | null>(null);
   const [toolkits, setToolkits] = useState<ComposioToolkitRow[]>([]);
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [composioEnabled, setComposioEnabled] = useState<boolean | null>(null);
@@ -128,10 +122,6 @@ function App() {
   const [day0OwnerName, setDay0OwnerName] = useState("");
   const [day0AssistantName, setDay0AssistantName] = useState("");
   const [day0Done, setDay0Done] = useState(false);
-  const [ownerProvider, setOwnerProvider] = useState<"telegram" | "slack">("telegram");
-  const [ownerTelegramChatId, setOwnerTelegramChatId] = useState("");
-  const [ownerSlackChannelId, setOwnerSlackChannelId] = useState("");
-  const [ownerChannelMsg, setOwnerChannelMsg] = useState("");
   const [slackbotSetup, setSlackbotSetup] = useState<SlackbotSetupStatus | null>(null);
   const [slackbotManifestText, setSlackbotManifestText] = useState("");
   const [slackbotClientId, setSlackbotClientId] = useState("");
@@ -148,10 +138,6 @@ function App() {
     if (!res.ok) throw new Error(await res.text());
     const json = (await res.json()) as ConnectorsStatus;
     setStatus(json);
-    const oc = json.ownerChannel;
-    if (oc?.provider === "slack" || oc?.provider === "telegram") setOwnerProvider(oc.provider);
-    if (oc?.telegramChatId) setOwnerTelegramChatId(oc.telegramChatId);
-    if (oc?.slackDmChannelId) setOwnerSlackChannelId(oc.slackDmChannelId);
     return json;
   }, []);
 
@@ -193,7 +179,11 @@ function App() {
     if (!res.ok) return null;
     const json = (await res.json()) as SlackbotSetupStatus & { ok?: boolean };
     setSlackbotSetup(json);
-    if (json.webhookUrl) setSlackbotWebhookUrl(json.webhookUrl);
+    if (json.eventsRequestUrl) setSlackbotWebhookUrl(json.eventsRequestUrl);
+    else if (json.webhookUrl) setSlackbotWebhookUrl(json.webhookUrl);
+    if (json.clientId) {
+      setSlackbotClientId((prev) => prev.trim() || json.clientId || "");
+    }
     if (json.setupRequired) setSlackbotWizardOpen(true);
     return json;
   }, []);
@@ -221,7 +211,6 @@ function App() {
   useEffect(() => {
     const openSlackbot = () => {
       if (window.location.hash.replace(/^#/, "") === "slackbot") {
-        setTab("connect");
         setSlackbotWizardOpen(true);
       }
     };
@@ -260,15 +249,20 @@ function App() {
     try {
       const slugLower = slug.toLowerCase();
       // Slackbot needs the in-UI wizard before OAuth — never surface raw API JSON.
+      // Also block OAuth when webhook ingress is incomplete (Signing Secret + xapp-).
       if (slugLower === "slackbot") {
         const setup = slackbotSetup ?? (await refreshSlackbotSetup().catch(() => null));
-        if (!setup?.authConfigConfigured) {
-          setTab("connect");
+        if (!setup?.authConfigConfigured || setup?.setupRequired) {
           setSlackbotWizardOpen(true);
+          if (setup?.clientId) {
+            setSlackbotClientId((prev) => prev.trim() || setup.clientId || "");
+          }
           setSlackbotMsg(
-            setup?.steps?.[0]
-              ? "Finish the steps below, then Save & Connect."
-              : "Generate a Slack app manifest, paste Client ID, Client Secret, Signing Secret, and App-Level Token (xapp-), then Save & Connect.",
+            setup?.setupRequired && setup?.authConfigConfigured
+              ? "Workspace is connected — add Signing Secret + App-Level Token (xapp-) below, then Save. You do not need to disconnect."
+              : setup?.steps?.[0]
+                ? "Finish the steps below, then Save & Connect."
+                : "Generate a Slack app manifest, paste Client ID, Client Secret, Signing Secret, and App-Level Token (xapp-), then Save & Connect.",
           );
           setBusy(null);
           return;
@@ -277,7 +271,7 @@ function App() {
       const res = await fetch(`${COMPOSIO_API}/connect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ toolkit: slug, callbackUrl: window.location.href }),
+        body: JSON.stringify({ toolkit: slug, callbackUrl: oauthDoneCallbackUrl() }),
       });
       const rawText = await res.text();
       let json: {
@@ -328,22 +322,30 @@ function App() {
     }
   };
 
-  const saveAndConnectSlackbot = async () => {
+  const saveAndConnectSlackbot = async (opts?: { connect?: boolean }) => {
     setBusy("slackbot-save");
     setSlackbotMsg("");
     setError("");
+    const alreadyConnected = toolkits.some(
+      (t) =>
+        t.slug.toLowerCase() === "slackbot" &&
+        (t.isConnected ||
+          (t.connectedAccounts && t.connectedAccounts.length > 0) ||
+          Boolean(t.connectedAccountId)),
+    );
+    const shouldConnect = opts?.connect ?? !alreadyConnected;
     try {
       const res = await fetch(`${COMPOSIO_API}/slackbot/setup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
+        body: JSON.stringify({
           clientId: slackbotClientId,
           clientSecret: slackbotClientSecret,
           signingSecret: slackbotSigningSecret,
           appToken: slackbotAppToken,
           verificationToken: slackbotVerificationToken || slackbotSigningSecret,
-          connect: true,
-          callbackUrl: window.location.href,
+          connect: shouldConnect,
+          callbackUrl: oauthDoneCallbackUrl(),
         }),
       });
       const json = (await res.json().catch(() => ({}))) as {
@@ -356,11 +358,13 @@ function App() {
       };
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
       if (json.status) setSlackbotSetup(json.status);
-      if (json.webhookUrl) setSlackbotWebhookUrl(json.webhookUrl);
+      if (json.status?.eventsRequestUrl) setSlackbotWebhookUrl(json.status.eventsRequestUrl);
+      else if (json.webhookUrl) setSlackbotWebhookUrl(json.webhookUrl);
       setSlackbotClientSecret("");
       setSlackbotSigningSecret("");
       setSlackbotAppToken("");
       setSlackbotVerificationToken("");
+      await refreshAll().catch(() => undefined);
       const rebindNote =
         json.rebind && typeof json.rebind.ok === "number"
           ? ` Rebound triggers on ${json.rebind.ok} channel(s).`
@@ -371,7 +375,11 @@ function App() {
         );
         openOAuthPopup(json.redirectUrl, "slackbot");
       } else {
-        setSlackbotMsg(`Auth + webhook saved.${rebindNote} Click Connect if OAuth is still needed.`);
+        setSlackbotMsg(
+          alreadyConnected
+            ? `Credentials + webhook updated.${rebindNote} Paste the Event Subscriptions URL into your Slack app if you have not already.`
+            : `Auth + webhook saved.${rebindNote} Click Connect if OAuth is still needed.`,
+        );
       }
     } catch (err) {
       setSlackbotMsg(err instanceof Error ? err.message : String(err));
@@ -527,168 +535,23 @@ function App() {
     return acct.label ?? acct.connectedAccountId;
   };
 
-
-  const saveOwnerChannel = async () => {
-    setBusy("owner-channel-save");
-    setOwnerChannelMsg("");
-    setError("");
-    try {
-      const res = await fetch("/joshu/api/connectors/owner-channel", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider: ownerProvider,
-          telegramChatId: ownerTelegramChatId.trim() || undefined,
-          slackDmChannelId: ownerSlackChannelId.trim() || undefined,
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      await refreshStatus();
-      setOwnerChannelMsg("Saved.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const testOwnerChannel = async () => {
-    setBusy("owner-channel-test");
-    setOwnerChannelMsg("");
-    setError("");
-    try {
-      const res = await fetch("/joshu/api/owner-channel/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note: "Connectors test approval" }),
-      });
-      const json = (await res.json()) as { ok?: boolean; message?: string; error?: string };
-      if (!res.ok || !json.ok) throw new Error(json.error ?? json.message ?? "Test failed");
-      setOwnerChannelMsg(json.message ?? "Test sent — check your owner DM.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const overviewCards = useMemo(
-    () => [
-      {
-        title: "Agent mailbox (Nylas)",
-        detail: status?.nylas.provisioned
-          ? `${status.nylas.email ?? "provisioned"} · ${status.nylas.mirror?.threadCount ?? 0} mirrored threads`
-          : status?.nylas.configured
-            ? "Not provisioned — open jMail Setup"
-            : "NYLAS_API_KEY not configured",
-      },
-      {
-        title: "Gmail accounts",
-        detail:
-          gmailAccounts.length > 0
-            ? `${gmailAccounts.length} connected`
-            : composioEnabled
-              ? "None connected — add in Connect tab"
-              : "Composio not configured",
-      },
-    ],
-    [status, gmailAccounts.length, composioEnabled],
-  );
-
   return (
     <div className="app">
-      <header>
-        <p className="eyebrow">Joshu</p>
-        <h1>Connectors</h1>
-        <p className="sub">Manage OAuth connections, Gmail mirrors, and sync health for all Joshu apps.</p>
-      </header>
-
-      <nav className="tabs" aria-label="Sections">
-        {(["overview", "connect"] as Tab[]).map((t) => (
-          <button key={t} type="button" className={tab === t ? "active" : ""} onClick={() => setTab(t)}>
-            {t === "overview" ? "Overview" : "Connect apps"}
-          </button>
-        ))}
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">Joshu</p>
+          <h1>Connectors</h1>
+          <p className="sub">Connect Gmail, calendar, and other apps Joshu uses across the desktop.</p>
+        </div>
         <button type="button" className="btn" onClick={() => void refreshAll()} disabled={loading}>
           {loading ? "Refreshing…" : "Refresh"}
         </button>
-      </nav>
+      </header>
 
       {error && <p className="error">{error}</p>}
 
-{tab === "overview" && (
-        <>
-          <section className="card">
-            <h2>Owner 1:1 channel</h2>
-            <p className="hint">
-              Approve or deny agent writes from a private Telegram or Slack DM. Link Telegram by sending /start to the
-              action-guard bot, or enter a chat ID below.
-            </p>
-            <p className="hint">
-              Status:{" "}
-              {status?.ownerChannel?.linked
-                ? `Linked (${status.ownerChannel.provider ?? "telegram"})`
-                : "Not linked"}
-              {status?.ownerChannel?.gateEnabled ? ` · gate on (${status.ownerChannel.gateMode ?? "external_writes"})` : " · gate off"}
-            </p>
-            <div className="search-row">
-              <label>
-                Provider{" "}
-                <select
-                  value={ownerProvider}
-                  onChange={(e) => setOwnerProvider(e.target.value as "telegram" | "slack")}
-                >
-                  <option value="telegram">Telegram</option>
-                  <option value="slack">Slack</option>
-                </select>
-              </label>
-            </div>
-            {ownerProvider === "telegram" ? (
-              <div className="search-row">
-                <input
-                  type="text"
-                  value={ownerTelegramChatId}
-                  onChange={(e) => setOwnerTelegramChatId(e.target.value)}
-                  placeholder="Telegram chat ID (from /start)"
-                  aria-label="Telegram chat ID"
-                />
-              </div>
-            ) : (
-              <div className="search-row">
-                <input
-                  type="text"
-                  value={ownerSlackChannelId}
-                  onChange={(e) => setOwnerSlackChannelId(e.target.value)}
-                  placeholder="Slack DM channel ID (D…)"
-                  aria-label="Slack DM channel ID"
-                />
-              </div>
-            )}
-            <div className="composio-account-actions">
-              <button type="button" className="btn btn-primary" disabled={busy === "owner-channel-save"} onClick={() => void saveOwnerChannel()}>
-                {busy === "owner-channel-save" ? "Saving…" : "Save"}
-              </button>
-              <button type="button" className="btn" disabled={busy === "owner-channel-test"} onClick={() => void testOwnerChannel()}>
-                {busy === "owner-channel-test" ? "Sending…" : "Test approval"}
-              </button>
-            </div>
-            {ownerChannelMsg && <p className="hint">{ownerChannelMsg}</p>}
-          </section>
-          {overviewCards.map((card) => (
-            <section key={card.title} className="card">
-              <h2>{card.title}</h2>
-              <p className="hint">{card.detail}</p>
-            </section>
-          ))}
-          {status?.registry?.updatedAt && (
-            <p className="hint">Registry updated {formatWhen(status.registry.updatedAt)}</p>
-          )}
-        </>
-      )}
-
-      {tab === "connect" && (
-        <section className="card">
-          <h2>Composio apps</h2>
+      <section className="card">
+          <h2>Apps</h2>
           <p className="hint">
             Connect each app once per account. Google apps (Gmail, Calendar, Drive) support multiple accounts —
             use &quot;Connect another account&quot; after the first OAuth.
@@ -707,11 +570,20 @@ function App() {
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search providers (gmail, github, …)"
                   aria-label="Search providers"
+                  disabled={loading && toolkits.length === 0}
                 />
-                <button type="button" className="btn" onClick={() => void refreshToolkits()}>
+                <button type="button" className="btn" onClick={() => void refreshToolkits()} disabled={loading}>
                   Search
                 </button>
               </div>
+              {loading && toolkits.length === 0 ? (
+                <div className="loading-panel" role="status" aria-live="polite">
+                  <span className="loading-spinner" aria-hidden />
+                  <p>Loading apps…</p>
+                </div>
+              ) : toolkits.length === 0 ? (
+                <p className="hint">No apps found. Try a different search, or check COMPOSIO_API_KEY.</p>
+              ) : (
               <ul className="composio-list">
                 {toolkits.map((row) => {
                   const slugLower = row.slug.toLowerCase();
@@ -757,26 +629,49 @@ function App() {
                             </small>
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          className="btn btn-primary"
-                          disabled={busy === connectBusyKey}
-                          onClick={() => {
-                            if (slugLower === "slackbot") {
-                              setSlackbotWizardOpen(true);
-                              // Wizard-first: connectToolkit will no-op OAuth until auth config exists.
-                            }
-                            void connectToolkit(row.slug);
-                          }}
-                        >
-                          {busy === connectBusyKey
-                            ? "Opening…"
-                            : slugLower === "slackbot" && slackbotSetup?.setupRequired
-                              ? "Set up"
-                              : accounts.length > 0
-                                ? "Connect another account"
-                                : "Connect"}
-                        </button>
+                        <div className="composio-account-actions">
+                          {slugLower === "slackbot" && (
+                            <button
+                              type="button"
+                              className="btn"
+                              onClick={() => {
+                                setSlackbotWizardOpen(true);
+                                if (slackbotSetup?.clientId) {
+                                  setSlackbotClientId((prev) => prev.trim() || slackbotSetup.clientId || "");
+                                }
+                                setSlackbotMsg(
+                                  accounts.length > 0
+                                    ? "Update Signing Secret + App-Level Token for this existing connection (ca_… stays). Save does not require disconnecting."
+                                    : "Paste Slack app credentials, then Save & Connect.",
+                                );
+                              }}
+                            >
+                              Configure Slack app
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            disabled={busy === connectBusyKey}
+                            onClick={() => {
+                              if (slugLower === "slackbot") {
+                                setSlackbotWizardOpen(true);
+                                // Wizard-first: connectToolkit will no-op OAuth until auth config + webhook exist.
+                              }
+                              void connectToolkit(row.slug);
+                            }}
+                          >
+                            {busy === connectBusyKey
+                              ? "Opening…"
+                              : slugLower === "slackbot" && slackbotSetup?.setupRequired
+                                ? accounts.length > 0
+                                  ? "Finish setup"
+                                  : "Set up"
+                                : accounts.length > 0
+                                  ? "Connect another account"
+                                  : "Connect"}
+                          </button>
+                        </div>
                       </div>
                       {slugLower === "slackbot" && slackbotWizardOpen && (
                         <div className="slackbot-wizard">
@@ -796,9 +691,24 @@ function App() {
                               Auth config on file{slackbotSetup.authConfigIdPreview
                                 ? ` (${slackbotSetup.authConfigIdPreview})`
                                 : ""}
-                              . You can rotate credentials below, then Connect.
+                              {accounts.length > 0
+                                ? ` · workspace connected (${accounts[0]?.connectedAccountId || "ca_…"})`
+                                : ""}
+                              . Paste credentials from the same Slack app to refresh webhook / triggers — no disconnect needed.
                             </p>
                           )}
+                          {!slackbotSetup?.webhookConfigured && (
+                            <p className="hint">
+                              Message triggers need Signing Secret + App-Level Token (xapp- with authorizations:read).
+                              OAuth alone is not enough for channel Q&amp;A.
+                            </p>
+                          )}
+                          <p className="hint">
+                            If channel Q&amp;A stays silent, confirm the Slack app has bot scope{" "}
+                            <code>team:read</code>, <strong>Socket Mode is OFF</strong>, Event
+                            Subscriptions URL is verified, then Disconnect + Connect Slackbot
+                            (token must be re-issued with that scope).
+                          </p>
                           <div className="actions inline-actions">
                             <button
                               type="button"
@@ -918,7 +828,9 @@ function App() {
                               placeholder="Defaults to Signing Secret if blank"
                             />
                           </div>
-                          {(slackbotWebhookUrl || slackbotSetup?.webhookUrl) && (
+                          {(slackbotWebhookUrl ||
+                            slackbotSetup?.eventsRequestUrl ||
+                            slackbotSetup?.webhookUrl) && (
                             <div className="field">
                               <label htmlFor="slackbotEventUrl">
                                 Event Subscriptions Request URL (paste into Slack)
@@ -928,12 +840,18 @@ function App() {
                                 className="manifest-preview"
                                 readOnly
                                 rows={3}
-                                value={slackbotWebhookUrl || slackbotSetup?.webhookUrl || ""}
+                                value={
+                                  slackbotWebhookUrl ||
+                                  slackbotSetup?.eventsRequestUrl ||
+                                  slackbotSetup?.webhookUrl ||
+                                  ""
+                                }
                                 onFocus={(e) => e.currentTarget.select()}
                               />
                               <p className="hint">
-                                Slack app → Event Subscriptions → Enable → paste this URL → Save.
-                                Then reinstall the app if Slack prompts.
+                                {slackbotSetup?.eventsUrlIsPublic
+                                  ? "Use this Joshu URL (via your tunnel) — more reliable than Composio’s ingress for local. Slack → Event Subscriptions → paste → Save. Bot events must include message.groups for private channels."
+                                  : "Need a public HTTPS tunnel (ngrok http 8788). Set JOSHU_PUBLIC_URL or TWILIO_VOICE_WEBHOOK_URL, refresh, then paste the URL Slack shows here."}
                               </p>
                             </div>
                           )}
@@ -950,7 +868,17 @@ function App() {
                               }
                               onClick={() => void saveAndConnectSlackbot()}
                             >
-                              {busy === "slackbot-save" ? "Saving…" : "Save & Connect"}
+                              {busy === "slackbot-save"
+                                ? "Saving…"
+                                : toolkits.some(
+                                      (t) =>
+                                        t.slug.toLowerCase() === "slackbot" &&
+                                        (t.isConnected ||
+                                          Boolean(t.connectedAccountId) ||
+                                          (t.connectedAccounts && t.connectedAccounts.length > 0)),
+                                    )
+                                  ? "Save credentials"
+                                  : "Save & Connect"}
                             </button>
                             <button
                               type="button"
@@ -1012,6 +940,7 @@ function App() {
                   );
                 })}
               </ul>
+              )}
 
               {gmailAccounts.length > 0 && (
                 <section className="day0-box" aria-labelledby="day0-heading">
@@ -1113,7 +1042,6 @@ function App() {
             </div>
           )}
         </section>
-      )}
     </div>
   );
 }

@@ -11,6 +11,14 @@ Joshu renames desktop labels and Joshu-owned subservices while keeping stock Aro
 
 Stock ArozOS apps (File Manager, System Setting, Trash Bin) are **not** Joshu subservices. Only their **desktop shortcuts** and **glyph paths** are customized under `img/joshu/`. The built-in module names stay `File Manager`, `System Setting`, and `Trash Bin`.
 
+### Hidden stock modules
+
+Joshu does **not** expose a set of stock ArozOS apps in the start menu / Module List. Registration is skipped in `vendor/arozos/src/mod/modules/module.go` (`HiddenModules`, part of `patches/arozos/joshu-core.patch`):
+
+Browser, Clock, Image Paste, IoT Hub, Management Gateway, Manga, Memo, Music, Photo, Serverless, Speedtest, Tasks Scheduler, Timer, Unit Tester, Video (Media web app — not Video Player), Web Builder, Web Downloader.
+
+Assets stay on disk; they simply never register. Use Joshu **Schedules** instead of stock Tasks Scheduler.
+
 Joshu-owned apps update **both** `moduleInfo.json` and shortcuts. Subservice directory names (`joshu/`, `hermes-chat/`, …) stay unchanged; only the registered `"Name"` and shortcut content change.
 
 ## Current jōshu display names (May 2026)
@@ -28,6 +36,7 @@ Joshu-owned apps update **both** `moduleInfo.json` and shortcuts. Subservice dir
 | Safety | Safety | `Safety.shortcut` | `arozos/subservice/safety-settings/` |
 | Schedules | Schedules | `Schedules.shortcut` | `arozos/subservice/schedules/` |
 | Welcome | Welcome | `Welcome.shortcut` | `arozos/subservice/welcome/` |
+| jTerm | jTerm | `jTerm.shortcut` | `arozos/subservice/jterm/` |
 | Hermes Admin | *(url shortcut)* | `Hermes Admin.shortcut` | VPS: `https://hermes-admin.<customer-domain>/`; local dev: Joshu proxy at `/joshu/hermes-admin/` |
 | Files | *(stock)* `File Manager` | `File Manager.shortcut` | — |
 | Settings | *(stock)* `System Setting` | `System Setting.shortcut` | — |

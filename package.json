@@ -37,7 +37,7 @@
     "build:welcome": "vite build --config apps/welcome/vite.config.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build:deploy": "npm run sync-design-system && npm run build && npm run box:build && npm run build:excalidraw && npm run build:hermes-chat && npm run build:hindsight-viewer && npm run build:file-brain-viewer && npm run build:schedules && npm run build:movie-editor && npm run build:jmail && npm run build:connectors && npm run build:safety-settings && npm run build:welcome",
+    "build:deploy": "npm run sync-design-system && npm run build && npm run box:build && npm run build:excalidraw && npm run build:hermes-chat && npm run build:hindsight-viewer && npm run build:file-brain-viewer && npm run build:schedules && npm run build:movie-editor && npm run build:jmail && npm run build:connectors && npm run build:safety-settings && npm run build:welcome && npm run build:jterm",
     "hermes:update": "bash scripts/update-hermes-agent.sh update",
     "hermes:rollback": "bash scripts/update-hermes-agent.sh rollback",
     "hermes:status": "bash scripts/update-hermes-agent.sh status",
@@ -79,7 +79,9 @@
     "twilio-local:ngrok": "bash scripts/twilio-local-dev.sh ngrok",
     "twilio-local:urls": "bash scripts/twilio-local-dev.sh urls",
     "twilio-local:env": "bash scripts/twilio-local-dev.sh env",
-    "twilio-local:check": "bash scripts/twilio-local-dev.sh check"
+    "twilio-local:check": "bash scripts/twilio-local-dev.sh check",
+    "dev:jterm": "vite --config apps/jterm/vite.config.ts --host 127.0.0.1 --port 3011",
+    "build:jterm": "vite build --config apps/jterm/vite.config.ts"
   },
   "dependencies": {
     "@composio/core": "^0.10.0",
@@ -106,6 +108,8 @@
     "@radix-ui/react-slot": "^1.1.1",
     "@radix-ui/react-switch": "^1.1.2",
     "@radix-ui/react-toggle-group": "^1.1.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "alawmulaw": "^6.0.0",
     "browser-fs-access": "0.38.0",
     "class-variance-authority": "^0.7.1",

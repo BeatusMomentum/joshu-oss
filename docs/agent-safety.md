@@ -7,7 +7,7 @@ Joshu owns **agent write safety** end-to-end. Composio is OAuth and transport; H
 | Topic | Doc |
 |-------|-----|
 | Safety desktop app (configure policy in UI) | [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md) |
-| Connectors UI (owner channel link) | [`connectors-arozos-app.md`](connectors-arozos-app.md) |
+| Safety UI (owner channel, policy) | [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md) |
 | Mail/calendar MCP + cron | [`connectors.md`](connectors.md) |
 | Browser HITL (Camofox / noVNC) | [`hitl-camofox-notes.md`](hitl-camofox-notes.md) |
 
@@ -207,7 +207,7 @@ Unified channel for **write approvals** (v1). Plain-text owner chat ingress is s
 
 **Configure**
 
-- **Connectors → Overview → Owner 1:1 channel** (OAuth + link flow)
+- **Safety → Owner 1:1 channel** (provider + chat/DM ID; Telegram `/start` to the action-guard bot)
 - **Safety** app → Owner 1:1 channel section (manual chat IDs)
 - API: `GET/PUT /joshu/api/connectors/owner-channel`, `POST /joshu/api/owner-channel/await`, `POST /joshu/api/owner-channel/test`
 - Test: **Safety → Test approval** or Connectors test — reply Y/N in Slack; polling runs until policy timeout.
@@ -347,7 +347,7 @@ npm run dev:safety-settings # Vite only on :3010
 
 ## Operational checklist
 
-1. Enable action guard in **Safety** or env; link owner channel in **Connectors** or paste chat ID in **Safety**.
+1. Enable action guard in **Safety** or env; link owner channel in **Safety** (Telegram `/start` or paste chat ID).
 2. **Telegram:** set approval bot token (env or Safety → Bot tokens). **Slack:** Composio Slack OAuth + channel ID (`C…` or `D…`).
 3. Confirm: `curl -fsS http://127.0.0.1:8788/joshu/api/action-guard/status | jq .` → `ownerChannelLinked: true`.
 4. Test: **Safety → Test approval** — Telegram buttons or Slack **Y/N** reply.

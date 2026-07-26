@@ -60,7 +60,7 @@ Live summary: gate active/off, owner channel provider, approval bot configured, 
 
 ### Owner 1:1 channel
 
-Provider (Telegram / Slack) and DM target IDs. OAuth linking is still done in **Connectors → Overview**; this section is for manual chat ID entry and provider selection.
+Provider (Telegram / Slack) and DM target IDs. Send `/start` to the action-guard Telegram bot to link, or paste chat/channel IDs here.
 
 ### Bot tokens
 
