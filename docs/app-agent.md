@@ -550,8 +550,9 @@ After changing `src/agUiApi.ts`, `.hermes/plugins/joshu-app-gui/`, or `@joshu/ap
 | Check | Pass | Fail → likely cause |
 |-------|------|---------------------|
 | Gateway toolset includes `app_gui_action` | Plugin enabled after restart | Stale gateway; check `joshu-app-gui` in config |
+| Tool result `ok: true` with `appId`/`action`/`args` | Handler validated | Invalid args; or enqueue-only-in-handler without session (must use `post_tool_call`) |
 | Langfuse: `app_gui_action` + `openCompose` in args | Model + Hermes OK | Prompt / skill; load `my-app-gui` |
-| SSE: `CUSTOM` `app_action` | AG-UI drain OK | Session key mismatch (see [Session IDs](#session-ids-chat-vs-voice)) |
+| SSE: `CUSTOM` `app_action` | AG-UI drain OK | Session key mismatch (see [Session IDs](#session-ids-chat-vs-voice)); queue empty and tool-result fallback failed |
 | SSE: `TOOL_CALL` `openCompose` | Synthesized client tool OK | Missing `tools` in CopilotKit request |
 | Compose pane opens | End-to-end OK | `guiRef` / handler not wired |
 

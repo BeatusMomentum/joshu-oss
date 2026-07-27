@@ -7,13 +7,14 @@ import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import type { Request, Response, Router } from "express";
+import type { NextFunction, Request, Response, Router } from "express";
 import { resolveManifestVoiceTools } from "@joshu/app-sdk";
 import type { HermesApiRunner, HermesChatMessage } from "./hermesApi.js";
 import { buildTurnSystemMessages } from "./hermesApi.js";
 import {
   appGuiActionFromHermesToolRaw,
   drainAppGuiActionsForAgUi,
+  isAllowedAppGuiAction,
 } from "./appGuiActionApi.js";
 import type { AppGuiAction } from "./appGuiActionTypes.js";
 import { drainDesktopActionsForChat, desktopActionFromHermesToolRaw } from "./desktopActionApi.js";
@@ -114,6 +115,7 @@ function drainAndEmitAppGuiActions(
 ): void {
   const actions = drainAppGuiActionsForAgUi(appId, threadId, activeSessionId);
   for (const action of actions) {
+    if (!isAllowedAppGuiAction(action)) continue;
     emitAppGuiActionEvents(res, messageId, action, clientToolNames);
   }
 }
@@ -174,6 +176,23 @@ function isLocalhostAgUi(req: Request): boolean {
   return host === "127.0.0.1" || host === "localhost";
 }
 
+/** Permit local ArozOS subservices on :8787 to stream AG-UI runs from :8788. */
+export function setAgUiCors(req: Request, res: Response): void {
+  const origin = req.headers.origin;
+  if (!origin) return;
+  try {
+    const { hostname } = new URL(origin);
+    if (hostname === "127.0.0.1" || hostname === "localhost") {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      res.setHeader("Vary", "Origin");
+    }
+  } catch {
+    // Invalid or remote origins receive no cross-origin grant.
+  }
+}
+
 function hermesHomeDir(): string {
   return process.env.HERMES_HOME?.trim() || path.join(homedir(), ".hermes");
 }
@@ -191,6 +210,15 @@ export function registerAgUiRoutes(
   runner: HermesApiRunner,
   projectRoot: string,
 ): void {
+  router.use("/api/ag-ui", (req: Request, res: Response, next: NextFunction) => {
+    setAgUiCors(req, res);
+    if (req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
   router.get("/api/ag-ui/info", async (req: Request, res: Response) => {
     await loadAppManifests(projectRoot);
     const appId = readString(req.query.appId);
@@ -347,6 +375,7 @@ export function registerAgUiRoutes(
                   if (fromTool) guiActions = [fromTool];
                 }
                 for (const guiAction of guiActions) {
+                  if (!isAllowedAppGuiAction(guiAction)) continue;
                   emitAppGuiActionEvents(res, messageId, guiAction, clientToolNames);
                 }
               }

@@ -11,7 +11,9 @@ body {
 }
 
 button,
-.import-button {
+.import-button,
+.cwm-sidebar select,
+.cwm-sidebar input {
   align-items: center;
   background: var(--color-action);
   border: var(--border-default);
@@ -74,6 +76,29 @@ button:disabled,
   justify-content: flex-end;
 }
 
+.excalidraw-actions button.is-active {
+  background: #4c2aa8;
+  box-shadow: 0 0 0 2px rgb(76 42 168 / 20%);
+}
+
+.whiteboard-live-feedback {
+  align-items: flex-start;
+  color: var(--color-text-muted);
+  display: flex;
+  flex-direction: column;
+  font-size: 0.7rem;
+  gap: 0.12rem;
+  margin-top: 0.28rem;
+  max-width: min(62vw, 720px);
+}
+
+.whiteboard-live-feedback span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
 .import-button {
   background: var(--color-surface-panel);
   color: var(--color-ink);
@@ -89,6 +114,13 @@ button:disabled,
 
 .excalidraw-canvas {
   min-height: 0;
+  position: relative;
+}
+
+.excalidraw-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(270px, 330px);
+  min-height: 0;
 }
 
 .excalidraw-canvas .excalidraw {
@@ -96,6 +128,274 @@ button:disabled,
   --color-primary-darker: #0046cc;
   --color-primary-darkest: #003399;
   height: 100%;
+}
+
+.joshu-pointer-overlay {
+  height: 100%;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+  position: absolute;
+  width: 100%;
+  z-index: 5;
+}
+
+.joshu-pointer-trail {
+  fill: none;
+  filter: drop-shadow(0 0 3px rgb(76 42 168 / 38%));
+  stroke: #6941c6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 5;
+}
+
+.joshu-pointer-trail.is-active {
+  stroke: #ff3d8d;
+  stroke-width: 6;
+}
+
+.joshu-focus-rect,
+.joshu-candidate-rect {
+  fill: rgb(105 65 198 / 8%);
+  stroke: #6941c6;
+  stroke-dasharray: 8 5;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.joshu-focus-region {
+  fill: rgb(0 87 255 / 5%);
+  stroke: #0057ff;
+}
+
+.joshu-candidate-rect {
+  fill: rgb(255 61 141 / 7%);
+  stroke: #ff3d8d;
+}
+
+.joshu-candidate-rect.is-low-confidence {
+  fill: rgb(229 122 0 / 8%);
+  stroke: #e57a00;
+}
+
+.cwm-sidebar {
+  background: var(--color-surface-panel);
+  border-left: var(--border-default);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.75rem;
+}
+
+.cwm-panel {
+  background: var(--color-paper);
+  border: var(--border-default);
+  border-radius: var(--radius-card);
+  padding: 0.75rem;
+}
+
+.cwm-panel h2,
+.cwm-panel h3 {
+  font-size: 0.9rem;
+  line-height: 1.25;
+  margin: 0 0 0.5rem;
+}
+
+.cwm-panel p {
+  font-size: 0.78rem;
+  line-height: 1.4;
+  margin: 0.35rem 0;
+}
+
+.cwm-panel code {
+  display: block;
+  font-size: 0.7rem;
+  margin-top: 0.35rem;
+  overflow-wrap: anywhere;
+}
+
+.cwm-panel-heading,
+.cwm-proposal-meta,
+.cwm-review-actions,
+.cwm-field-row {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+  justify-content: space-between;
+}
+
+.cwm-panel-heading h2,
+.cwm-panel-heading h3 {
+  margin: 0;
+}
+
+.cwm-status,
+.cwm-count,
+.cwm-proposal-meta span {
+  background: var(--color-surface-panel);
+  border: var(--border-default);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 0.14rem 0.42rem;
+  text-transform: uppercase;
+}
+
+.cwm-status-ready {
+  background: #e2f7ec;
+  color: #17633d;
+}
+
+.cwm-status-error,
+.cwm-status-offline {
+  background: #ffe4df;
+  color: #8d2f24;
+}
+
+.cwm-sidebar label {
+  color: var(--color-text-muted);
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  font-size: 0.7rem;
+  font-weight: 700;
+  gap: 0.2rem;
+  margin: 0.45rem 0;
+}
+
+.cwm-sidebar select,
+.cwm-sidebar input {
+  background: var(--color-surface-panel);
+  color: var(--color-text-on-paper);
+  min-height: 2rem;
+  padding: 0 0.5rem;
+  width: 100%;
+}
+
+.cwm-sidebar button {
+  font-size: 0.75rem;
+  min-height: 2rem;
+  padding: 0 0.6rem;
+}
+
+.cwm-help,
+.cwm-empty {
+  color: var(--color-text-muted);
+}
+
+.cwm-inspector-object,
+.cwm-proposal {
+  border-top: var(--border-default);
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+}
+
+.cwm-inspector-object dl {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0.45rem 0;
+}
+
+.cwm-inspector-object dl div {
+  display: flex;
+  font-size: 0.72rem;
+  justify-content: space-between;
+}
+
+.cwm-inspector-object dt {
+  color: var(--color-text-muted);
+}
+
+.cwm-inspector-object dd {
+  font-weight: 700;
+  margin: 0;
+}
+
+.cwm-inspector-object details,
+.cwm-inspector-object summary {
+  font-size: 0.72rem;
+}
+
+.cwm-promotion-actions {
+  border-top: var(--border-default);
+  display: grid;
+  gap: 0.35rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+}
+
+.cwm-promotion-actions button:last-of-type,
+.cwm-promotion-actions small {
+  grid-column: 1 / -1;
+}
+
+.cwm-promotion-actions small,
+.cwm-handoff-path {
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.cwm-inline-form {
+  display: grid;
+  gap: 0.35rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.cwm-region-list {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.cwm-region-button {
+  align-items: flex-start;
+  background: var(--color-surface-panel);
+  color: var(--color-text-on-paper);
+  flex-direction: column;
+  justify-content: center;
+}
+
+.cwm-region-button.is-focused {
+  border-color: var(--color-action);
+  box-shadow: inset 3px 0 0 var(--color-action);
+}
+
+.cwm-region-button small {
+  color: var(--color-text-muted);
+  font-size: 0.65rem;
+}
+
+.cwm-review-tray {
+  border-color: #c9b9ff;
+}
+
+.cwm-proposal-meta {
+  align-items: flex-start;
+}
+
+.cwm-proposal-meta strong {
+  font-size: 0.78rem;
+}
+
+.cwm-proposal ul {
+  font-size: 0.72rem;
+  line-height: 1.4;
+  margin: 0.5rem 0;
+  padding-left: 1rem;
+}
+
+.cwm-review-actions {
+  justify-content: flex-start;
+}
+
+.cwm-secondary-button {
+  background: var(--color-surface-panel);
+  color: var(--color-text-on-paper);
 }
 
 @media (max-width: 720px) {
@@ -106,5 +406,17 @@ button:disabled,
 
   .excalidraw-actions {
     justify-content: flex-start;
+  }
+
+  .excalidraw-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(420px, 1fr) auto;
+    overflow: auto;
+  }
+
+  .cwm-sidebar {
+    border-left: 0;
+    border-top: var(--border-default);
+    max-height: 45vh;
   }
 }

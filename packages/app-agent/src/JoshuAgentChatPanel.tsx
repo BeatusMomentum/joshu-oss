@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import "@joshu/jchat-ui/jchatBubble.css";
 import "@joshu/jchat-ui/jchatShell.css";
 import "@joshu/jchat-ui/jchatThread.css";
@@ -8,6 +8,7 @@ import { JChatBubbleDock, JChatShell, type JChatBubbleVoiceControl } from "@josh
 import { JChatCopilotThread } from "./JChatCopilotThread.js";
 import { useJoshuAppAgentContext } from "./JoshuAppAgentProvider.js";
 import { useJoshuCompanionIdentity } from "./useJoshuCompanionIdentity.js";
+import type { JoshuProgrammaticPromptRequest } from "./programmaticPromptRequest.js";
 
 export type JoshuAgentChatPanelProps = {
   title?: string;
@@ -25,6 +26,8 @@ export type JoshuAgentChatPanelProps = {
   /** Mic badge on the Chat Head — Realtime S2S voice toggle. */
   voice?: JChatBubbleVoiceControl;
   apiBase?: string;
+  /** Open the panel and submit this app-originated prompt once per request id. */
+  promptRequest?: JoshuProgrammaticPromptRequest | null;
 };
 
 /** Messenger-style Chat Head + floating panel — jChat UI + CopilotKit AG-UI backend. */
@@ -41,10 +44,15 @@ export function JoshuAgentChatPanel({
   userName: userNameProp,
   voice,
   apiBase = "/joshu/api",
+  promptRequest,
 }: JoshuAgentChatPanelProps): React.ReactElement {
   const { config } = useJoshuAppAgentContext();
   const identity = useJoshuCompanionIdentity(apiBase);
   const [open, setOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    if (promptRequest?.id.trim() && promptRequest.text.trim()) setOpen(true);
+  }, [promptRequest]);
 
   const companionName = companionNameProp ?? identity.name;
   const companionAvatarUrl = companionAvatarUrlProp ?? identity.portraitUrl;
@@ -108,6 +116,8 @@ export function JoshuAgentChatPanel({
             companionAvatarUrl={companionAvatarUrl}
             companionName={companionName}
             userName={userName}
+            promptRequest={promptRequest}
+            promptRequestScope={config.threadId}
           />
         </JChatShell>
       </JChatBubbleDock>

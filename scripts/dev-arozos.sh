@@ -60,7 +60,10 @@ source "${ROOT_DIR}/scripts/lib/arozos-desktop-shortcuts.sh"
 ICON_TEST_SHORTCUT_CONTENT=$'module\nIcon Test\nIcon Test\nimg/joshu/icon-test.png\n'
 PLACEHOLDER_IMAGE_SHORTCUT_CONTENT=$'module\nPictures\nPictures\nimg/joshu/pictures.png\n'
 
+# Hermes home supplies fallback worker settings, but this checkout's `.env`
+# must win for local development (especially rotated provider credentials).
 load_env_file "${HERMES_HOME}/.env"
+load_env_file "${ROOT_DIR}/.env"
 
 echo "[dev-arozos] starting local parity stack from ${ROOT_DIR}"
 

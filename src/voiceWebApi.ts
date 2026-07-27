@@ -5,6 +5,7 @@
 import type { Request, Response, Router } from "express";
 import { provisionEnvTrim } from "./provisionInstanceEnv.js";
 import { resolveBoxSecret } from "./boxSecrets/resolve.js";
+import { setLocalhostCors } from "./localCors.js";
 
 function envTrim(name: string, fallback = ""): string {
   return process.env[name]?.trim() ?? fallback;
@@ -160,7 +161,13 @@ export async function probeWebVoice(): Promise<{ ok: boolean; web?: boolean }> {
 }
 
 export function registerVoiceWebRoutes(router: Router): void {
-  router.get("/api/voice/status", async (_req: Request, res: Response) => {
+  router.options("/api/voice/status", (req: Request, res: Response) => {
+    setLocalhostCors(req, res, { methods: "GET, OPTIONS" });
+    res.status(204).end();
+  });
+
+  router.get("/api/voice/status", async (req: Request, res: Response) => {
+    setLocalhostCors(req, res, { methods: "GET, OPTIONS" });
     const configured = webVoiceConfigured();
     const probe = configured ? await probeWebVoice() : { ok: false, web: false };
     const available = configured && probe.ok && probe.web !== false;

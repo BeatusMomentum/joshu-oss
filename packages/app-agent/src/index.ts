@@ -34,6 +34,13 @@ export {
 } from "./useJoshuCompanionIdentity.js";
 export { JChatCopilotThread, type JChatCopilotThreadProps } from "./JChatCopilotThread.js";
 export { mapAgUiMessagesToJChat } from "./mapAgUiMessagesToJChat.js";
+export {
+  claimProgrammaticPromptRequest,
+  createProgrammaticPromptRequestGate,
+  type ClaimedProgrammaticPrompt,
+  type JoshuProgrammaticPromptRequest,
+  type ProgrammaticPromptRequestGate,
+} from "./programmaticPromptRequest.js";
 
 export {
   JoshuEmbeddedAppAgent,

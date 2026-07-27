@@ -40,6 +40,7 @@ export function buildAppAgentSessionKey(appId: string, threadId: string): string
 
 /** Map manifest app id → ArozOS desktop module name (for open_desktop guard). */
 export const SURFACE_APP_DESKTOP_MODULE: Record<string, string> = {
+  excalidraw: "jWhiteboard",
   jmail: "jMail",
 };
 
@@ -105,6 +106,13 @@ export function buildEmbeddedAppThinkMessages(ctx: EmbeddedAppSurfaceContext): C
     );
     if (ctx.guiActions?.length) {
       lines.push(`Available guiActions for app_gui_action: ${ctx.guiActions.join(", ")}.`);
+    }
+    if (ctx.appId === "excalidraw") {
+      lines.push(
+        "Whiteboard deictic grounding: before a consequential semantic proposal based on deicticContext, call showFocus so the candidate targets are visible.",
+        "If deicticContext.groundingRequired is true, call showFocus for its CWM object candidates, ask one compact confirmation question, and do not propose until confirmed.",
+        "Proposal acceptance and rejection are human-only visible review controls; never claim to invoke them.",
+      );
     }
   }
 

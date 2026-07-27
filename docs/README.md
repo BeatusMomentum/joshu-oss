@@ -13,10 +13,9 @@ Docs for **self-hosting** the Joshu box stack, building ArozOS apps, and integra
 | **Safety** | [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md) |
 | **Memory** | [`hermes-integration.md`](hermes-integration.md#hindsight-memory) |
 | **File Brain** | [`file-brain.md`](file-brain.md) |
-| **jWhiteboard** | [`excalidraw-sandbox.md`](excalidraw-sandbox.md) |
+| **jWhiteboard** | [`jwhiteboard-developer-guide.md`](jwhiteboard-developer-guide.md) · [`excalidraw-sandbox.md`](excalidraw-sandbox.md) |
 | **Schedules** | [`schedules-arozos-app.md`](schedules-arozos-app.md) |
 | **Welcome** | [`welcome-onboarding.md`](welcome-onboarding.md) |
-| **jTerm** | Owner shell (full container) | [`jterm-arozos-app.md`](jterm-arozos-app.md) |
 | **jMovie** | [`jmovie-arozos-app.md`](jmovie-arozos-app.md) |
 
 Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
@@ -26,25 +25,26 @@ Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 | Topic | Doc |
 |-------|-----|
 | Self-host (standalone Docker) | [`self-host.md`](self-host.md) |
-| Ubuntu VPS quickstart | [`vps-quickstart.md`](vps-quickstart.md) |
-| **Box filesystem paths** | [`box-paths.md`](box-paths.md) |
-| **Env without Welcome wizard** | [`env-without-wizard.md`](env-without-wizard.md) |
+| Box state / factory reset | [`box-state.md`](box-state.md) |
 | Local dev install | [`local-installation.md`](local-installation.md) |
 | Hermes integration (skills, gateway, env) | [`hermes-integration.md`](hermes-integration.md) |
 | Connectors (mail, calendar, MCP) | [`connectors.md`](connectors.md) |
 | File index + search (gbrain) | [`file-brain.md`](file-brain.md) |
-| Chat with shared files (scoped public Q&A) | [`share-chat.md`](share-chat.md) |
-| PDF text extraction / plain `.txt` wrapping | [`file-brain.md`](file-brain.md#pdf-text-extraction) · [`#plain-text-txt-wrapping`](file-brain.md#plain-text-txt-wrapping) |
 | Agent write safety | [`agent-safety.md`](agent-safety.md) |
 | Safety desktop app | [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md) |
 | Nylas agent inbox | [`nylas-agent-mailbox.md`](nylas-agent-mailbox.md) |
 | **Executive assistant (GTD)** | [`executive-assistant.md`](executive-assistant.md) |
 | **Day 0 mail analysis** | [`day0-cold-start.md`](day0-cold-start.md) |
 | App SDK + `joshu.app.json` | [`app-sdk.md`](app-sdk.md) |
+| **Joshu app architecture (gentle intro)** — skills → GUI + voice | [`joshu-app-architecture-intro.md`](joshu-app-architecture-intro.md) |
+| **Voice (S2S, think vs speak, instant ack)** | [`voice-realtime.md`](voice-realtime.md) · [`voice-think-speak.md`](voice-think-speak.md) |
 | Platform architecture + `@joshu/platform-data` | [`platform-architecture.md`](platform-architecture.md) · [`platform-data.md`](platform-data.md) |
+| jWhiteboard developer guide (architecture, code map, runtime, debugging) | [`jwhiteboard-developer-guide.md`](jwhiteboard-developer-guide.md) |
+| Curatorial Whiteboard model (CWM, authority, pointer, sidecars) | [`curatorial-whiteboard.md`](curatorial-whiteboard.md) |
 | Platform smoke test | `npm run test:platform-architecture` |
 | App store / sideload / publishers | [`APP_STORE.md`](APP_STORE.md) |
 | Third-party licenses | [`THIRD_PARTY.md`](THIRD_PARTY.md) |
+| VPS / Docker architecture | [`vps-sandbox/README.md`](vps-sandbox/README.md) |
 | Vanilla ArozOS theme | [`design/README.md`](design/README.md) |
 
 ## Managed hosting

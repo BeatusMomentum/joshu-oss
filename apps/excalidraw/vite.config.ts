@@ -28,7 +28,29 @@ export default defineConfig({
     },
   },
   resolve: {
-    alias: excalidrawViteAliases(),
+    alias: [
+      {
+        find: /^@joshu\/app-agent$/,
+        replacement: path.resolve(repoRoot, "packages/app-agent/src/index.ts"),
+      },
+      {
+        find: /^@joshu\/jchat-ui$/,
+        replacement: path.resolve(repoRoot, "packages/jchat-ui/src/index.ts"),
+      },
+      {
+        find: /^@joshu\/jchat-ui\/(.*)$/,
+        replacement: path.resolve(repoRoot, "packages/jchat-ui/src/$1"),
+      },
+      {
+        find: /^@joshu\/platform-data$/,
+        replacement: path.resolve(repoRoot, "packages/platform-data/src/index.ts"),
+      },
+      {
+        find: /^@joshu\/whiteboard-cwm$/,
+        replacement: path.resolve(repoRoot, "packages/whiteboard-cwm/src/index.ts"),
+      },
+      ...excalidrawViteAliases(),
+    ],
     dedupe: ["react", "react-dom"],
     modules: [forkNodeModules, path.join(repoRoot, "node_modules"), "node_modules"],
   },

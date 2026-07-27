@@ -91,6 +91,21 @@ export function buildAppAgentSystemMessages(
     );
     if (guiActions.length > 0) {
       lines.push(`Available guiActions for app_gui_action: ${guiActions.join(", ")}.`);
+      lines.push(
+        "Only call declared guiActions. Unknown names (for example refreshBoard) are rejected.",
+      );
+    }
+    if (manifest.id === "excalidraw") {
+      lines.push(
+        "jWhiteboard board writes require proposeTransaction/stageOpening/recallToBoard via app_gui_action.",
+        "NEVER mutate the open board with write_file, patch, terminal edits, or skill_view('excalidraw').",
+        "Those edit the .excalidraw file on disk; the open canvas does not auto-reload, so the user sees nothing.",
+        "proposeTransaction args.transaction must include rationale plus operations[] of UPSERT_OBJECT (etc).",
+        "Each UPSERT_OBJECT needs nested object:{kind,layer,title,body,provenance}. Do not send {type:\"add_note\", content:\"...\"}.",
+        "One UPSERT_OBJECT per sticky note. Prefer Question/Comment under SENSEMAKING with CONVERSATION provenance.",
+        "On success, say the items are staged in the Review tray (dashed previews) — never claim they are accepted or already visible as committed stickies.",
+        "If app_gui_action returns ok:false, report the error; do not fall back to file edits.",
+      );
     }
   } else {
     lines.push(

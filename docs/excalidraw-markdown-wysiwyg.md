@@ -32,6 +32,26 @@ Alternative entry points (toolbar Import, Joshu-relative `?file=`, time-block au
 **`GET /joshu/api/files/read?path=…`** on port **8788** — see
 [`docs/excalidraw-sandbox.md`](excalidraw-sandbox.md#opening-files-from-arozos-2026-06-21).
 
+### Persistence boundary
+
+Opening Markdown in jWhiteboard is an import/render workflow, not an editable
+filesystem binding. The Markdown source becomes a native Excalidraw text
+element, but the app does not retain a write target for the original `.md`.
+
+The Curatorial Whiteboard Model does not change that boundary. A CWM
+**checkpoint** writes the eligible `.excalidraw` scene and advances its CWM
+event/workspace sidecars. It does **not** write Markdown text back to the source
+file. CWM is available only for a reliable relative `.excalidraw` board under
+`joshu's files`; a currently opened `.md` file is not itself CWM-eligible.
+
+In particular, arbitrary Markdown loaded through ArozOS
+`GET /media?file=user:/Desktop/…` remains **read-only/import-only**. To preserve
+canvas edits, save or export a `.excalidraw` board under `joshu's files`, then
+use CWM checkpointing on that board. This creates a separate visual/semantic
+artifact and still does not modify the imported `.md`.
+
+See [`curatorial-whiteboard.md`](curatorial-whiteboard.md#limitations-and-non-goals).
+
 ### Excalidraw API prop (fork)
 
 The fork exposes **`onExcalidrawAPI`**, not the older npm `excalidrawAPI` prop name.
@@ -78,7 +98,10 @@ transforms stay consistent.
 ## Limitations
 
 - Not a full CommonMark implementation
-- No save-back to the original `.md` file on disk from jWhiteboard yet
+- No save-back to the original `.md` file on disk from jWhiteboard
+- CWM `.excalidraw` save/checkpoint persists the board and CWM sidecars only; it
+  does not add Markdown source writeback
+- Arbitrary `/media` Markdown is read-only/import-only
 - Files API reads only under `joshu's files/`; ArozOS `/media` is required for arbitrary desktop paths
 - See fork doc for full limitation list
 

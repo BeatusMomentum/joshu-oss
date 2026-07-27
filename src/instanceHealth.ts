@@ -19,6 +19,7 @@ import {
   syncCompanionIdentityFromEnv,
   type CompanionIdentitySyncResult,
 } from "./companionIdentitySync.js";
+import { setLocalhostCors } from "./localCors.js";
 import { provisionEnvTrim } from "./provisionInstanceEnv.js";
 import { evaluateSnapshotCredStatus } from "@joshu/box-state";
 
@@ -268,7 +269,8 @@ export function registerInstanceHealthRoutes(
   });
 
   /** Per-instance assistant persona (name, owner, portrait, voice stubs). */
-  router.get("/api/instance/identity", (_req: Request, res: Response) => {
+  router.get("/api/instance/identity", (req: Request, res: Response) => {
+    setLocalhostCors(req, res, { methods: "GET, OPTIONS" });
     const identity = resolveJoshuIdentity();
     res.json({
       schemaVersion: identity.schemaVersion,
@@ -283,6 +285,11 @@ export function registerInstanceHealthRoutes(
       updatedAt: identity.updatedAt ?? null,
       source: identity.source ?? null,
     });
+  });
+
+  router.options("/api/instance/identity", (req: Request, res: Response) => {
+    setLocalhostCors(req, res, { methods: "GET, OPTIONS" });
+    res.status(204).end();
   });
 
   /** Optional release manifest baked into the image at /opt/joshu/RELEASE.json */

@@ -24,7 +24,8 @@
     "dev:connectors": "vite --config apps/connectors/vite.config.ts --host 127.0.0.1 --port 3009",
     "dev:safety-settings": "vite --config apps/safety-settings/vite.config.ts --host 127.0.0.1 --port 3010",
     "dev:welcome": "vite --config apps/welcome/vite.config.ts --host 127.0.0.1 --port 3008",
-    "build": "npm run build -w @joshu/email-signature && npm run build -w @joshu/platform-data && npm run build -w @joshu/app-sdk && npm run build -w @joshu/jchat-ui && npm run build -w @joshu/app-agent && npm run build -w @joshu/box-state && tsc -p tsconfig.json",
+    "dev:jterm": "vite --config apps/jterm/vite.config.ts --host 127.0.0.1 --port 3011",
+    "build": "npm run build -w @joshu/email-signature && npm run build -w @joshu/platform-data && npm run build -w @joshu/app-sdk && npm run build -w @joshu/jchat-ui && npm run build -w @joshu/app-agent && npm run build -w @joshu/box-state && npm run build -w @joshu/whiteboard-cwm && tsc -p tsconfig.json",
     "build:excalidraw": "node scripts/ensure-excalidraw-vendor.mjs && vite build --config apps/excalidraw/vite.config.ts",
     "build:hermes-chat": "vite build --config apps/hermes-chat/vite.config.ts",
     "build:hindsight-viewer": "vite build --config apps/hindsight-viewer/vite.config.ts",
@@ -35,6 +36,7 @@
     "build:connectors": "vite build --config apps/connectors/vite.config.ts",
     "build:safety-settings": "vite build --config apps/safety-settings/vite.config.ts",
     "build:welcome": "vite build --config apps/welcome/vite.config.ts",
+    "build:jterm": "vite build --config apps/jterm/vite.config.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build:deploy": "npm run sync-design-system && npm run build && npm run box:build && npm run build:excalidraw && npm run build:hermes-chat && npm run build:hindsight-viewer && npm run build:file-brain-viewer && npm run build:schedules && npm run build:movie-editor && npm run build:jmail && npm run build:connectors && npm run build:safety-settings && npm run build:welcome && npm run build:jterm",
@@ -44,6 +46,7 @@
     "hermes:export-skills-disabled": "node scripts/export-hermes-skills-disabled.mjs",
     "hermes:sync-skills-policy": "npm run build && node scripts/sync-hermes-skills-policy.mjs",
     "test:hermes-browser-sync-policy": "npm run build && node scripts/check-hermes-browser-sync-policy.mjs",
+    "test:excalidraw-cwm-backend": "node scripts/test-excalidraw-cwm-backend.mjs",
     "test:owner-local-time": "npm run build && node scripts/check-owner-local-time.mjs",
     "test:mail-dedup": "npm run build && node scripts/check-mail-dedup.mjs",
     "test:mail-classifier-routing": "npm run build && node scripts/check-mail-classifier-routing.mjs",
@@ -79,9 +82,7 @@
     "twilio-local:ngrok": "bash scripts/twilio-local-dev.sh ngrok",
     "twilio-local:urls": "bash scripts/twilio-local-dev.sh urls",
     "twilio-local:env": "bash scripts/twilio-local-dev.sh env",
-    "twilio-local:check": "bash scripts/twilio-local-dev.sh check",
-    "dev:jterm": "vite --config apps/jterm/vite.config.ts --host 127.0.0.1 --port 3011",
-    "build:jterm": "vite build --config apps/jterm/vite.config.ts"
+    "twilio-local:check": "bash scripts/twilio-local-dev.sh check"
   },
   "dependencies": {
     "@composio/core": "^0.10.0",

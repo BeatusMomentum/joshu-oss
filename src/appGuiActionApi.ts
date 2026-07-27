@@ -25,12 +25,24 @@ export function isAllowedAppGuiAction(
   action: AppGuiAction,
   projectRoot?: string,
 ): boolean {
+  void projectRoot;
   const manifest = getAppManifest(action.appId);
-  if (!manifest?.agent?.guiActions?.length) {
-    // Allow when manifest not loaded (enqueue from plugin before warm) or headless apps.
-    return true;
-  }
+  // Unknown app or headless app without guiActions: refuse rather than queue a no-op.
+  if (!manifest) return false;
+  if (!manifest.agent?.guiActions?.length) return false;
   return manifest.agent.guiActions.some((entry) => entry.name === action.action);
+}
+
+export function describeDisallowedAppGuiAction(action: AppGuiAction): string {
+  const manifest = getAppManifest(action.appId);
+  if (!manifest) {
+    return `Unknown app "${action.appId}" — load a Joshu desktop app with a joshu.app.json manifest`;
+  }
+  const allowed = (manifest.agent?.guiActions ?? []).map((entry) => entry.name);
+  if (!allowed.length) {
+    return `App "${action.appId}" does not declare any guiActions`;
+  }
+  return `action "${action.action}" is not allowed for app "${action.appId}"; allowed: ${allowed.join(", ")}`;
 }
 
 export function registerAppGuiActionRoutes(router: Router, projectRoot: string): void {
@@ -48,7 +60,7 @@ export function registerAppGuiActionRoutes(router: Router, projectRoot: string):
     }
     const action = body.action;
     if (!isAllowedAppGuiAction(action, projectRoot)) {
-      res.status(400).json({ error: `action not allowed for app ${action.appId}` });
+      res.status(400).json({ error: describeDisallowedAppGuiAction(action) });
       return;
     }
     enqueueAppGuiAction(sessionKey, action);

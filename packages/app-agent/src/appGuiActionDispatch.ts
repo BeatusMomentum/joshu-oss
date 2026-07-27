@@ -52,7 +52,15 @@ export async function handleAgUiSseDataLine(line: string): Promise<void> {
   if (event.type === "CUSTOM" && event.name === "app_action") {
     const value = event.value;
     if (value && typeof value === "object") {
-      await dispatchAppGuiActionWire(value as AppGuiActionWirePayload);
+      try {
+        await dispatchAppGuiActionWire(value as AppGuiActionWirePayload);
+      } catch (error) {
+        console.error(
+          "[app-gui-action] browser handler failed",
+          (value as AppGuiActionWirePayload).action,
+          error,
+        );
+      }
     }
   }
 }

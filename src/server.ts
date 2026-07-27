@@ -42,6 +42,7 @@ import {
 import { registerBrainRoutes, probeGbrainHealth } from "./brainApi.js";
 import { registerShareChatRoutes, registerShareChatSlackEventsRoute, registerShareChatComposioTriggersRoute } from "./shareChat/routes.js";
 import { registerFilesRoutes } from "./filesApi.js";
+import { registerExcalidrawCwmRoutes } from "./excalidrawApi.js";
 import { registerDesktopActionRoutes, drainDesktopActionsForChat, desktopActionFromHermesToolRaw } from "./desktopActionApi.js";
 import { registerAppGuiActionRoutes } from "./appGuiActionApi.js";
 import { registerNylasRoutes } from "./nylas/routes.js";
@@ -456,6 +457,7 @@ function buildAppRouter(): {
 
   router.use(express.json({ limit: "12mb" }));
 
+  registerExcalidrawCwmRoutes(router);
   registerShareChatRoutes(router);
 
   registerDesktopActionRoutes(router);

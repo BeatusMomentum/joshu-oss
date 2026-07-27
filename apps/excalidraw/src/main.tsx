@@ -3,12 +3,24 @@ import "@joshu/design-system/tokens.css";
 import "@joshu/design-system/base.css";
 import "./styles.css";
 
-import { Excalidraw, serializeAsJSON } from "@excalidraw/excalidraw";
+import { Excalidraw, restoreAppState, restoreElements, serializeAsJSON } from "@excalidraw/excalidraw";
 import type { BinaryFiles, ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { ExcalidrawElement } from "@excalidraw/element/types";
+import {
+  JoshuEmbeddedAppAgent,
+  useAppAgentChatSession,
+  type JoshuProgrammaticPromptRequest,
+} from "@joshu/app-agent";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
+import {
+  createWhiteboardAgentBridge,
+  type WhiteboardGuiAgentApi,
+} from "./agent/bridge";
+import { createWhiteboardGuiActions } from "./agent/guiActions";
+import { WHITEBOARD_MANIFEST } from "./agent/whiteboardAppManifest";
+import { cwmApiClient } from "./cwm/apiClient";
 import {
   isMarkdownFile,
   isMarkdownPath,
@@ -16,6 +28,20 @@ import {
   readMarkdownFile,
 } from "./markdown/file";
 import { loadMarkdownDocument } from "./markdown/loadMarkdownDocument";
+import { CwmPanels } from "./cwm/CwmPanels";
+import { proposalDecisionFromFinalUtterance } from "./cwm/deicticResolver";
+import { JoshuPointerOverlay } from "./cwm/JoshuPointerOverlay";
+import { newBoardPathFromName } from "./cwm/newBoard";
+import {
+  reliableCwmBoardPath,
+  useCwmWorkspace,
+  type CwmWorkspaceController,
+} from "./cwm/useCwmWorkspace";
+import { useJoshuPointer } from "./cwm/useJoshuPointer";
+import {
+  fetchWhiteboardVoiceStatus,
+  startWhiteboardVoiceSession,
+} from "./jWhiteboardVoice";
 
 const STORAGE_KEY = "joshu:excalidraw:scene";
 
@@ -73,6 +99,18 @@ function resolveFilesApiBase(): string {
 }
 
 const FILES_API = resolveFilesApiBase();
+const JOSHU_API = FILES_API.replace(/\/files$/, "");
+const VOICE_API = `${JOSHU_API}/voice`;
+
+const START_SESSION_PROMPT = [
+  "Start a Curatorial Whiteboard session for the currently eligible board.",
+  "First inspect the injected bounded GUI snapshot; do not request or mutate raw Excalidraw scene data.",
+  "Before any consequential proposal based on deicticContext, call showFocus so the target is visible.",
+  "When deicticContext.groundingRequired is true, showFocus and ask one compact confirmation question before proposing.",
+  "If the canvas is insufficient, retrieve only a small, diverse grounding packet using joshu-brain and preserve source links.",
+  "Then call stageOpening with what changed, tensions or divergent interpretations, open questions, 2-3 possible starts, and source cards.",
+  "Keep every AI synthesis PROPOSED and leave acceptance, commitment, and deletion to the human review UI.",
+].join(" ");
 
 function loadInitialData(): unknown | null {
   const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -111,6 +149,14 @@ function relativeFromArozFilepath(filepath: string, dirName: string): string | n
   const desktopMatch = decoded.match(/^user:\/Desktop\/[^/]+\/(.+)$/);
   if (desktopMatch) return desktopMatch[1];
   return null;
+}
+
+/** CWM requires proof that an ArozOS path is specifically under joshu's files. */
+function cwmRelativeFromArozFilepath(filepath: string, dirName: string): string | null {
+  const decoded = decodeURIComponent(filepath);
+  const prefix = `user:/Desktop/${dirName}/`;
+  if (!decoded.startsWith(prefix)) return null;
+  return reliableCwmBoardPath(decoded.slice(prefix.length));
 }
 
 function tryDecodeURIComponent(value: string): string | null {
@@ -278,10 +324,23 @@ type SceneUpdate = Parameters<ExcalidrawImperativeAPI["updateScene"]>[0];
 
 function sceneFromExcalidrawJson(text: string): SceneUpdate {
   const data = JSON.parse(text) as ExcalidrawFile;
-  return {
-    elements: (Array.isArray(data.elements) ? data.elements : []) as readonly ExcalidrawElement[],
-    appState: {
+  // Hermes/excalidraw-skill files are often incomplete (missing groupIds, seed, …).
+  // restoreElements fills required fields so updateScene does not crash on .length.
+  const restoredElements = restoreElements(
+    (Array.isArray(data.elements) ? data.elements : []) as ExcalidrawElement[],
+    null,
+  );
+  const restoredAppState = restoreAppState(
+    {
       viewBackgroundColor: "#ffffff",
+      ...(data.appState && typeof data.appState === "object" ? data.appState : {}),
+    },
+    null,
+  );
+  return {
+    elements: restoredElements,
+    appState: {
+      viewBackgroundColor: restoredAppState.viewBackgroundColor ?? "#ffffff",
       ...(data.appState ?? {}),
     },
     files: (data.files ?? {}) as BinaryFiles,
@@ -303,6 +362,14 @@ async function waitForExcalidrawLayout(api: ExcalidrawImperativeAPI): Promise<vo
 
 function App() {
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  const whiteboardGuiRef = useRef<WhiteboardGuiAgentApi | null>(null);
+  const cwmRef = useRef<CwmWorkspaceController | null>(null);
+  const canvasWrapperRef = useRef<HTMLElement | null>(null);
+  const voiceSessionRef = useRef<{
+    client: import("@joshu/voice-client").JoshuVoiceClient;
+    stop: () => Promise<void>;
+  } | null>(null);
+  const voiceSyncNowRef = useRef<(() => void) | null>(null);
   const bootReadyRef = useRef(false);
   const filesCtxRef = useRef<FilesContext | null>(null);
   const startupLoadKeyRef = useRef<string | null>(null);
@@ -311,8 +378,10 @@ function App() {
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
   const [filesCtx, setFilesCtx] = useState<FilesContext | null>(null);
   const [loadedFile, setLoadedFile] = useState<string | null>(null);
+  const [loadedBoardPath, setLoadedBoardPath] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingFile, setLoadingFile] = useState(false);
+  const [creatingBoard, setCreatingBoard] = useState(false);
   const [pendingArozFile, setPendingArozFile] = useState<ArozOpenFile | null>(
     () => loadArozInputFiles()?.[0] ?? null,
   );
@@ -324,6 +393,12 @@ function App() {
     pendingArozFile ? null : parseRequestedFilePath(null),
   );
   const [bootReady, setBootReady] = useState(false);
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceAvailable, setVoiceAvailable] = useState(false);
+  const [voiceState, setVoiceState] = useState("idle");
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceAssistant, setVoiceAssistant] = useState("");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   // Always mount an empty canvas; load files via updateScene once the API is ready.
   const initialData = null;
@@ -374,12 +449,15 @@ function App() {
 
   const applyScene = useCallback((apiInstance: ExcalidrawImperativeAPI, scene: SceneUpdate) => {
     apiInstance.updateScene(scene);
-    apiInstance.scrollToContent(scene.elements ?? [], { fitToContent: true });
+    if (scene.elements?.length) {
+      apiInstance.scrollToContent(scene.elements, { fitToContent: true });
+    }
   }, []);
 
   const loadMarkdownFromJoshu = useCallback(
     async (apiInstance: ExcalidrawImperativeAPI, relativePath: string) => {
       setLoadError(null);
+      setLoadedBoardPath(null);
       try {
         const res = await fetch(`${FILES_API}/read?path=${encodeURIComponent(relativePath)}`);
         if (!res.ok) {
@@ -407,6 +485,7 @@ function App() {
         return loadMarkdownFromJoshu(apiInstance, relativePath);
       }
       setLoadError(null);
+      setLoadedBoardPath(null);
       try {
         const res = await fetch(`${FILES_API}/read?path=${encodeURIComponent(relativePath)}`);
         if (!res.ok) {
@@ -415,12 +494,9 @@ function App() {
         }
         const text = await res.text();
         const scene = sceneFromExcalidrawJson(text);
-        if (!scene.elements?.length) {
-          setLoadError(`File loaded but has no elements: ${relativePath}`);
-          return false;
-        }
         applyScene(apiInstance, scene);
         setLoadedFile(relativePath);
+        setLoadedBoardPath(reliableCwmBoardPath(relativePath));
         return true;
       } catch (error) {
         console.error("[joshu-excalidraw] failed to load file", relativePath, error);
@@ -431,10 +507,39 @@ function App() {
     [applyScene, loadMarkdownFromJoshu],
   );
 
+  const createNewBoard = useCallback(async () => {
+    if (!api || creatingBoard) return;
+    const requestedName = window.prompt("New board name", "Untitled board");
+    if (requestedName === null) return;
+
+    let boardPath: string;
+    try {
+      boardPath = newBoardPathFromName(requestedName);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Invalid board name");
+      return;
+    }
+
+    setCreatingBoard(true);
+    setLoadError(null);
+    try {
+      await cwmApiClient.createBoard(boardPath);
+      startupLoadKeyRef.current = null;
+      const loaded = await loadFileFromJoshu(api, boardPath);
+      if (!loaded) throw new Error(`Created ${boardPath}, but could not open it`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not create board";
+      setLoadError(`New board failed — ${message}`);
+    } finally {
+      setCreatingBoard(false);
+    }
+  }, [api, creatingBoard, loadFileFromJoshu]);
+
   /** Load via ArozOS /media — same path MDEditor uses for double-click opens. */
   const loadFileFromArozMedia = useCallback(
     async (apiInstance: ExcalidrawImperativeAPI, arozFile: ArozOpenFile) => {
       setLoadError(null);
+      setLoadedBoardPath(null);
       setLoadingFile(true);
       try {
         const url = `/media?file=${encodeURIComponent(arozFile.filepath)}&_=${Date.now()}`;
@@ -460,13 +565,14 @@ function App() {
           );
         } else {
           const scene = sceneFromExcalidrawJson(text);
-          if (!scene.elements?.length) {
-            setLoadError(`File loaded but has no elements: ${label}`);
-            return false;
-          }
           applyScene(apiInstance, scene);
         }
         setLoadedFile(label);
+        if (!isMarkdownPath(label)) {
+          setLoadedBoardPath(
+            cwmRelativeFromArozFilepath(arozFile.filepath, filesDirName(filesCtxRef.current)),
+          );
+        }
         return true;
       } catch (error) {
         console.error("[joshu-excalidraw] failed to load from ArozOS media", arozFile, error);
@@ -574,6 +680,7 @@ function App() {
       if (file) {
         loadMarkdownDocument(api, file);
         setLoadedFile(file.name);
+        setLoadedBoardPath(null);
         setLoadError(null);
       }
     } catch (error) {
@@ -596,6 +703,7 @@ function App() {
         const markdownFile = await readMarkdownFile(file);
         loadMarkdownDocument(api, markdownFile);
         setLoadedFile(markdownFile.name);
+        setLoadedBoardPath(null);
         setLoadError(null);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to import markdown file";
@@ -622,6 +730,7 @@ function App() {
           const markdownFile = await readMarkdownFile(file);
           loadMarkdownDocument(api, markdownFile);
           setLoadedFile(markdownFile.name);
+          setLoadedBoardPath(null);
           setLoadError(null);
           return;
         }
@@ -631,6 +740,7 @@ function App() {
         applyScene(api, scene);
         window.localStorage.setItem(STORAGE_KEY, text);
         setLoadedFile(file.name);
+        setLoadedBoardPath(null);
         setLoadError(null);
       } catch (error) {
         console.error("[joshu-excalidraw] failed to import scene", error);
@@ -657,6 +767,180 @@ function App() {
     }
     return "Time-block diagrams load from Planning/ automatically.";
   }, [loadedFile, loadingFile, loadError, api, pendingArozFile]);
+
+  const cwm = useCwmWorkspace(api, loadedBoardPath, loadedFile, JOSHU_API);
+  cwmRef.current = cwm;
+  const pointer = useJoshuPointer({
+    api,
+    workspace: cwm.workspace,
+    onDeicticContext: cwm.setDeicticContext,
+  });
+  const chatSession = useAppAgentChatSession({
+    appId: WHITEBOARD_MANIFEST.id,
+    scope: cwm.eligiblePath ?? "no-eligible-board",
+    apiBase: JOSHU_API,
+  });
+  const [sessionPrompt, setSessionPrompt] = useState<{
+    scope: string;
+    request: JoshuProgrammaticPromptRequest;
+  } | null>(null);
+  const whiteboardGuiActions = useMemo(
+    () => createWhiteboardGuiActions(whiteboardGuiRef),
+    [],
+  );
+  const openBoardForAgent = useCallback(
+    async (path: string) => {
+      const apiInstance = apiRef.current;
+      if (!apiInstance) return false;
+      startupLoadKeyRef.current = null;
+      return loadFileFromJoshu(apiInstance, path);
+    },
+    [loadFileFromJoshu],
+  );
+  whiteboardGuiRef.current = createWhiteboardAgentBridge(cwm, openBoardForAgent);
+
+  const syncVoiceSurface = useCallback(() => {
+    voiceSessionRef.current?.client.updateSurface({
+      appId: WHITEBOARD_MANIFEST.id,
+      threadId: chatSession.threadId,
+      guiSnapshot: whiteboardGuiRef.current?.getGuiSnapshot() ?? {},
+    });
+  }, [chatSession.threadId]);
+  voiceSyncNowRef.current = syncVoiceSurface;
+
+  const handleVoiceAppAction = useCallback(
+    (event: { appId: string; action: string; args?: Record<string, unknown> }) => {
+      if (event.appId !== WHITEBOARD_MANIFEST.id) return;
+      const handler = whiteboardGuiActions.find((action) => action.name === event.action);
+      if (!handler) return;
+      void Promise.resolve(handler.handler(event.args ?? {})).catch((error) => {
+        setVoiceError(error instanceof Error ? error.message : "Whiteboard voice action failed");
+      });
+    },
+    [whiteboardGuiActions],
+  );
+
+  const handleFinalVoiceTranscript = useCallback(
+    (text: string, finalizedAt: number) => {
+      const aligned = pointer.alignTranscript(text, finalizedAt);
+      if (aligned) voiceSyncNowRef.current?.();
+
+      const decision = proposalDecisionFromFinalUtterance(text);
+      const controller = cwmRef.current;
+      if (
+        !decision ||
+        !controller ||
+        controller.pendingProposals.length !== 1 ||
+        controller.busyProposalId !== null
+      ) {
+        return;
+      }
+      const proposal = controller.pendingProposals[0]!;
+      void (decision === "accept"
+        ? controller.acceptProposal(proposal)
+        : controller.rejectProposal(proposal)
+      ).then(() => voiceSyncNowRef.current?.());
+    },
+    [pointer.alignTranscript],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchWhiteboardVoiceStatus(VOICE_API).then((status) => {
+      if (!cancelled) setVoiceAvailable(Boolean(status.available));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!voiceOn || !voiceAvailable) {
+      void voiceSessionRef.current?.stop();
+      voiceSessionRef.current = null;
+      if (!voiceOn) setVoiceState("idle");
+      return;
+    }
+
+    let cancelled = false;
+    setVoiceError(null);
+    setVoiceTranscript("");
+    setVoiceAssistant("");
+    setVoiceState("connecting");
+
+    void (async () => {
+      try {
+        const session = await startWhiteboardVoiceSession({
+          voiceApiBase: VOICE_API,
+          sessionId: `jwhiteboard:${cwm.eligiblePath ?? "default"}`,
+          chatSessionId: chatSession.threadId,
+          surface: {
+            appId: WHITEBOARD_MANIFEST.id,
+            threadId: chatSession.threadId,
+            guiSnapshot: whiteboardGuiRef.current?.getGuiSnapshot() ?? {},
+          },
+          onState: setVoiceState,
+          onUserTranscript: (text, partial) => {
+            setVoiceTranscript(text);
+            if (!partial) handleFinalVoiceTranscript(text, Date.now());
+          },
+          onAssistantDelta: (delta) => setVoiceAssistant((current) => current + delta),
+          onAssistantDone: setVoiceAssistant,
+          onThinkJobStart: () => setVoiceAssistant(""),
+          onBargeIn: () => setVoiceAssistant(""),
+          onAppAction: handleVoiceAppAction,
+          onError: setVoiceError,
+        });
+        if (cancelled) {
+          await session.stop();
+          return;
+        }
+
+        const syncTimer = window.setInterval(syncVoiceSurface, 2_000);
+        const stopSession = session.stop.bind(session);
+        voiceSessionRef.current = {
+          client: session.client,
+          stop: async () => {
+            window.clearInterval(syncTimer);
+            await stopSession();
+          },
+        };
+        syncVoiceSurface();
+      } catch (error) {
+        if (!cancelled) {
+          setVoiceState("error");
+          setVoiceError(
+            `Voice connection failed: ${error instanceof Error ? error.message : "unknown error"}`,
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      void voiceSessionRef.current?.stop();
+      voiceSessionRef.current = null;
+    };
+  }, [
+    chatSession.threadId,
+    cwm.eligiblePath,
+    handleFinalVoiceTranscript,
+    handleVoiceAppAction,
+    syncVoiceSurface,
+    voiceAvailable,
+    voiceOn,
+  ]);
+
+  const startSession = useCallback(() => {
+    if (cwm.status.kind !== "ready" || !cwm.eligiblePath) return;
+    setSessionPrompt({
+      scope: cwm.eligiblePath,
+      request: {
+        id: `whiteboard-start-${crypto.randomUUID()}`,
+        text: START_SESSION_PROMPT,
+      },
+    });
+  }, [cwm.eligiblePath, cwm.status.kind]);
 
   const onLinkOpen = useCallback(
     (
@@ -688,8 +972,50 @@ function App() {
         <div>
           <h1>jWhiteboard</h1>
           <p>{statusLine}</p>
+          {(voiceOn || pointer.latestResolution) && (
+            <div className="whiteboard-live-feedback" aria-live="polite">
+              {voiceOn && (
+                <span>
+                  Voice · {voiceState}
+                  {voiceTranscript ? ` · “${voiceTranscript.slice(0, 96)}”` : ""}
+                  {!voiceTranscript && voiceAssistant
+                    ? ` · ${voiceAssistant.slice(0, 96)}`
+                    : ""}
+                  {voiceError ? ` · ${voiceError}` : ""}
+                </span>
+              )}
+              {pointer.latestResolution && (
+                <span>
+                  Pointer · {pointer.latestResolution.method} ·{" "}
+                  {pointer.latestResolution.candidateElementIds.length} target
+                  {pointer.latestResolution.candidateElementIds.length === 1 ? "" : "s"} ·{" "}
+                  {Math.round(pointer.latestResolution.confidence * 100)}%
+                  {pointer.latestResolution.groundingRequired ? " · confirm target" : ""}
+                </span>
+              )}
+            </div>
+          )}
         </div>
         <div className="excalidraw-actions">
+          <button
+            type="button"
+            className={pointer.enabled ? "is-active" : undefined}
+            aria-pressed={pointer.enabled}
+            onClick={() => pointer.setEnabled((enabled) => !enabled)}
+            disabled={!api}
+          >
+            Joshu Pointer
+          </button>
+          <button
+            type="button"
+            onClick={startSession}
+            disabled={cwm.status.kind !== "ready"}
+          >
+            Start Session
+          </button>
+          <button type="button" onClick={createNewBoard} disabled={!api || creatingBoard}>
+            {creatingBoard ? "Creating…" : "New Board"}
+          </button>
           <button type="button" onClick={openTodayPlan} disabled={!api}>
             Open today&apos;s plan
           </button>
@@ -714,18 +1040,54 @@ function App() {
         </div>
       </header>
 
-      <section
-        className="excalidraw-canvas"
-        aria-label="Excalidraw canvas"
-        onDropCapture={handleMarkdownDropCapture}
-        onDragOverCapture={handleMarkdownDragOverCapture}
-      >
-        <Excalidraw
-          onExcalidrawAPI={handleExcalidrawApi}
-          initialData={initialData}
-          onLinkOpen={onLinkOpen}
-        />
-      </section>
+      <div className="excalidraw-workspace">
+        <section
+          ref={canvasWrapperRef}
+          className="excalidraw-canvas"
+          aria-label="Excalidraw canvas"
+          onDropCapture={handleMarkdownDropCapture}
+          onDragOverCapture={handleMarkdownDragOverCapture}
+          onPointerDownCapture={pointer.handlePointerDownCapture}
+          onPointerMoveCapture={pointer.handlePointerMoveCapture}
+          onPointerUpCapture={pointer.handlePointerUpCapture}
+          onPointerCancelCapture={pointer.handlePointerCancelCapture}
+        >
+          <Excalidraw
+            onExcalidrawAPI={handleExcalidrawApi}
+            initialData={initialData}
+            onLinkOpen={onLinkOpen}
+          />
+          <JoshuPointerOverlay
+            api={api}
+            containerRef={canvasWrapperRef}
+            activeTrace={pointer.activeTrace}
+            fadingTraces={pointer.fadingTraces}
+            resolution={pointer.latestResolution}
+            workspace={cwm.workspace ? { ...cwm.workspace, focus: cwm.focus } : null}
+          />
+        </section>
+        <CwmPanels cwm={cwm} />
+      </div>
+      <JoshuEmbeddedAppAgent
+        manifest={WHITEBOARD_MANIFEST}
+        threadId={chatSession.threadId}
+        apiBase={JOSHU_API}
+        guiRef={whiteboardGuiRef}
+        guiReadableDescription="Bounded Curatorial Whiteboard snapshot: current viewport, selection, semantic focus, pending proposal, opening brief, and a capped scene preview."
+        guiActions={whiteboardGuiActions}
+        chatTitle="Whiteboard curator"
+        chatEmptyText="Start a grounded curatorial session for this board."
+        onNewChat={chatSession.startNewChat}
+        voice={{
+          available: voiceAvailable,
+          active: voiceOn,
+          onToggle: () => setVoiceOn((enabled) => !enabled),
+          title: voiceOn ? `Voice · ${voiceState}` : "Turn voice on",
+        }}
+        promptRequest={
+          sessionPrompt?.scope === cwm.eligiblePath ? sessionPrompt.request : null
+        }
+      />
     </main>
   );
 }

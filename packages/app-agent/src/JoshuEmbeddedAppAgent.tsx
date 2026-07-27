@@ -7,6 +7,7 @@ import { createAppAgentConfig } from "./createAppAgentConfig.js";
 import type { JoshuAppAgentManifest } from "./types.js";
 import { useJoshuGuiAction, type JoshuGuiActionInput } from "./useJoshuGuiAction.js";
 import { useJoshuGuiReadable } from "./useJoshuGuiReadable.js";
+import type { JoshuProgrammaticPromptRequest } from "./programmaticPromptRequest.js";
 
 export type JoshuGuiAgentRef = {
   getGuiSnapshot: () => Record<string, unknown>;
@@ -34,6 +35,8 @@ export type JoshuEmbeddedAppAgentProps<TGui extends JoshuGuiAgentRef = JoshuGuiA
   className?: string;
   /** Mic badge on Chat Head — Realtime S2S voice (Google STS path via voice-realtime). */
   voice?: JChatBubbleVoiceControl;
+  /** App-originated prompt request; a new id opens chat and runs the agent once. */
+  promptRequest?: JoshuProgrammaticPromptRequest | null;
 };
 
 function JoshuGuiActionRegistrar({
@@ -96,6 +99,7 @@ export function JoshuEmbeddedAppAgent<TGui extends JoshuGuiAgentRef>({
   chatEmptyText,
   className,
   voice,
+  promptRequest,
 }: JoshuEmbeddedAppAgentProps<TGui>): React.ReactElement {
   const agentConfig = useMemo(
     () =>
@@ -130,6 +134,7 @@ export function JoshuEmbeddedAppAgent<TGui extends JoshuGuiAgentRef>({
         emptyText={chatEmptyText}
         voice={voice}
         apiBase={apiBase}
+        promptRequest={promptRequest}
       />
     </JoshuAppAgentProvider>
   );

@@ -5,6 +5,14 @@ a **forked Excalidraw monorepo** vendored at `vendor/excalidraw` (branch
 `joshu-markdown-wysiwyg`). The fork adds native Markdown WYSIWYG text elements;
 see [`excalidraw-markdown-wysiwyg.md`](excalidraw-markdown-wysiwyg.md).
 
+The completed local **Curatorial Whiteboard Model (CWM)** prototype adds durable
+`.excalidraw` checkpoints, semantic sidecars, append-only events, explicit human
+review, an embedded agent, bounded recall, and the Joshu Pointer. See
+[`curatorial-whiteboard.md`](curatorial-whiteboard.md) for the canonical design,
+API, persistence, authority, security, workflow, and prototype-status details.
+Developers new to the complete app should start with
+[`jwhiteboard-developer-guide.md`](jwhiteboard-developer-guide.md).
+
 ## Why this shape?
 
 - **Fork for product features**: Markdown WYSIWYG lives in the fork's element and
@@ -33,9 +41,11 @@ see [`excalidraw-markdown-wysiwyg.md`](excalidraw-markdown-wysiwyg.md).
   dependencies to the Joshu package.
 - Added `apps/excalidraw/`, a standalone Vite app that renders Excalidraw with a
   small Joshu toolbar.
-- Added local scene save to browser `localStorage`; this is convenience state,
-  not durable project storage.
-- Added Import and Export buttons for `.excalidraw` JSON files.
+- Browser `localStorage` remains convenience recovery for ordinary canvas work.
+  For eligible boards, CWM provides durable `.excalidraw` checkpoints plus
+  sibling semantic and append-only event sidecars.
+- Added **New Board** for exclusive blank-board creation under `Planning/`,
+  alongside Import and Export buttons for `.excalidraw` JSON files.
 - Added `arozos/subservice/excalidraw/moduleInfo.json` so ArozOS registers
   **jWhiteboard** (subservice dir remains `excalidraw/`).
 - Added `arozos/subservice/excalidraw/start.sh`, which launches the static app
@@ -44,10 +54,10 @@ see [`excalidraw-markdown-wysiwyg.md`](excalidraw-markdown-wysiwyg.md).
   ArozOS subservices that serve prebuilt assets.
 - Updated `scripts/dev-arozos.sh` to build the Excalidraw bundle and copy it
   into the local ArozOS template/data tree.
-- Updated `deploy/RELEASE.json` to copy the app source/subservice scripts, build the
-  Excalidraw bundle during image build, and place it in the ArozOS template.
-- Updated `deploy/scripts/vps-start.sh` to refresh the Excalidraw subservice into the
-  persistent ArozOS data volume on every boot.
+- The image build in `deploy/Dockerfile` copies the app source/subservice,
+  builds the Excalidraw bundle, and places it in the ArozOS template.
+- VPS startup refreshes registered Joshu subservices, including Excalidraw,
+  from that template into the persistent ArozOS data volume.
 - Kept the upstream Excalidraw source sandbox as
   `npm run dev:excalidraw:upstream` for comparison/debugging.
 
@@ -180,13 +190,24 @@ canvas never initializes and the toolbar stays on "Waiting for canvas…".
 />
 ```
 
-The first Joshu app implementation stores a working scene in browser
-`localStorage` and exposes Import/Export for `.excalidraw` files.
+There are now two persistence paths:
+
+- **Convenience state:** browser `localStorage` supports startup fallback and
+  ordinary unsaved canvas recovery. It is not durable project storage.
+- **CWM durable state:** an eligible `.excalidraw` board under `joshu's files`
+  can be explicitly checkpointed to disk. Its semantic workspace and event
+  history live in exact sibling files named `<board>.cwm.json` and
+  `<board>.cwm.events.jsonl`.
+
+CWM checkpoints validate the complete Excalidraw envelope and atomically replace
+the board file. They do not continuously autosave every visual edit. See
+[`curatorial-whiteboard.md`](curatorial-whiteboard.md#exact-files-and-persistence-semantics).
 
 ## Docker image packaging
 
-`deploy/RELEASE.json` copies `apps/`, `arozos/subservice/excalidraw/`, and
-`scripts/aroz-static-subservice.mjs` into the image. During image build it runs:
+The builder stage in `deploy/Dockerfile` copies `apps/`,
+`arozos/subservice/excalidraw/`, and
+`scripts/aroz-static-subservice.mjs`. During image build it runs:
 
 ```bash
 npm run build:excalidraw
@@ -198,26 +219,16 @@ and copies `dist/excalidraw/` into the ArozOS template under:
 /opt/arozos-template/subservice/excalidraw/app/
 ```
 
-`deploy/scripts/vps-start.sh` refreshes that subservice into the persistent ArozOS
-volume on every boot, matching the existing Joshu Browser refresh behavior.
-
-The Excalidraw-enabled VPS sandbox image was last deployed and verified on
-2026-05-09:
-
-```text
-```
-
-The public URL opens ArozOS first and should return the expected setup/login
-redirect on a direct HTTP probe:
-
-```text
-307 Location: /login.html?redirect=/
-```
+VPS startup uses the shared Joshu subservice synchronization helper to refresh
+Excalidraw into the persistent ArozOS volume. `deploy/RELEASE.json` contains
+release/version metadata; it is not the build recipe.
 
 ## Non-goals (this phase)
 
 - No collaboration backend.
-- No save-back to original `.md` files on disk (markdown opens as canvas text elements only).
+- No save-back to original `.md` files on disk (Markdown opens as canvas text
+  elements only). CWM checkpointing saves the `.excalidraw` scene and CWM
+  sidecars; it does not write the imported Markdown source.
 
 ## Markdown WYSIWYG (2026-06)
 
@@ -257,6 +268,36 @@ jWhiteboard parses that hash in [`loadArozInputFiles()`](../apps/excalidraw/src/
 [`resolveFilesApiBase()`](../apps/excalidraw/src/main.tsx) maps `:8787` →
 `http://127.0.0.1:8788/joshu/api/files`. CORS for localhost origins is set in
 [`src/filesApi.ts`](../src/filesApi.ts).
+
+### CWM backend and eligibility (local prototype)
+
+The local server exposes the CWM API at
+`/joshu/api/excalidraw/cwm`. jWhiteboard maps ArozOS `:8787` to the Joshu
+server on `:8788`; standalone frontend work may set
+`VITE_JOSHU_CWM_API_BASE`.
+
+CWM is enabled only for an existing, regular, lowercase `.excalidraw` file at a
+clean relative path under the resolved `joshu's files` root. ArozOS `/media`
+opens become eligible only when the original path proves that location.
+Markdown, arbitrary Desktop files, absolute/traversing paths, imported local
+files, and unverified paths remain ordinary in-memory/import workflows.
+
+Backend routes:
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `POST` | `/create` | Exclusively create a blank board and initialize its sidecars. |
+| `GET` | `/board` | Load/bootstrap the materialized workspace. |
+| `GET` | `/events` | Read a bounded event tail. |
+| `POST` | `/proposal` | Classify and apply or stage semantic operations. |
+| `POST` | `/confirm`, `/reject` | Resolve a pending proposal through explicit review. |
+| `POST` | `/compensate` | Append an inverse event. |
+| `POST` | `/checkpoint` | Atomically persist a validated `.excalidraw` scene. |
+| `POST` | `/consolidate` | Write a bounded Markdown handoff under `Planning/cwm-sessions/`. |
+
+All mutations use optimistic `headSequence`; stale writers receive HTTP `409`.
+The API is localhost-only and grants CORS only to local origins. Full request
+and storage semantics: [`curatorial-whiteboard.md`](curatorial-whiteboard.md).
 
 **Boot sequence:** mount Excalidraw with `initialData={null}` (empty canvas), then
 load files in the **`onExcalidrawAPI`** callback via `updateScene` / `loadMarkdownDocument`.
@@ -327,128 +368,72 @@ Plan JSON may include **`taskGroups`** (numbered ① lists), **`blockRef`** on b
 | **HTTP 404** on `/files/read` | Path outside `joshu's files` or typo | Use `/media` path for ArozOS opens; files API only reads `joshu's files/` |
 | Time-block shows instead of `.md` | Startup race before hash detected | Fixed: file-open hash skips time-block; ensure latest bundle deployed |
 | Changes not visible after edit | Stale subservice bundle | `npm run build:excalidraw` + rsync to `.local/arozos-data/subservice/excalidraw/app/` or restart `dev:arozos` |
+| **CWM inactive / ineligible** | Board is Markdown, outside `joshu's files`, imported without a reliable path, or not lowercase `.excalidraw` | Open an existing `.excalidraw` board from inside `joshu's files` |
+| **CWM unavailable — joshu files paths unavailable** | ArozOS user/files root has not been bootstrapped or cannot be resolved | Start the integrated ArozOS stack; check `AROZ_DATA`, `JOSHU_AROZ_USER`, and `JOSHU_FILES_DIR_NAME` |
+| **CWM conflict** / HTTP `409` | Another mutation advanced `headSequence` | Let the UI refresh the board head, then retry the proposal or review action |
+| CWM shows **offline** from standalone Vite | Frontend is calling `:3002` instead of the local API | Set `VITE_JOSHU_CWM_API_BASE=http://127.0.0.1:8788/joshu/api/excalidraw/cwm` and the corresponding files API override |
+| Proposal preview remains after failure | Confirmation/checkpoint did not complete | Refresh the CWM workspace; accepted semantics are durable before scene materialization |
 
 **Sanity-check file:** `joshu's files/research/kb/test-kb-doc.md` (create if missing).
 Double-click from ArozOS Files; expect **Loaded: test-kb-doc.md** and markdown on canvas.
+
+### CWM build and tests
+
+From the repository root:
+
+```bash
+npm run build:excalidraw
+npm test -w @joshu/whiteboard-cwm
+npm run build
+npm run test:excalidraw-cwm-backend
+npx tsx --test apps/excalidraw/src/cwm/*.test.ts apps/excalidraw/src/agent/*.test.ts
+```
+
+For integrated local verification:
+
+```bash
+npm run dev:arozos
+```
+
+Open an existing `.excalidraw` file under `joshu's files`; expect **CWM ready**,
+type a selected element, review its proposal, accept it, and use **Consolidate
+Session**. The board should gain `.cwm.json` and `.cwm.events.jsonl` siblings,
+and consolidation should create a handoff under `Planning/cwm-sessions/`.
 
 ## Future work
 
 1. **jMail for mail thread links** — open thread mirrors in jMail instead of MDEditor when available.
 2. **Bundle size**: Excalidraw pulls in large optional chunks; revisit
    code-splitting if load time becomes painful in the sandbox image.
-3. **Joshu pointer tool** — custom ephemeral pointer with path capture (see
-   [Joshu pointer tool (future)](#joshu-pointer-tool-future) below).
+3. **Collaboration and deployment** — CWM is a completed local prototype, not a
+   real-time collaboration backend or deployment claim.
 
 Keep integration code and config in **this repo**; keep Excalidraw source in the
 **`vendor/excalidraw`** git submodule only (not external local checkouts).
 
-## Joshu pointer tool (future)
+## Joshu Pointer (implemented local prototype)
 
-Research notes from 2026-06-18 on Excalidraw’s built-in laser pointer and a
-Joshu-owned alternative. Intended as a future jWhiteboard feature — not
-implemented yet.
+The June 2026 research compared Excalidraw's built-in laser with a wrapper-owned
+pointer. The built-in laser is an internal ephemeral overlay: it is not a scene
+element, does not appear in `getSceneElements()`, and exposes no public replay or
+trail-customization API. That historical constraint led to the wrapper approach.
 
-### Built-in laser pointer — how it works
+The implemented **Joshu Pointer** uses `useJoshuPointer.ts` for capture and
+deictic resolution and `JoshuPointerOverlay.tsx` for rendering. It:
 
-`@excalidraw/excalidraw` (v0.18.1) includes a **laser** tool (`ToolType: "laser"`).
-It is **not a scene element**:
+- captures scene-coordinate strokes while the toolbar mode is enabled;
+- keeps at most 500 downsampled points from the latest 30 seconds;
+- renders active and one-second fading traces outside the Excalidraw scene;
+- resolves explicit selection, closed lasso, pass-through, or nearby sweep;
+- maps at most 20 candidate elements to CWM objects;
+- marks confidence below `0.7` as requiring visible grounding;
+- aligns only a final transcript arriving within `1200 ms` after the trace.
 
-- Trails are rendered as ephemeral SVG overlays via an internal `LaserTrails`
-  class.
-- Stroke geometry comes from `@excalidraw/laser-pointer` (already a transitive
-  dependency): points are `[x, y, timestamp]`, smoothed/simplified, then drawn as
-  fading outlines.
-- Trails decay and are **never** written to `.excalidraw` JSON or
-  `getSceneElements()`.
+Traces remain ephemeral: they are not scene elements and are not persisted to
+the `.excalidraw` checkpoint or CWM sidecars. The bounded deictic result, rather
+than raw points, enters the agent GUI snapshot. The `whiteboard-gui` skill must
+call `showFocus` and ask for compact confirmation before a low-confidence
+reference can drive a consequential proposal.
 
-Upstream discussion: [excalidraw#11073](https://github.com/excalidraw/excalidraw/discussions/11073)
-— no public API to programmatically draw fading laser trails; only persistent
-elements can be added via `updateScene()`.
-
-### What the public API exposes today
-
-| API | Laser-related capability |
-|-----|--------------------------|
-| `onPointerUpdate` | Scene coords + `pointer.tool` (`"pointer"` \| `"laser"`) + `button` (`"down"` \| `"up"`). Enough to **accumulate a raw path** while the built-in laser is active. |
-| `onPointerDown` / `onPointerUp` | Stroke start/end boundaries; `PointerDownState` has `origin`, `lastCoords`. |
-| `excalidrawAPI.setActiveTool({ type: "laser" })` | Activate built-in laser programmatically. |
-| `isCollaborating` + `collaborators` | Remote collaborator laser cursors (collab feature). |
-| `UIOptions` | Can hide `image` tool only — **no laser-specific config** (decay, color, trail length). |
-
-**Cannot do without forking:** change trail appearance/decay, read internal
-smoothed trail geometry, export laser strokes from Excalidraw’s overlay, or
-replay fading trails via API.
-
-### Recommended approach: Joshu-owned pointer tool
-
-Rather than modifying the built-in laser, add a **Joshu pointer** in the
-`apps/excalidraw/` wrapper. Fits the existing “no fork” policy.
-
-```
-jWhiteboard toolbar
-  └── "Joshu Pointer" button
-        └── activates custom tool OR local pointerMode flag
-
-Excalidraw <Excalidraw />
-  ├── onPointerDown / onPointerUpdate / onPointerUp  → path capture
-  └── JoshuPointerOverlay (SVG sibling)              → trail rendering
-        └── @excalidraw/laser-pointer                → same visual language
-```
-
-**Why this is better than hacking the built-in laser:**
-
-| | Built-in laser | Joshu pointer |
-|---|---|---|
-| Path capture | `onPointerUpdate` workaround only | First-class owned buffer |
-| Trail appearance | Fixed internally | Configurable via `@excalidraw/laser-pointer` |
-| Persistence | Never in `.excalidraw` | Optional: sidecar JSON or convert to `freedraw` |
-| Programmatic replay | Not supported | Feed saved points into overlay |
-| Fork required | Yes, to change behavior | No |
-
-### Implementation sketch (future)
-
-Proposed files under `apps/excalidraw/src/`:
-
-| File | Role |
-|------|------|
-| `useJoshuPointer.ts` | Stroke lifecycle: start on pointer-down, append on `onPointerUpdate` while `button === "down"`, finalize on pointer-up. Buffer: `{ x, y, t }[]` in **scene coordinates**. |
-| `JoshuPointerOverlay.tsx` | SVG layer over `.excalidraw-canvas`; renders active + decaying trails via `LaserPointer` from `@excalidraw/laser-pointer`. |
-| `main.tsx` | Toolbar toggle; wire `onPointerDown` / `onPointerUpdate` / `onPointerUp`; subscribe to `onScrollChange` + `getAppState()` for zoom/pan sync. |
-
-**Activation — two flavors (pick one when implementing):**
-
-1. **Local mode flag** (simpler): toolbar toggles `pointerMode` in React state;
-   pointer hooks check the flag. Excalidraw can stay on `selection`.
-2. **`custom` tool** (tighter integration):
-   `api.setActiveTool({ type: "custom", customType: "joshu-pointer" })`.
-   Excalidraw’s custom slot sets `appState.activeTool` but does **not** provide
-   drawing logic — Joshu still owns capture + overlay. Check
-   `activeTool.customType === "joshu-pointer"` in hooks.
-
-**Viewport sync:** `onPointerUpdate` returns scene coords. The overlay must
-transform scene → viewport using `zoom`, `scrollX`, `scrollY`, `offsetLeft`,
-`offsetTop` from `getAppState()` (same pattern Excalidraw’s internal
-`LaserTrails` uses).
-
-**Dependency:** add `@excalidraw/laser-pointer` as a direct dependency in
-`package.json` (already present transitively via `@excalidraw/excalidraw`).
-
-### Open decisions (resolve before building)
-
-1. **Trail behavior** — fade like stock laser, persist until mouse-up, or
-   convert completed strokes to permanent `freedraw` elements?
-2. **Persistence** — ephemeral only (presentation), sidecar JSON alongside
-   `.excalidraw`, or embedded in scene via `freedraw`?
-3. **Built-in laser** — keep both tools, or hide Excalidraw’s native laser via
-   CSS (`.ToolIcon_type_laser`) so users have one pointer?
-4. **Use case** — time-block walkthrough annotations, remote presentation sync,
-   analytics (“where did the user point?”), or something else?
-
-### Alternatives considered
-
-| Approach | Verdict |
-|----------|---------|
-| Capture built-in laser via `onPointerUpdate` only | Works for raw paths; no control over trail rendering or replay. |
-| Fork `vendor/excalidraw` to modify `LaserTrails` | Full control; use db-aeon fork for product changes like markdown WYSIWYG. |
-| `setActiveTool({ type: "laser" })` + path logging | Minimal code; limited to what upstream exposes. |
-| **Joshu pointer overlay** | **Recommended** — full path ownership, no fork, fits wrapper pattern. |
+Exact behavior and voice authority are documented in
+[`curatorial-whiteboard.md`](curatorial-whiteboard.md#joshu-pointer-voice-alignment-and-grounding).

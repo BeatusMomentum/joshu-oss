@@ -12,6 +12,11 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
+      "@joshu/app-agent": ["../../packages/app-agent/src/index.ts"],
+      "@joshu/jchat-ui": ["../../packages/jchat-ui/src/index.ts"],
+      "@joshu/jchat-ui/*": ["../../packages/jchat-ui/src/*"],
+      "@joshu/platform-data": ["../../packages/platform-data/src/index.ts"],
+      "@joshu/whiteboard-cwm": ["../../packages/whiteboard-cwm/src/index.ts"],
       "@excalidraw/common": ["../../vendor/excalidraw/packages/common/src/index.ts"],
       "@excalidraw/common/*": ["../../vendor/excalidraw/packages/common/src/*"],
       "@excalidraw/element": ["../../vendor/excalidraw/packages/element/src/index.ts"],

@@ -13,6 +13,7 @@ import YAML from "yaml";
 import { bootstrapHermesLearning } from "./hermesLearning.js";
 import { loadProductSkillsPolicy } from "./hermesSkillsConfig.js";
 import { syncHermesContextFile } from "./hermesContextFile.js";
+import { syncBundledAppSkillsToHermes } from "./appSkillsSync.js";
 import type { RunEvent, RunRecord, RunStatus } from "./types.js";
 import {
   joshuFilesPathEnv,
@@ -190,8 +191,8 @@ function formatHermesDotenvValue(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-/** Keep ~/.hermes/.env aligned so Hermes tool workers see the shared HITL Camofox identity. */
-export async function syncHermesDotenv(entries: Record<string, string>): Promise<void> {
+/** Keep ~/.hermes/.env aligned so Hermes and its tool workers use current Joshu credentials. */
+export async function syncHermesDotenv(entries: Record<string, string>): Promise<boolean> {
   const envPath = path.join(getHermesHome(), ".env");
   let lines: string[] = [];
   try {
@@ -199,7 +200,7 @@ export async function syncHermesDotenv(entries: Record<string, string>): Promise
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       console.warn(`[hermes-api] could not read ${envPath}: ${(err as Error).message}`);
-      return;
+      return false;
     }
   }
 
@@ -219,10 +220,11 @@ export async function syncHermesDotenv(entries: Record<string, string>): Promise
     }
   }
 
-  if (!changed) return;
+  if (!changed) return false;
   const body = lines.join("\n").replace(/\n*$/, "\n");
   await writeFile(envPath, body, "utf8");
   console.log(`[hermes-api] synced Hermes env in ${envPath}`);
+  return true;
 }
 
 /** Push Telegram + Slack messaging vars from Joshu env/local-env into ~/.hermes/.env. */
@@ -245,8 +247,8 @@ export function buildHermesLlmDotenvEntries(projectRoot = process.cwd()): Record
   return entries;
 }
 
-export async function syncHermesLlmEnv(projectRoot = process.cwd()): Promise<void> {
-  await syncHermesDotenv(buildHermesLlmDotenvEntries(projectRoot));
+export async function syncHermesLlmEnv(projectRoot = process.cwd()): Promise<boolean> {
+  return syncHermesDotenv(buildHermesLlmDotenvEntries(projectRoot));
 }
 
 function getJoshuHermesModel(): string {
@@ -562,6 +564,7 @@ export class HermesApiRunner extends EventEmitter {
   private lastCamofoxUserId?: string;
   private hitlBrowserPatchEnsured = false;
   private learningBootstrapPromise?: Promise<void>;
+  private appSkillsSyncPromise?: Promise<void>;
   private workspaceScopeLogged = false;
   private syncedLangfuseUserId = "";
   private mcpGatewayWatchdogTimer: ReturnType<typeof setInterval> | null = null;
@@ -1079,6 +1082,7 @@ export class HermesApiRunner extends EventEmitter {
   }
 
   private async ensureApiServer(): Promise<{ ok: true }> {
+    const llmEnvChanged = await syncHermesLlmEnv();
     await this.ensureJoshuHermesConfig();
     if (await this.health()) {
       // Joshu restarted but a prior gateway may still own :8642 with stale env
@@ -1087,9 +1091,15 @@ export class HermesApiRunner extends EventEmitter {
         this.gateway !== undefined && !this.gateway.killed && this.gateway.exitCode === null;
       const connectorsOk = await probeMcpHttpHealth(resolveConnectorsMcpHealthUrl());
       const needsMcpCatalogRefresh = this.gatewayMcpReloadPending || !connectorsOk;
-      if (ownsGateway && !needsMcpCatalogRefresh) return { ok: true };
-      if (!ownsGateway && !needsMcpCatalogRefresh && !this.gatewayAutoStart) return { ok: true };
-      if (ownsGateway && needsMcpCatalogRefresh) {
+      if (llmEnvChanged) {
+        console.log("[hermes-api] restarting Hermes gateway with synchronized LLM credentials");
+        await this.stopGatewayDaemon();
+        this.gateway = undefined;
+      } else if (ownsGateway && !needsMcpCatalogRefresh) {
+        return { ok: true };
+      } else if (!ownsGateway && !needsMcpCatalogRefresh && !this.gatewayAutoStart) {
+        return { ok: true };
+      } else if (ownsGateway && needsMcpCatalogRefresh) {
         console.log("[hermes-api] restarting owned Hermes gateway to refresh MCP tool catalog");
         await this.stopGatewayDaemon();
         this.gateway = undefined;
@@ -1369,6 +1379,24 @@ export class HermesApiRunner extends EventEmitter {
       skills.external_dirs = filteredExternalDirs;
       changed = true;
     }
+
+    // Built-in app GUI skills (whiteboard-gui, jmail-gui, …) must exist under
+    // ~/.hermes/skills/apps before skill_view / denylist sync.
+    if (!this.appSkillsSyncPromise) {
+      this.appSkillsSyncPromise = (async () => {
+        try {
+          const synced = await syncBundledAppSkillsToHermes(process.cwd());
+          if (synced.copiedApps.length) {
+            console.log(
+              `[hermes-api] synced app skills for ${synced.copiedApps.join(", ")} → ${synced.hermesSkillsRoot}`,
+            );
+          }
+        } catch (err) {
+          console.warn(`[hermes-api] app skills sync skipped: ${(err as Error).message}`);
+        }
+      })();
+    }
+    await this.appSkillsSyncPromise;
 
     const denylistEnabled = process.env.JOSHU_HERMES_SKILLS_DENYLIST_ENABLED?.trim() !== "false";
     const { disabled: productDisabledRaw, enabled: productEnabled } = await loadProductSkillsPolicy();

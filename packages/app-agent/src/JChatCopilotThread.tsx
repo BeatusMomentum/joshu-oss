@@ -1,8 +1,12 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useAgent, useCopilotKit, UseAgentUpdate } from "@copilotkit/react-core/v2";
 import { JChatThread } from "@joshu/jchat-ui";
 
 import { mapAgUiMessagesToJChat } from "./mapAgUiMessagesToJChat.js";
+import {
+  claimProgrammaticPromptRequest,
+  type JoshuProgrammaticPromptRequest,
+} from "./programmaticPromptRequest.js";
 
 export type JChatCopilotThreadProps = {
   agentId: string;
@@ -13,6 +17,9 @@ export type JChatCopilotThreadProps = {
   companionName?: string;
   userAvatarUrl?: string | null;
   userName?: string;
+  /** App-originated prompt; `id` is consumed once within `promptRequestScope`. */
+  promptRequest?: JoshuProgrammaticPromptRequest | null;
+  promptRequestScope?: string;
 };
 
 /** CopilotKit agent run wired to the shared jChat thread UI. */
@@ -25,6 +32,8 @@ export function JChatCopilotThread({
   companionName,
   userAvatarUrl,
   userName,
+  promptRequest,
+  promptRequestScope,
 }: JChatCopilotThreadProps): React.ReactElement {
   const { copilotkit } = useCopilotKit();
   const { agent } = useAgent({
@@ -37,6 +46,32 @@ export function JChatCopilotThread({
     () => mapAgUiMessagesToJChat(agent.messages, agent.isRunning),
     [agent.isRunning, agent.messages],
   );
+
+  useEffect(() => {
+    if (!promptRequest || agent.isRunning || disabled) return;
+    const claimed = claimProgrammaticPromptRequest(
+      promptRequestScope ?? agentId,
+      promptRequest,
+    );
+    if (!claimed) return;
+
+    agent.addMessage({
+      id: claimed.id,
+      role: "user",
+      content: claimed.text,
+    });
+    void copilotkit.runAgent({ agent }).catch((error) => {
+      console.error("[JChatCopilotThread] programmatic runAgent failed", error);
+    });
+  }, [
+    agent,
+    agent.isRunning,
+    agentId,
+    copilotkit,
+    disabled,
+    promptRequest,
+    promptRequestScope,
+  ]);
 
   const sendMessage = useCallback(async () => {
     const text = draft.trim();
