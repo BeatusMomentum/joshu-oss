@@ -1,9 +1,21 @@
 import Nylas from "nylas";
-import { isNylasConfigured, nylasApiKey, nylasApiUri } from "./config.js";
+import { isNylasConfigured, nylasApiKey, nylasApiUri, resolveNylasMode } from "./config.js";
+import { nylasProxyCall } from "./relayTransport.js";
 import type { NylasAgentRecord } from "./store.js";
 import { normalizeRfcMessageId, parseRfcMessageIdFromHeaders, type MailHeader } from "../connectors/rfcMessageId.js";
+import type { MailRecipient } from "./recipients.js";
 
+function assertNylasReady(): void {
+  if (!isNylasConfigured()) throw new Error("Nylas is not configured");
+}
+
+function useRelay(): boolean {
+  return resolveNylasMode() === "relay";
+}
+
+/** Direct-mode SDK client only — null in relay / off. */
 export function getNylasClient(): Nylas | null {
+  if (resolveNylasMode() !== "direct") return null;
   const apiKey = nylasApiKey();
   if (!apiKey) return null;
   return new Nylas({ apiKey, apiUri: nylasApiUri() });
@@ -11,6 +23,23 @@ export function getNylasClient(): Nylas | null {
 
 /** Create a Nylas Agent Account mailbox (no Google OAuth). */
 export async function createAgentAccount(email: string): Promise<NylasAgentRecord> {
+  assertNylasReady();
+  if (useRelay()) {
+    const result = await nylasProxyCall<{
+      grantId: string;
+      email: string;
+      createdAt?: string;
+    }>({
+      op: "createAgentAccount",
+      args: { email },
+    });
+    return {
+      grantId: result.grantId,
+      email: result.email,
+      createdAt: result.createdAt || new Date().toISOString(),
+    };
+  }
+
   const apiKey = nylasApiKey();
   if (!apiKey) throw new Error("NYLAS_API_KEY is not set");
 
@@ -42,8 +71,6 @@ export async function createAgentAccount(email: string): Promise<NylasAgentRecor
   };
 }
 
-import type { MailRecipient } from "./recipients.js";
-
 export async function sendMessage(
   grantId: string,
   opts: {
@@ -56,9 +83,19 @@ export async function sendMessage(
     replyToMessageId?: string;
   },
 ): Promise<string> {
+  assertNylasReady();
+  if (opts.to.length === 0) throw new Error("at least one to recipient is required");
+
+  if (useRelay()) {
+    return nylasProxyCall<string>({
+      op: "sendMessage",
+      grantId,
+      args: opts as unknown as Record<string, unknown>,
+    });
+  }
+
   const nylas = getNylasClient();
   if (!nylas) throw new Error("Nylas is not configured");
-  if (opts.to.length === 0) throw new Error("at least one to recipient is required");
 
   const mapRecipient = (r: MailRecipient) => ({
     email: r.email,
@@ -103,6 +140,15 @@ export async function listMessages(
     threadId?: string;
   }>
 > {
+  assertNylasReady();
+  if (useRelay()) {
+    return nylasProxyCall({
+      op: "listMessages",
+      grantId,
+      args: queryParams,
+    });
+  }
+
   const nylas = getNylasClient();
   if (!nylas) throw new Error("Nylas is not configured");
 
@@ -184,6 +230,15 @@ export async function listThreads(
     searchQueryNative?: string;
   } = {},
 ): Promise<NylasThreadSummary[]> {
+  assertNylasReady();
+  if (useRelay()) {
+    return nylasProxyCall({
+      op: "listThreads",
+      grantId,
+      args: queryParams,
+    });
+  }
+
   const nylas = getNylasClient();
   if (!nylas) throw new Error("Nylas is not configured");
 
@@ -230,12 +285,28 @@ export async function listThreads(
 
 const DEFAULT_THREAD_MESSAGE_CAP = 50;
 
-/** Hydrate all messages in a thread (paginated list, then per-id fallback). */
+/**
+ * Hydrate all messages in a thread (paginated list, then per-id fallback).
+ * Relay mode uses a single CP op so pagination stays server-side.
+ */
 export async function fetchMessagesInThread(
   grantId: string,
   threadId: string,
   opts: { messageIds?: string[]; maxMessages?: number } = {},
 ): Promise<NylasMessageDetail[]> {
+  assertNylasReady();
+  if (useRelay()) {
+    return nylasProxyCall({
+      op: "fetchMessagesInThread",
+      grantId,
+      args: {
+        threadId,
+        ...(opts.messageIds ? { messageIds: opts.messageIds } : {}),
+        ...(opts.maxMessages != null ? { maxMessages: opts.maxMessages } : {}),
+      },
+    });
+  }
+
   const maxMessages = opts.maxMessages ?? DEFAULT_THREAD_MESSAGE_CAP;
   const byId = new Map<string, NylasMessageDetail>();
   let pageToken: string | undefined;
@@ -301,6 +372,15 @@ export type NylasMessageDetail = {
 };
 
 export async function getMessage(grantId: string, messageId: string): Promise<NylasMessageDetail> {
+  assertNylasReady();
+  if (useRelay()) {
+    return nylasProxyCall({
+      op: "getMessage",
+      grantId,
+      args: { messageId },
+    });
+  }
+
   const nylas = getNylasClient();
   if (!nylas) throw new Error("Nylas is not configured");
 
@@ -382,6 +462,20 @@ export async function listEvents(
     limit?: number;
   } = {},
 ): Promise<NylasEventSummary[]> {
+  assertNylasReady();
+  if (useRelay()) {
+    try {
+      return await nylasProxyCall({
+        op: "listEvents",
+        grantId,
+        args: queryParams,
+      });
+    } catch (err) {
+      console.warn(`[nylas] events.list failed: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
   const nylas = getNylasClient();
   if (!nylas) throw new Error("Nylas is not configured");
 
@@ -412,6 +506,15 @@ export async function getEvent(
   eventId: string,
   calendarId = "primary",
 ): Promise<NylasEventSummary> {
+  assertNylasReady();
+  if (useRelay()) {
+    return nylasProxyCall({
+      op: "getEvent",
+      grantId,
+      args: { eventId, calendarId },
+    });
+  }
+
   const nylas = getNylasClient();
   if (!nylas) throw new Error("Nylas is not configured");
 
@@ -438,6 +541,15 @@ export async function createEvent(
     notifyParticipants?: boolean;
   },
 ): Promise<NylasEventSummary> {
+  assertNylasReady();
+  if (useRelay()) {
+    return nylasProxyCall({
+      op: "createEvent",
+      grantId,
+      args: opts as unknown as Record<string, unknown>,
+    });
+  }
+
   const nylas = getNylasClient();
   if (!nylas) throw new Error("Nylas is not configured");
 
@@ -490,6 +602,15 @@ export async function updateEvent(
     notifyParticipants?: boolean;
   },
 ): Promise<NylasEventSummary> {
+  assertNylasReady();
+  if (useRelay()) {
+    return nylasProxyCall({
+      op: "updateEvent",
+      grantId,
+      args: { eventId, ...opts },
+    });
+  }
+
   const nylas = getNylasClient();
   if (!nylas) throw new Error("Nylas is not configured");
 
@@ -533,6 +654,16 @@ export async function destroyEvent(
   eventId: string,
   calendarId = "primary",
 ): Promise<void> {
+  assertNylasReady();
+  if (useRelay()) {
+    await nylasProxyCall({
+      op: "destroyEvent",
+      grantId,
+      args: { eventId, calendarId },
+    });
+    return;
+  }
+
   const nylas = getNylasClient();
   if (!nylas) throw new Error("Nylas is not configured");
 
@@ -548,6 +679,15 @@ export async function updateMessage(
   messageId: string,
   patch: { unread?: boolean; starred?: boolean },
 ): Promise<NylasMessageDetail> {
+  assertNylasReady();
+  if (useRelay()) {
+    return nylasProxyCall({
+      op: "updateMessage",
+      grantId,
+      args: { messageId, ...patch },
+    });
+  }
+
   const nylas = getNylasClient();
   if (!nylas) throw new Error("Nylas is not configured");
 

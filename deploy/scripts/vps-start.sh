@@ -38,6 +38,11 @@ if [[ "${JOSHU_LANGFUSE_MODE:-}" == "relay" || "${JOSHU_LANGFUSE_MODE:-}" == "of
   unset HERMES_LANGFUSE_PUBLIC_KEY HERMES_LANGFUSE_SECRET_KEY HERMES_LANGFUSE_BASE_URL || true
 fi
 
+# Relay/off: instance.env omits NYLAS_API_KEY, but a stale Hermes/.env copy must not win.
+if [[ "${JOSHU_NYLAS_MODE:-}" == "relay" || "${JOSHU_NYLAS_MODE:-}" == "off" ]]; then
+  unset NYLAS_API_KEY NYLAS_API_URI || true
+fi
+
 # Welcome box-secrets (standalone self-host) — first ArozOS user with a saved file.
 load_box_secrets_env() {
   local users_root="${AROZ_DATA}/files/users"

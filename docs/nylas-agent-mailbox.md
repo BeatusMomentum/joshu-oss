@@ -10,15 +10,17 @@ Joshu can provision a **dedicated agent email address** via [Nylas Agent Account
 
 | Environment | Where | Keys |
 |-------------|--------|------|
-| Local dev | Repo root `.env` | `NYLAS_API_KEY`, `NYLAS_API_URI` |
-| VPS provision | ``joshu-control-plane/joshu-control-plane/.env.local` or Vercel | `DEFAULT_NYLAS_API_KEY`, optional `DEFAULT_NYLAS_API_URI` → copied to `/etc/joshu/instance.env` |
+| Local / OSS self-host | Repo root `.env` or box `instance.env` | `NYLAS_API_KEY`, optional `NYLAS_API_URI` (**direct** mode — default when key is set) |
+| Fleet VPS (Joshu control plane) | CP `DEFAULT_NYLAS_*` only | Boxes use `JOSHU_NYLAS_MODE=relay` and **do not** receive `NYLAS_API_KEY`; mail/calendar go through CP `POST /api/instances/nylas/proxy` |
+
+**Self-host / OSS:** keep `NYLAS_API_KEY` on the box. Do not set `JOSHU_NYLAS_MODE=relay` unless you run a control plane that implements the Nylas proxy. Unset mode + local key → same behavior as before relay existed.
 
 ```dotenv
 NYLAS_API_KEY=nyk_v0_...
 NYLAS_API_URI=https://api.us.nylas.com   # or https://api.eu.nylas.com
 ```
 
-The operator laptop `.env` alone does **not** configure a remote VPS. Set `NYLAS_API_KEY` and related vars in the box env file (`/etc/joshu/instance.env` or compose env) and recreate the stack.
+The operator laptop `.env` alone does **not** configure a remote VPS. For direct mode, set `NYLAS_API_KEY` in the box env file (`/etc/joshu/instance.env` or compose env) and recreate the stack.
 
 ### Create the `nylas` connector (one-time per app)
 

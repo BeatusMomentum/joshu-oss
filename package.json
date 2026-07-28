@@ -65,6 +65,7 @@
     "test:scheduling-ingress": "tsx scripts/test-scheduling-ingress.mjs",
     "test:local-slot": "tsx scripts/test-local-slot.mjs",
     "test:nylas-recipients": "tsx scripts/test-nylas-recipients.mjs",
+    "test:nylas-mode": "tsx scripts/test-nylas-mode.mjs",
     "test:onenote-url-parse": "tsx scripts/test-onenote-url-parse.mjs",
     "test:share-chat": "tsx scripts/test-share-chat.mjs",
     "onenote:fetch-page": "tsx scripts/fetch-onenote-page.mjs",
