@@ -32,6 +32,12 @@ load_env_file() {
 load_env_file "${HERMES_HOME}/.env"
 load_env_file "/etc/joshu/instance.env"
 
+# Relay mode: instance.env omits Langfuse pk/sk, but sourcing ~/.hermes/.env first would
+# leave stale secrets exported. Unset so sync + Node never re-seed them onto the box.
+if [[ "${JOSHU_LANGFUSE_MODE:-}" == "relay" || "${JOSHU_LANGFUSE_MODE:-}" == "off" ]]; then
+  unset HERMES_LANGFUSE_PUBLIC_KEY HERMES_LANGFUSE_SECRET_KEY HERMES_LANGFUSE_BASE_URL || true
+fi
+
 # Welcome box-secrets (standalone self-host) — first ArozOS user with a saved file.
 load_box_secrets_env() {
   local users_root="${AROZ_DATA}/files/users"
