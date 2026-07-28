@@ -73,6 +73,8 @@ services:
       - ../scripts/merge-hermes-factory-skill.mjs:/opt/joshu/scripts/merge-hermes-factory-skill.mjs:ro
       - ../scripts/render-time-block-excalidraw.mjs:/opt/joshu/scripts/render-time-block-excalidraw.mjs:ro
       - ../scripts/gather-time-block-input.mjs:/opt/joshu/scripts/gather-time-block-input.mjs:ro
+      # Fleet Langfuse relay plugin (no pk/sk on box). Copied into image on rebuild; bind for live boxes.
+      - ../.hermes/plugins/joshu-langfuse-relay:/opt/joshu/.hermes/plugins/joshu-langfuse-relay:ro
       # Product skills are seeded to $HERMES_HOME/skills/joshu/ (writable learning loop).
       - /etc/joshu/instance.env:/etc/joshu/instance.env:ro
       - /etc/joshu/secrets:/etc/joshu/secrets:ro
