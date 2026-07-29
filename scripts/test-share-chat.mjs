@@ -392,4 +392,56 @@ function makeScope(partial) {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// --- Teams bot parse + conversation registry ---
+{
+  const {
+    extractShareUuidFromTeamsText,
+    isTeamsBindCommand,
+    stripTeamsMentions,
+  } = await import("../src/shareChat/teamsBotParse.ts");
+  const {
+    upsertTeamsConversationBinding,
+    getShareUuidForTeamsConversation,
+    getTeamsConversationForShare,
+    unlinkTeamsConversation,
+  } = await import("../src/shareChat/teamsConversations.ts");
+  const { buildTeamsBotManifest } = await import("../src/shareChat/teamsBotManifest.ts");
+
+  assert(stripTeamsMentions("<at>Joshu</at> hello") === "hello", "strip at mention");
+  const uuid = "11111111-1111-4111-8111-111111111111";
+  assert(extractShareUuidFromTeamsText(`bind ${uuid}`) === uuid, "bind command uuid");
+  assert(
+    extractShareUuidFromTeamsText(`https://box.example/joshu/share-chat/${uuid}`) === uuid,
+    "url uuid",
+  );
+  assert(isTeamsBindCommand(`bind ${uuid}`), "is bind");
+  assert(isTeamsBindCommand(`please see share-chat/${uuid}`), "url counts as bind");
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "joshu-teams-bot-"));
+  // Force registry under tmp via missing joshu config → .local/share-chat relative to cwd;
+  // pass projectRoot so registry lives under tmp/.local/share-chat
+  const root = tmp;
+  upsertTeamsConversationBinding(
+    {
+      shareUuid: uuid,
+      conversationId: "19:abc@thread.v2",
+      conversationType: "groupChat",
+      serviceUrl: "https://smba.trafficmanager.net/teams/",
+    },
+    root,
+  );
+  assert(getShareUuidForTeamsConversation("19:abc@thread.v2", root) === uuid, "rev lookup");
+  assert(getTeamsConversationForShare(uuid, root)?.conversationId === "19:abc@thread.v2", "fwd");
+  unlinkTeamsConversation(uuid, root);
+  assert(getShareUuidForTeamsConversation("19:abc@thread.v2", root) === null, "unlinked");
+
+  const tm = buildTeamsBotManifest({
+    appId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    botName: "Joshu Files",
+  });
+  assert(tm.id === "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "manifest id");
+  assert(Array.isArray(tm.bots) && tm.bots[0].scopes.includes("groupChat"), "groupChat scope");
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 console.log("test-share-chat: ok");

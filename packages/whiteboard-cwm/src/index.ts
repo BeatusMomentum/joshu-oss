@@ -4,3 +4,4 @@ export * from "./policy.js";
 export * from "./reducer.js";
 export * from "./validation.js";
 export * from "./handoff.js";
+export * from "./normalize.js";

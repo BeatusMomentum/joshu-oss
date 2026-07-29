@@ -230,6 +230,16 @@ apply_hermes_content_filter_patch() {
   HERMES_DIR="${HERMES_DIR}" bash "${script}" || echo "[vps-start] WARN: content filter patch failed" >&2
 }
 
+# Block Hermes terminal from reading instance.env / secrets (jterm zero-shared-keys).
+# Bind-mounted from host until baked into the next sandbox image.
+apply_hermes_terminal_secrets_guard() {
+  local script="${APP_DIR}/scripts/patch-hermes-terminal-secrets-guard.mjs"
+  local terminal_tool="${HERMES_DIR}/tools/terminal_tool.py"
+  [[ -f "${script}" && -f "${terminal_tool}" ]] || return 0
+  node "${script}" "${terminal_tool}" \
+    || echo "[vps-start] WARN: Hermes terminal secrets-guard patch failed" >&2
+}
+
 bootstrap_hermes_learning_skills() {
   local script="${APP_DIR}/scripts/bootstrap-hermes-learning-skills.sh"
   [[ -f "${script}" ]] || return 0
@@ -239,6 +249,7 @@ bootstrap_hermes_learning_skills() {
 apply_hermes_langfuse_patches
 apply_hermes_kanban_ws_patch
 apply_hermes_content_filter_patch
+apply_hermes_terminal_secrets_guard
 bootstrap_hermes_learning_skills
 ensure_hermes_runtime_config
 restart_hermes_gateway_if_running

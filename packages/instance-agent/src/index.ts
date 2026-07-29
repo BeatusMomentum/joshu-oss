@@ -31,7 +31,10 @@ const CONTROL_PLANE_URL = env("CONTROL_PLANE_URL").replace(/\/+$/, "");
 const JOSHU_HEALTH_URL = env("JOSHU_HEALTH_URL", "http://127.0.0.1:8788/joshu/api/instance/health");
 const JOSHU_BOX_SNAP_URL = env("JOSHU_BOX_SNAP_URL", "http://127.0.0.1:8788/joshu/api/box/snap");
 const POLL_INTERVAL_SEC = Number(env("INSTANCE_AGENT_POLL_SEC", "30"));
-const SIGNING_SECRET = env("INSTANCE_AGENT_SIGNING_SECRET");
+// Mutable: rotate_secrets may replace INSTANCE_AGENT_SIGNING_SECRET without recreating
+// this process (we never force-recreate instance-agent mid-command). Reload in-process
+// so the next heartbeat command verifies against the new per-box HMAC.
+let signingSecret = env("INSTANCE_AGENT_SIGNING_SECRET");
 const COMPOSE_FILE = env("JOSHU_COMPOSE_FILE", "/opt/joshu/deploy/docker-compose.yml");
 const COMPOSE_ENV_FILE = env("JOSHU_COMPOSE_ENV_FILE", "/etc/joshu/instance.env");
 const INSTALL_DIR = env("JOSHU_INSTALL_DIR", "/opt/joshu");
@@ -65,12 +68,12 @@ function verifySignature(
   payload: unknown,
   signature: string,
 ): boolean {
-  if (!SIGNING_SECRET) {
+  if (!signingSecret) {
     console.warn("[instance-agent] INSTANCE_AGENT_SIGNING_SECRET unset; rejecting commands");
     return false;
   }
   const body = `${commandId}:${type}:${issuedAt}:${JSON.stringify(payload)}`;
-  const expected = createHmac("sha256", SIGNING_SECRET).update(body).digest("hex");
+  const expected = createHmac("sha256", signingSecret).update(body).digest("hex");
   try {
     const a = Buffer.from(signature, "hex");
     const b = Buffer.from(expected, "hex");
@@ -724,6 +727,17 @@ async function executeCommand(cmd: Command): Promise<void> {
       if (secrets && typeof secrets === "object") {
         const map = secrets as Record<string, string>;
         await updateEnvFile(map);
+        // Keep HMAC verifier in sync when CP issues a new per-box signing secret.
+        // Without this, subsequent commands signed with the new secret fail until
+        // the agent container is manually recreated.
+        if (Object.prototype.hasOwnProperty.call(map, "INSTANCE_AGENT_SIGNING_SECRET")) {
+          const next = String(map.INSTANCE_AGENT_SIGNING_SECRET ?? "").trim();
+          signingSecret = next;
+          process.env.INSTANCE_AGENT_SIGNING_SECRET = next;
+          console.log(
+            `[instance-agent] reloaded INSTANCE_AGENT_SIGNING_SECRET (len=${next.length})`,
+          );
+        }
         const user = map.GHCR_READ_USER?.trim();
         const token = map.GHCR_READ_TOKEN?.trim();
         if (user && token) {

@@ -374,6 +374,81 @@ button:disabled,
   border-color: #c9b9ff;
 }
 
+.cwm-pending-overlay {
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  z-index: 4;
+}
+
+.cwm-pending-chip {
+  background: #fff8ef;
+  border: 1.5px dashed #7c5cff;
+  border-radius: var(--radius-card);
+  box-shadow: 0 8px 24px rgb(48 40 31 / 12%);
+  display: grid;
+  gap: 0.35rem;
+  max-width: 16rem;
+  padding: 0.55rem 0.65rem;
+  pointer-events: auto;
+  position: absolute;
+  width: max-content;
+}
+
+.cwm-pending-chip strong {
+  color: #5b3fd6;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.cwm-pending-chip p {
+  font-size: 0.8rem;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.cwm-pending-chip ul {
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.cwm-pending-chip li {
+  font-size: 0.7rem;
+  line-height: 1.3;
+}
+
+.cwm-pending-chip-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.cwm-pending-chip-actions button {
+  flex: 1;
+  min-height: 1.9rem;
+  padding: 0 0.55rem;
+}
+
+.cwm-forward-list .cwm-forward-item {
+  border-top: var(--border-default);
+  margin-top: 0.45rem;
+  padding-top: 0.45rem;
+}
+
+.cwm-forward-item strong {
+  display: block;
+  font-size: 0.82rem;
+}
+
+.cwm-forward-item p {
+  color: var(--color-text-muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
 .cwm-proposal-meta {
   align-items: flex-start;
 }

@@ -18,6 +18,14 @@ export interface CwmScenePreviewItem {
   readonly cwmObjectId?: string;
 }
 
+/** Explicit selected canvas items with resolved text — preferred deixis over chat history. */
+export interface CwmSelectedItem {
+  readonly id: string;
+  readonly type: string;
+  readonly text: string;
+  readonly cwmObjectId?: string;
+}
+
 export interface CwmSceneSnapshot {
   readonly activeView: {
     readonly x: number;
@@ -28,6 +36,14 @@ export interface CwmSceneSnapshot {
   };
   readonly loadedFile: string | null;
   readonly selection: readonly string[];
+  /** Selected elements with readable text (includes bound/container sticky text). */
+  readonly selectedItems: readonly CwmSelectedItem[];
+  /**
+   * `live` = Excalidraw currently has these selected.
+   * `anchored` = canvas focus was lost (e.g. user clicked chat) but we keep the last selection
+   * for deixis until a new live selection replaces it.
+   */
+  readonly selectionSource: "live" | "anchored" | "none";
   readonly focusedRegions: readonly string[];
   readonly openingBrief: {
     readonly summary: string;
@@ -42,6 +58,12 @@ export interface CwmSceneSnapshot {
   readonly scenePreview: readonly CwmScenePreviewItem[];
 }
 
+/** Last non-empty canvas selection kept across chat-focus deselection. */
+export interface CwmAnchoredSelection {
+  readonly selection: readonly string[];
+  readonly selectedItems: readonly CwmSelectedItem[];
+}
+
 export interface CreateSceneSnapshotInput {
   readonly elements: readonly ExcalidrawElement[];
   readonly appState: Pick<
@@ -51,6 +73,8 @@ export interface CreateSceneSnapshotInput {
   readonly loadedFile: string | null;
   readonly workspace: CwmWorkspace | null;
   readonly pendingProposal?: CwmProposal | null;
+  /** Used when Excalidraw selection is empty after the user focuses the chat composer. */
+  readonly anchoredSelection?: CwmAnchoredSelection | null;
 }
 
 const bounded = (value: string, max = CWM_SNAPSHOT_MAX_ELEMENT_TEXT): string =>
@@ -95,6 +119,41 @@ function elementText(element: ExcalidrawElement): string {
   return "";
 }
 
+/**
+ * Sticky notes often select the rectangle container while the readable text lives on a bound
+ * child. Resolve that text so selection deixis is usable by the agent.
+ */
+function resolveElementReadableText(
+  element: ExcalidrawElement,
+  elements: readonly ExcalidrawElement[],
+): string {
+  const direct = elementText(element);
+  if (direct) return direct;
+
+  const byId = new Map(elements.map((entry) => [entry.id, entry]));
+  const bound = Array.isArray(element.boundElements) ? element.boundElements : [];
+  for (const binding of bound) {
+    const boundId =
+      binding && typeof binding === "object" && "id" in binding
+        ? String((binding as { id?: unknown }).id ?? "")
+        : "";
+    if (!boundId) continue;
+    const boundElement = byId.get(boundId);
+    if (!boundElement || boundElement.isDeleted) continue;
+    const text = elementText(boundElement);
+    if (text) return text;
+  }
+
+  for (const candidate of elements) {
+    if (candidate.isDeleted || candidate.type !== "text") continue;
+    if ((candidate as { containerId?: string | null }).containerId === element.id) {
+      const text = elementText(candidate);
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
 function isVisible(
   element: ExcalidrawElement,
   view: CwmSceneSnapshot["activeView"],
@@ -133,7 +192,19 @@ export function createBoundedSceneSnapshot(input: CreateSceneSnapshotInput): Cwm
     height: finite(input.appState.height / zoom),
     zoom: finite(zoom),
   };
-  const selected = new Set(Object.keys(input.appState.selectedElementIds));
+  const liveSelectedIds = Object.keys(input.appState.selectedElementIds);
+  const selected = new Set(liveSelectedIds);
+  let selectionSource: CwmSceneSnapshot["selectionSource"] =
+    liveSelectedIds.length > 0 ? "live" : "none";
+
+  // Clicking the chat composer clears Excalidraw selection before the agent run. Keep the last
+  // intentional canvas selection so "these" still resolves to what the user highlighted.
+  const anchored = input.anchoredSelection;
+  if (selected.size === 0 && anchored && anchored.selectedItems.length > 0) {
+    for (const id of anchored.selection) selected.add(id);
+    selectionSource = "anchored";
+  }
+
   const focusedRegions = (input.workspace?.focus?.regionIds ?? []).slice(0, 12);
   const focusedObjects = new Set(input.workspace?.focus?.objectIds ?? []);
   for (const regionId of focusedRegions) {
@@ -141,15 +212,41 @@ export function createBoundedSceneSnapshot(input: CreateSceneSnapshotInput): Cwm
     region?.objectIds.forEach((id) => focusedObjects.add(id));
   }
 
-  const ranked = input.elements
-    .filter((element) => !element.isDeleted)
+  const liveElements = input.elements.filter((element) => !element.isDeleted);
+  const liveSelectedItems: CwmSelectedItem[] = liveElements
+    .filter((element) => liveSelectedIds.includes(element.id))
+    .slice(0, 20)
+    .map((element) => {
+      const objectId = objectIdForElement(element, input.workspace);
+      const text = resolveElementReadableText(element, liveElements);
+      return {
+        id: bounded(element.id, 80),
+        type: bounded(element.type, 30),
+        text,
+        ...(objectId ? { cwmObjectId: bounded(objectId, 80) } : {}),
+      };
+    })
+    // Prefer items that carry readable text when both a container and its text are selected.
+    .sort((left, right) => Number(Boolean(right.text)) - Number(Boolean(left.text)));
+
+  const selectedItems: CwmSelectedItem[] =
+    selectionSource === "anchored" && anchored
+      ? anchored.selectedItems.map((item) => ({
+          id: bounded(item.id, 80),
+          type: bounded(item.type, 30),
+          text: bounded(item.text, CWM_SNAPSHOT_MAX_ELEMENT_TEXT),
+          ...(item.cwmObjectId ? { cwmObjectId: bounded(item.cwmObjectId, 80) } : {}),
+        }))
+      : liveSelectedItems;
+
+  const ranked = liveElements
     .map((element, index) => {
       const objectId = objectIdForElement(element, input.workspace);
       const priority =
         (selected.has(element.id) ? 1_000 : 0) +
         (objectId && focusedObjects.has(objectId) ? 500 : 0) +
         (isVisible(element, activeView) ? 100 : 0) -
-        index / Math.max(input.elements.length, 1);
+        index / Math.max(liveElements.length, 1);
       return { element, objectId, priority };
     })
     .sort((a, b) => b.priority - a.priority)
@@ -162,7 +259,18 @@ export function createBoundedSceneSnapshot(input: CreateSceneSnapshotInput): Cwm
   const snapshot: CwmSceneSnapshot = {
     activeView,
     loadedFile: input.loadedFile === null ? null : bounded(input.loadedFile, 240),
-    selection: [...selected].slice(0, 20).map((id) => bounded(id, 80)),
+    selection:
+      selectionSource === "anchored" && anchored
+        ? anchored.selection.slice(0, 20).map((id) => bounded(id, 80))
+        : [...liveSelectedIds].slice(0, 20).map((id) => bounded(id, 80)),
+    selectedItems: selectedItems
+      .filter((item) => item.text || item.cwmObjectId)
+      .slice(0, 12)
+      .map((item) => ({
+        ...item,
+        text: bounded(item.text, CWM_SNAPSHOT_MAX_ELEMENT_TEXT),
+      })),
+    selectionSource,
     focusedRegions: focusedRegions.map((id) => bounded(id, 80)),
     openingBrief: input.workspace?.openingBrief
       ? {
@@ -187,7 +295,7 @@ export function createBoundedSceneSnapshot(input: CreateSceneSnapshotInput): Cwm
       y: finite(element.y),
       width: finite(element.width),
       height: finite(element.height),
-      text: elementText(element),
+      text: resolveElementReadableText(element, liveElements),
       selected: selected.has(element.id),
       ...(objectId ? { cwmObjectId: bounded(objectId, 80) } : {}),
     })),
@@ -202,6 +310,9 @@ export function createBoundedSceneSnapshot(input: CreateSceneSnapshotInput): Cwm
     (snapshot.pendingProposal?.operations.length ?? 0) > 0
   ) {
     (snapshot.pendingProposal!.operations as string[]).pop();
+  }
+  while (snapshotSerializedBytes(snapshot) > CWM_SNAPSHOT_MAX_BYTES && snapshot.selectedItems.length > 0) {
+    (snapshot.selectedItems as CwmSelectedItem[]).pop();
   }
   while (snapshotSerializedBytes(snapshot) > CWM_SNAPSHOT_MAX_BYTES && snapshot.selection.length > 0) {
     (snapshot.selection as string[]).pop();

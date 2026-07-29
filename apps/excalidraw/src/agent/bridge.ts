@@ -18,6 +18,17 @@ export type WhiteboardGuiAgentApi = {
 
 export type OpenWhiteboardPath = (path: string) => Promise<boolean>;
 
+function summarizeApplyResult(
+  operations: readonly { readonly type: string; readonly object?: { readonly kind?: string } }[],
+): string {
+  const count = operations.filter((operation) => operation.type === "UPSERT_OBJECT").length;
+  const removals = operations.filter((operation) => operation.type === "REMOVE_OBJECT").length;
+  const parts: string[] = [];
+  if (count > 0) parts.push(`${count} item(s) applied on the board with a small action note`);
+  if (removals > 0) parts.push(`${removals} removal(s) applied`);
+  return parts.join("; ") || "Semantic operations applied.";
+}
+
 /** Bind semantic agent commands to the CWM controller and the existing board loader. */
 export function createWhiteboardAgentBridge(
   cwm: CwmWorkspaceController,
@@ -36,21 +47,21 @@ export function createWhiteboardAgentBridge(
     async recallToBoard(query, limit) {
       requireReady();
       const count = await cwm.recallToBoard(query, limit);
-      return `${count} retrieved source card(s) staged for visible human review.`;
+      return `${count} retrieved note(s) applied to the board.`;
     },
 
     async stageOpening(args) {
       requireReady();
       const operations = coerceStageOpening(args);
       await cwm.proposeOperations(operations, "AI-staged opening session", { actor: "AI" });
-      return `Opening brief and ${Math.max(0, operations.length - 1)} source card(s) staged for human review.`;
+      return `Opening brief and ${Math.max(0, operations.length - 1)} source note(s) applied to the board.`;
     },
 
     async proposeTransaction(args) {
-      requireReady();
-      const transaction = coerceAgentTransaction(args);
+      const workspace = requireReady();
+      const transaction = coerceAgentTransaction(args, new Date().toISOString(), workspace);
       await cwm.proposeOperations(transaction.operations, transaction.rationale, { actor: "AI" });
-      return `${transaction.operations.length} semantic operation(s) staged for human review.`;
+      return summarizeApplyResult(transaction.operations);
     },
 
     async showFocus(value) {

@@ -1,15 +1,20 @@
 import {
+  normalizeCwmObjectKind,
+  normalizeCwmObjectRecord,
+  normalizeCwmPhase,
+  normalizeCwmWorkspace,
+} from "./normalize.js";
+import {
   CWM_ACTION_CLASSES,
   CWM_ACTORS,
   CWM_ENTITY_KINDS,
   CWM_EVENT_KINDS,
-  CWM_LAYERS,
   CWM_MODES,
   CWM_OBJECT_KINDS,
+  CWM_PHASES,
   CWM_PROPOSAL_STATUSES,
   CWM_PROVENANCE_KINDS,
   CWM_RELATION_KINDS,
-  CWM_STATUSES,
   type CwmActor,
   type CwmEvent,
   type CwmFocus,
@@ -277,9 +282,23 @@ class Validator {
     const object = this.record(value, path);
     if (object === null) return;
     this.string(object.id, `${path}.id`, { id: true });
-    this.enumeration(object.kind, CWM_OBJECT_KINDS, `${path}.kind`);
-    this.enumeration(object.layer, CWM_LAYERS, `${path}.layer`);
-    this.enumeration(object.status, CWM_STATUSES, `${path}.status`);
+    const kind = normalizeCwmObjectKind(object.kind);
+    if (!CWM_OBJECT_KINDS.includes(kind)) {
+      this.issue(`${path}.kind`, `must be one of: ${CWM_OBJECT_KINDS.join(", ")}`);
+    }
+    const phase = normalizeCwmPhase(object.phase ?? object.status, {
+      kind,
+      layer: object.layer,
+      status: object.status,
+    });
+    if (!CWM_PHASES.includes(phase)) {
+      this.issue(`${path}.phase`, `must be one of: ${CWM_PHASES.join(", ")}`);
+    }
+    // Mutate the working record so assertValid returns normalized shape after parse.
+    object.kind = kind;
+    object.phase = phase;
+    delete object.layer;
+    delete object.status;
     this.optionalString(object.title, `${path}.title`, { allowEmpty: true });
     this.string(object.body, `${path}.body`, { allowEmpty: true });
     this.actor(object.createdBy, `${path}.createdBy`);
@@ -322,9 +341,11 @@ class Validator {
     this.enumeration(relation.kind, CWM_RELATION_KINDS, `${path}.kind`);
     this.entityRef(relation.source, `${path}.source`);
     this.entityRef(relation.target, `${path}.target`);
-    this.enumeration(relation.status, CWM_STATUSES, `${path}.status`);
-    this.optionalString(relation.label, `${path}.label`, { allowEmpty: true });
-    this.actor(relation.createdBy, `${path}.createdBy`);
+    const phase = normalizeCwmPhase(relation.phase ?? relation.status);
+    relation.phase = phase;
+    delete relation.status;
+    this.enumeration(relation.phase, CWM_PHASES, `${path}.phase`);
+    this.optionalString(relation.label, `${path}.label`, { allowEmpty: true });    this.actor(relation.createdBy, `${path}.createdBy`);
     this.timestamp(relation.createdAt, `${path}.createdAt`);
     if (relation.provenance !== undefined) {
       if (!Array.isArray(relation.provenance)) {
@@ -349,10 +370,11 @@ class Validator {
     if (region === null) return;
     this.string(region.id, `${path}.id`, { id: true });
     this.string(region.title, `${path}.title`);
-    if (region.layer !== undefined) {
-      this.enumeration(region.layer, CWM_LAYERS, `${path}.layer`);
-    }
-    this.enumeration(region.status, CWM_STATUSES, `${path}.status`);
+    const phase = normalizeCwmPhase(region.phase ?? region.status);
+    region.phase = phase;
+    delete region.layer;
+    delete region.status;
+    this.enumeration(region.phase, CWM_PHASES, `${path}.phase`);
     this.geometry(region.bounds, `${path}.bounds`);
     this.idArray(region.objectIds, `${path}.objectIds`, this.limits.maxRegionObjectIds);
     this.actor(region.createdBy, `${path}.createdBy`);
@@ -536,6 +558,9 @@ export function validateCwmOperation(
   limitOverrides?: Partial<CwmLimits>,
 ): CwmValidationResult<CwmSemanticOperation> {
   const validator = new Validator(limitsWith(limitOverrides));
+  if (isRecord(value) && value.type === "UPSERT_OBJECT" && isRecord(value.object)) {
+    value.object = normalizeCwmObjectRecord(value.object as unknown as CwmObject) as unknown as UnknownRecord;
+  }
   validator.operation(value, "$");
   return finish(validator, value);
 }
@@ -603,9 +628,14 @@ export function validateCwmWorkspace(
   value: unknown,
   limitOverrides?: Partial<CwmLimits>,
 ): CwmValidationResult<CwmWorkspace> {
+  // Migrate legacy kind/layer/status payloads before structural validation.
+  const migrated =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? normalizeCwmWorkspace(value as CwmWorkspace)
+      : value;
   const validator = new Validator(limitsWith(limitOverrides));
-  const workspace = validator.record(value, "$");
-  if (workspace === null) return finish(validator, value);
+  const workspace = validator.record(migrated, "$");
+  if (workspace === null) return finish(validator, migrated);
 
   if (workspace.schemaVersion !== 1) {
     validator.issue("$.schemaVersion", "must equal 1");
@@ -732,7 +762,7 @@ export function validateCwmWorkspace(
     }
   }
 
-  return finish(validator, value);
+  return finish(validator, migrated);
 }
 
 function assertResult<T>(result: CwmValidationResult<T>): T {

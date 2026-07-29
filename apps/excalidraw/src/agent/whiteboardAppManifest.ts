@@ -1,11 +1,11 @@
 import type { JoshuAppAgentManifest, JoshuGuiActionDef } from "@joshu/app-agent";
 
-/** Semantic-only whiteboard actions. Review decisions remain human UI controls. */
+/** Semantic-only whiteboard actions. Session writes apply immediately on the canvas. */
 export const WHITEBOARD_GUI_ACTIONS = [
   {
     name: "recallToBoard",
     description:
-      "Retrieve a bounded, diverse packet from File Brain and Hindsight and stage source cards for visible human review",
+      "Retrieve a bounded, diverse packet from File Brain and Hindsight and apply note cards to the board",
     parameters: [
       {
         name: "query",
@@ -23,7 +23,7 @@ export const WHITEBOARD_GUI_ACTIONS = [
   {
     name: "stageOpening",
     description:
-      "Stage a proposed opening brief and source cards from what changed, tensions, open questions, and 2-3 possible starts",
+      "Apply an opening brief and source notes from what changed, tensions, open questions, and 2-3 possible starts",
     parameters: [
       {
         name: "brief",
@@ -43,7 +43,7 @@ export const WHITEBOARD_GUI_ACTIONS = [
   {
     name: "proposeTransaction",
     description:
-      "Stage safe semantic CWM upserts as an AI proposal; commitment, deletion, confirmation, and raw scene operations are forbidden",
+      "Upsert CWM items (note/open_question/decision). All apply immediately with a small action note under each target. Deletion and raw scene ops are forbidden",
     parameters: [
       {
         name: "transaction",

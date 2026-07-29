@@ -1,6 +1,11 @@
 /**
- * Langfuse tracing for Joshu deterministic app LLM calls (Day 0, EA classifier).
- * Reuses HERMES_LANGFUSE_* on VPS boxes; fail-open when keys are absent.
+ * Langfuse tracing for Joshu deterministic app LLM calls (Day 0, EA classifier,
+ * share-chat). Reuses HERMES_LANGFUSE_* when present; fail-open when absent.
+ *
+ * When Langfuse keys are omitted (e.g. fleet relay mode that only instruments
+ * Hermes via a control-plane ingest plugin), this module stays dark on purpose —
+ * Day 0 / classifier / share-chat tracing is optional. Do not reintroduce
+ * Langfuse secrets solely to light these traces back up.
  */
 import { LangfuseSpanProcessor } from "@langfuse/otel";
 import {

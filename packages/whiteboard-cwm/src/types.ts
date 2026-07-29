@@ -1,7 +1,22 @@
-/** Data-level layers keep source material, interpretation, and commitments distinct. */
-export const CWM_LAYERS = ["EVIDENCE", "SENSEMAKING", "COMMITMENT"] as const;
-export type CwmLayer = (typeof CWM_LAYERS)[number];
+/**
+ * Simplified object vocabulary. Auto-classification maps freeform AI/human intent onto these
+ * three kinds; legacy 11-kind sidecars are normalized on load.
+ */
+export const CWM_OBJECT_KINDS = ["note", "open_question", "decision"] as const;
+export type CwmObjectKind = (typeof CWM_OBJECT_KINDS)[number];
 
+/** Lifecycle for curated items. Notes/questions are usually `accepted` once applied. */
+export const CWM_PHASES = ["pending", "accepted", "dismissed"] as const;
+export type CwmPhase = (typeof CWM_PHASES)[number];
+
+/**
+ * @deprecated Kept only so older TypeScript callers and docs compile during migration.
+ * Prefer `CwmObjectKind` + `CwmPhase`.
+ */
+export const CWM_LAYERS = ["EVIDENCE", "SENSEMAKING", "COMMITMENT"] as const;
+/** @deprecated */
+export type CwmLayer = (typeof CWM_LAYERS)[number];
+/** @deprecated */
 export const CWM_STATUSES = [
   "CAPTURED",
   "PROPOSED",
@@ -10,6 +25,7 @@ export const CWM_STATUSES = [
   "DECIDED",
   "ARCHIVED",
 ] as const;
+/** @deprecated */
 export type CwmStatus = (typeof CWM_STATUSES)[number];
 
 export const CWM_ACTORS = ["HUMAN", "AI", "EXTERNAL_SOURCE"] as const;
@@ -20,25 +36,6 @@ export type CwmActorKind = CwmActor;
 
 export const CWM_MODES = ["ORIENT", "CURATE", "DIVERGE", "CONVERGE", "COMMIT"] as const;
 export type CwmMode = (typeof CWM_MODES)[number];
-
-/**
- * A deliberately finite vocabulary. Applications may use `NOTE` for material that has not
- * yet earned a more specific semantic kind.
- */
-export const CWM_OBJECT_KINDS = [
-  "Source",
-  "Extract",
-  "Claim",
-  "Question",
-  "Hypothesis",
-  "Cluster",
-  "Option",
-  "Decision",
-  "Task",
-  "Artifact",
-  "Comment",
-] as const;
-export type CwmObjectKind = (typeof CWM_OBJECT_KINDS)[number];
 
 export const CWM_PROVENANCE_KINDS = [
   "HUMAN_INPUT",
@@ -101,8 +98,7 @@ export interface CwmSceneBinding {
 export interface CwmObject {
   readonly id: string;
   readonly kind: CwmObjectKind;
-  readonly layer: CwmLayer;
-  readonly status: CwmStatus;
+  readonly phase: CwmPhase;
   readonly title?: string;
   readonly body: string;
   readonly createdBy: CwmActor;
@@ -143,7 +139,7 @@ export interface CwmRelation {
   readonly kind: CwmRelationKind;
   readonly source: CwmEntityRef;
   readonly target: CwmEntityRef;
-  readonly status: CwmStatus;
+  readonly phase: CwmPhase;
   readonly label?: string;
   readonly createdBy: CwmActor;
   readonly createdAt: string;
@@ -155,8 +151,7 @@ export interface CwmRelation {
 export interface CwmRegion {
   readonly id: string;
   readonly title: string;
-  readonly layer?: CwmLayer;
-  readonly status: CwmStatus;
+  readonly phase: CwmPhase;
   readonly bounds: CwmGeometry;
   readonly objectIds: readonly string[];
   readonly createdBy: CwmActor;

@@ -7,6 +7,8 @@ agent, voice/pointer path, and ArozOS packaging fit together.
 
 For deeper treatment of individual subjects, use:
 
+- [`jwhiteboard-user-guide.md`](jwhiteboard-user-guide.md) for the end-user
+  session walkthrough and control cheat sheet;
 - [`curatorial-whiteboard.md`](curatorial-whiteboard.md) for the CWM data model,
   authority policy, persistence contract, and bounded-context rules;
 - [`excalidraw-sandbox.md`](excalidraw-sandbox.md) for Excalidraw fork history,
@@ -111,7 +113,8 @@ The runtime has five principal layers:
 |------|----------------|
 | `cwm/useCwmWorkspace.ts` | Main controller hook: load/refresh, proposals, review, checkpoint, consolidation, recall, selection, status, and bounded snapshots. |
 | `cwm/apiClient.ts` | Typed browser client for `/joshu/api/excalidraw/cwm`. |
-| `cwm/CwmPanels.tsx` | Workspace status, semantic inspector, regions, opening brief, review tray, checkpoint, and consolidation controls. |
+| `cwm/CwmPanels.tsx` | Workspace status, Move-forward accepted-decision list, checkpoint, and consolidation controls. |
+| `cwm/PendingDecisionOverlay.tsx` | Source-anchored Accept/Dismiss chips for pending decisions. |
 | `cwm/sceneMaterializer.ts` | Normalize scene bindings, render proposal ghosts, materialize accepted operations, and remove previews. |
 | `cwm/sceneSnapshot.ts` | Produce the ranked, size-bounded scene context sent to the agent. |
 | `cwm/retrieval.ts` | Normalize, deduplicate, diversify, and cap File Brain/Hindsight results. |
@@ -621,6 +624,84 @@ Preserve:
 - crash-tail replay;
 - bounded runtime validation.
 
+## Session prototype status (paused 2026-07-28)
+
+Work on the **in-session apply path** (notes/questions/decisions land immediately
+with a `↳` action note; no Accept chips) reached a usable but unfinished state.
+Stop here and resume from this section rather than re-deriving behavior from chat
+history.
+
+### What works now
+
+| Area | Behavior |
+|------|----------|
+| Session writes | `proposeTransaction` / `stageOpening` / `recallToBoard` → `POST /cwm/proposal` → `materializeConfirmedOperations` → autosave. No Review-tray Accept for session kinds. |
+| AG-UI gate | If `cwmReady` and the turn looks like review/orient/capture (or empty board), AG-UI retries once when Hermes never emitted a board-mutating `app_gui_action`. |
+| Arg coercion | `apps/excalidraw/src/agent/cwmCoercion.ts` recovers common Hermes hallucinations (`kind` vs `type`, string provenance, etc.). |
+| Sticky layout | Bound text, soft-wrap, content-based height, 2-column pack for new cards without geometry (`sceneMaterializer.ts`). |
+| Title/body dedupe | `composeCardText` omits duplicate title when body equals or already starts with title. |
+| Action notes | Plain `↳ …` text under the **CWM object id** that was in the operation (`customData.cwm.objectId`). Placement is geometric under that card, not chat deixis. |
+| Re-UPSERT spam | Identical re-UPSERT of an existing CWM card does not add another `↳` note. |
+| Anchored selection | Clicking the chat composer clears live Excalidraw selection; snapshot keeps the last canvas selection (`selectionSource: "anchored"`) so “this/these” can still resolve. |
+
+### Known failure modes (observed in manual sessions)
+
+1. **Wrong sticky updated.** User selects or points at card A; Hermes narrates or `UPSERT`s card B from earlier chat. Skill/prompt say `selectedItems` wins; there is **no mechanical gate** that rejects a transaction whose object ids are outside the current selection / deictic candidates.
+2. **Pointer “confirm target” ignored.** Pass-through at 0.62 with multiple candidates sets `groundingRequired`. UI shows `confirm target`. Skill says ask before `proposeTransaction`; the model often proposes anyway.
+3. **Confused agent narration.** Responses like “already queued / refresh the board” are hallucinations. Session applies are immediate via the GUI bridge; there is no apply queue the user must refresh for.
+4. **Duplicate cards from double `stageOpening`.** Two opening batches can create two semantic objects (and two stickies) for the same content. Title/body dedupe only fixes text *inside* one card.
+5. **Board-mutation gate is emission-based.** The AG-UI retry counts whether a mutating action was *emitted* on the SSE stream, not whether the canvas successfully applied it.
+6. **Existing cards are not rematerialized.** Layout/dedupe fixes apply on the next materialize of new/updated ops. Stale boards need **New Board** or a fresh seed after pulling a new Excalidraw bundle.
+7. **Docs drift.** Older sections of this guide and `curatorial-whiteboard.md` still describe Accept chips / Review-tray ghosts. Session mode applies immediately; treat those paragraphs as legacy until rewritten.
+
+### `proposeTransaction` (current contract)
+
+Hermes → `app_gui_action` → bridge `proposeTransaction` → `coerceAgentTransaction` →
+`cwm.proposeOperations` → CWM event + immediate scene materialize.
+
+- Payload: `args.transaction.{ rationale, operations[] }`.
+- One `UPSERT_OBJECT` per sticky.
+- Status updates (“mark done”) should keep sticky wording and rely on the `↳`
+  note from `rationale`; the materializer does not rewrite original sticky text
+  for existing CWM-generated cards.
+- The `↳` note is attached to the **object id in the op**, period.
+
+Sibling mutating actions: `stageOpening` (opening brief + sources),
+`recallToBoard` (bounded File Brain / Hindsight notes). Non-mutating:
+`showFocus`, `focusRegion`, `openBoard`.
+
+### Design fork not built: skip Hermes for pointer intents
+
+Pointer resolution is already deterministic (`deicticResolver.ts`): selection →
+closed lasso → pass-through → sweep, with confidence and `groundingRequired`.
+
+For grounded turns like “mark this done,” the useful action set is tiny
+(done / archive / dismiss / confirm-which / focus). Those can call
+`proposeOperations` locally on the confirmed object id without Hermes — same
+pattern as voice’s exact `accept proposal` / `reject proposal` bypass.
+
+**Proposed split (not implemented):**
+
+- **Local:** pointer/selection + closed phrase set → apply on confirmed target(s);
+  if `groundingRequired`, show focus and wait for confirm; never write a
+  different object id than the grounded set.
+- **Hermes:** open-ended curation, recall, stage opening, ambiguous language,
+  side effects outside the board (Kanban, memory).
+
+Building that gate would address the wrong-card and ignored-confirm failures
+above. Do not claim it exists until the local path ships.
+
+### Local reload checklist (dev)
+
+1. Edit in `joshu-oss` first; copy into fleet `joshu` when testing under
+   `npm run dev:arozos`.
+2. `npm run build:excalidraw` in fleet.
+3. Rsync `dist/excalidraw/` into
+   `.local/arozos-data/subservice/excalidraw/app/` (and template if used).
+4. Hard-refresh the browser; confirm a new `index-*.js` hash in `index.html`.
+5. Prefer **New Board** after materializer changes; start a **new chat** after
+   skill sync.
+
 ## Current limitations
 
 - jWhiteboard is packaged in local and image builds, but CWM remains a
@@ -630,7 +711,11 @@ Preserve:
 - Compensation reverses semantic events, not prior scene bytes or handoff files.
 - Compensation has a backend API but no browser client or user-facing undo UI.
 - Markdown opens as canvas content but is not written back.
-- The agent cannot autonomously accept or commit.
+- Session mode applies notes/questions/decisions immediately; there is no
+  Accept/Dismiss chip path in the current UI (older “human review” wording in
+  this doc is stale for session turns).
+- Pointer/selection grounding for agent writes is still soft (prompt/skill only);
+  see **Session prototype status** above.
 - Retrieval is bounded and read-oriented; consolidation writes a local handoff
   rather than broad memory.
 - CWM wrapper/server work does not require new edits inside the Excalidraw

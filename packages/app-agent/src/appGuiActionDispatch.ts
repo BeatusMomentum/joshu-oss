@@ -52,14 +52,32 @@ export async function handleAgUiSseDataLine(line: string): Promise<void> {
   if (event.type === "CUSTOM" && event.name === "app_action") {
     const value = event.value;
     if (value && typeof value === "object") {
+      const payload = value as AppGuiActionWirePayload;
       try {
-        await dispatchAppGuiActionWire(value as AppGuiActionWirePayload);
+        const ok = await dispatchAppGuiActionWire(payload);
+        if (!ok) {
+          console.error(
+            "[app-gui-action] no browser handler registered for",
+            payload.action,
+          );
+        }
       } catch (error) {
         console.error(
           "[app-gui-action] browser handler failed",
-          (value as AppGuiActionWirePayload).action,
+          payload.action,
           error,
         );
+        // Surface to the open app shell (jWhiteboard listens and shows CWM status).
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("joshu-app-gui-action-error", {
+              detail: {
+                action: payload.action,
+                message: error instanceof Error ? error.message : String(error),
+              },
+            }),
+          );
+        }
       }
     }
   }

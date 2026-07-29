@@ -1688,6 +1688,12 @@ export class HermesApiRunner extends EventEmitter {
       "HERMES_LANGFUSE_SAMPLE_RATE",
       "HERMES_LANGFUSE_MAX_CHARS",
       "HERMES_LANGFUSE_DEBUG",
+      // Relay mode — no Langfuse secrets; plugin posts to control plane.
+      "JOSHU_LANGFUSE_RELAY_URL",
+      "JOSHU_LANGFUSE_MODE",
+      "JOSHU_INSTANCE_ID",
+      "INSTANCE_AGENT_TOKEN",
+      "CONTROL_PLANE_URL",
     ] as const) {
       const value = envString(key);
       if (value) dotenvSync[key] = value;

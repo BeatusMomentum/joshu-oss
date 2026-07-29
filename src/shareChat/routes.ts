@@ -12,7 +12,11 @@
  *   GET  /api/share-chat/:shareUuid/slack/channel
  *   POST /api/share-chat/:shareUuid/slack/channel
  *   POST /api/share-chat/:shareUuid/slack/channel/unlink
- *   POST /api/share-chat/composio/triggers
+ *   POST /api/share-chat/teams/messages
+ *   GET  /api/share-chat/:shareUuid/teams
+ *   POST /api/share-chat/:shareUuid/teams/unlink
+ *   GET  /api/share-chat/teams/setup
+ *   GET  /api/share-chat/teams/manifest.zip
  */
 
 import fs from "node:fs";
@@ -61,6 +65,21 @@ import { isComposioEnabled } from "../composioApi.js";
 import { composioClient } from "../connectors/composio/client.js";
 import { formatJoshuSignatureRoleLine } from "../email/joshuEmailSignature.js";
 import { resolveJoshuIdentity } from "../joshuIdentity.js";
+import { handleTeamsBotMessagesRequest } from "./teamsBotHandler.js";
+import {
+  getTeamsBotSetupStatus,
+  buildTeamsBotPackageZip,
+  teamsBotManifestForProject,
+} from "./teamsBotManifest.js";
+import { teamsBotMessagesRequestUrl, teamsBotMessagesUrlIsPublic } from "./teamsBotUrl.js";
+import { resolveTeamsBotCreds, writeTeamsBotCreds } from "./teamsBotCreds.js";
+import { clearTeamsBotTokenCache } from "./teamsBotAuth.js";
+import {
+  getTeamsConversationForShare,
+  publicTeamsBindingStatus,
+  unlinkTeamsConversation,
+} from "./teamsConversations.js";
+import { resolveJoshuPublicApiBase } from "../ownerChannel/publicUrl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -252,6 +271,29 @@ export function registerShareChatSlackEventsRoute(router: Router): void {
       }
     },
   );
+}
+
+/**
+ * Bot Framework messaging endpoint for Teams Share Chat.
+ * Uses JSON body (Azure Bot sends application/json). Register after express.json() is fine,
+ * or alongside other share-chat routes — JWT verified in handler.
+ */
+export function registerShareChatTeamsBotRoute(router: Router): void {
+  router.post("/api/share-chat/teams/messages", async (req: Request, res: Response) => {
+    try {
+      const result = await handleTeamsBotMessagesRequest({
+        authHeader: typeof req.headers.authorization === "string" ? req.headers.authorization : undefined,
+        body: req.body,
+      });
+      res.status(result.status).json(result.body);
+    } catch (err) {
+      console.error(
+        "[share-chat/teams-messages]",
+        err instanceof Error ? err.message : String(err),
+      );
+      res.status(500).json({ error: "teams_bot_handler_failed" });
+    }
+  });
 }
 
 /**
@@ -834,6 +876,98 @@ export function registerShareChatRoutes(router: Router): void {
     }
     unlinkShareSlackChannel(shareUuid);
     res.json({ ok: true, configured: false, unlinkedChannelId: existing.channelId });
+  });
+
+  // --- Teams bot (sideload / free Teams) ---
+  router.get("/api/share-chat/teams/setup", (_req: Request, res: Response) => {
+    res.json({ ok: true, ...getTeamsBotSetupStatus() });
+  });
+
+  router.post("/api/share-chat/teams/setup", (req: Request, res: Response) => {
+    if (!allowChatFlagMutation(req, res)) return;
+    const body = (req.body ?? {}) as {
+      appId?: unknown;
+      appPassword?: unknown;
+      tenantId?: unknown;
+      displayName?: unknown;
+    };
+    const appId = typeof body.appId === "string" ? body.appId.trim() : "";
+    const appPassword = typeof body.appPassword === "string" ? body.appPassword.trim() : "";
+    if (!appId || !appPassword) {
+      res.status(400).json({ error: "app_id_and_password_required" });
+      return;
+    }
+    writeTeamsBotCreds({
+      appId,
+      appPassword,
+      tenantId: typeof body.tenantId === "string" ? body.tenantId.trim() : undefined,
+      displayName: typeof body.displayName === "string" ? body.displayName.trim() : undefined,
+    });
+    clearTeamsBotTokenCache();
+    res.json({ ok: true, ...getTeamsBotSetupStatus() });
+  });
+
+  router.get("/api/share-chat/teams/manifest", (_req: Request, res: Response) => {
+    const creds = resolveTeamsBotCreds();
+    if (!creds) {
+      res.status(400).json({ error: "teams_bot_not_configured" });
+      return;
+    }
+    const manifest = teamsBotManifestForProject();
+    res.json({
+      ok: true,
+      manifest,
+      manifestText: JSON.stringify(manifest, null, 2),
+      messagesUrl: teamsBotMessagesRequestUrl(),
+    });
+  });
+
+  router.get("/api/share-chat/teams/manifest.zip", async (_req: Request, res: Response) => {
+    try {
+      const buf = await buildTeamsBotPackageZip();
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader(
+        "Content-Disposition",
+        'attachment; filename="joshu-share-chat-teams.zip"',
+      );
+      res.send(buf);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(msg === "teams_bot_not_configured" ? 400 : 500).json({ error: msg });
+    }
+  });
+
+  router.get("/api/share-chat/:shareUuid/teams", async (req: Request, res: Response) => {
+    const shareUuid = String(req.params.shareUuid || "").trim();
+    const setup = getTeamsBotSetupStatus();
+    const binding = getTeamsConversationForShare(shareUuid);
+    const scope = resolveShareScope(shareUuid);
+    const chatUrl = `${resolveJoshuPublicApiBase()}/share-chat/${encodeURIComponent(shareUuid)}`;
+    res.json({
+      ok: true,
+      ...publicTeamsBindingStatus(binding),
+      botConfigured: setup.configured,
+      messagesUrl: setup.messagesUrl,
+      messagesUrlIsPublic: teamsBotMessagesUrlIsPublic(),
+      connectorsTeamsUrl: "/connectors/index.html#teams-bot",
+      bindCommand: `bind ${shareUuid}`,
+      shareChatUrl: chatUrl,
+      displayName: scope?.displayName || "",
+      suggestedHint:
+        "In Teams, open a chat with the Joshu bot (or add it to a group), then paste the bind command or Share Chat URL.",
+    });
+  });
+
+  router.post("/api/share-chat/:shareUuid/teams/unlink", async (req: Request, res: Response) => {
+    if (!allowChatFlagMutation(req, res)) return;
+    const shareUuid = String(req.params.shareUuid || "").trim();
+    const existing = getTeamsConversationForShare(shareUuid);
+    if (!existing) {
+      res.json({ ok: true, configured: false });
+      return;
+    }
+    unlinkTeamsConversation(shareUuid);
+    res.json({ ok: true, configured: false, unlinkedConversationId: existing.conversationId });
   });
 }
 

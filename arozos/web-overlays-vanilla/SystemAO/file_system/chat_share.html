@@ -57,6 +57,26 @@
                     </button>
                 </div>
             </div>
+            <div id="teamsBotSection" class="jp-share-section">
+                <div class="jp-share-label">Microsoft Teams (free OK)</div>
+                <p id="teamsBotHint" class="jp-share-muted">
+                    Sideload the Joshu Share Chat bot, then bind this share in a Teams DM or group chat.
+                    Works with free/personal Teams (not Composio). In groups, teammates @mention the bot.
+                </p>
+                <p id="teamsBotStatus"></p>
+                <input id="teamsBindCommand" type="text" readonly aria-label="Teams bind command" style="display:none;">
+                <div class="teams-actions">
+                    <button type="button" class="ui basic button" id="btnTeamsCopyBind" disabled style="display:none;">
+                        Copy bind command
+                    </button>
+                    <button type="button" class="ui basic button" id="btnOpenConnectorsTeams" style="display:none;">
+                        Open Connectors · Teams bot
+                    </button>
+                    <button type="button" class="ui basic button" id="btnTeamsUnlink" disabled style="display:none;">
+                        Unlink Teams chat
+                    </button>
+                </div>
+            </div>
         </div>
         <div class="actions jp-share-actions">
             <button type="button" class="ui basic button" id="btnCopy" disabled>Copy link</button>
@@ -124,6 +144,7 @@
                     xhrFields: { withCredentials: true }
                 });
                 refreshSlackChannelUi(uuid);
+                refreshTeamsBotUi(uuid);
             }
 
             function clearChatLinkUi(message){
@@ -134,12 +155,91 @@
                 $("#chatLinkLoading").html(message || `<i class="green checkmark icon"></i> Chat sharing turned off`).show();
                 setToggleInactive();
                 resetSlackChannelUi();
+                resetTeamsBotUi();
             }
 
             function resetSlackChannelUi(){
                 $("#slackChannelStatus").text("");
                 $("#slackChannelName").val("").hide();
                 $("#btnSlackCreate, #btnSlackUnlink, #btnOpenConnectors, #btnInviteOwner").hide().prop("disabled", true);
+            }
+
+            function resetTeamsBotUi(){
+                $("#teamsBotStatus").text("");
+                $("#teamsBindCommand").val("").hide();
+                $("#btnTeamsCopyBind, #btnTeamsUnlink, #btnOpenConnectorsTeams").hide().prop("disabled", true);
+            }
+
+            function openConnectorsTeamsBot(){
+                var url = "/connectors/index.html#teams-bot";
+                try {
+                    if (typeof ao_module_newfw === "function"){
+                        ao_module_newfw({
+                            url: "connectors/index.html#teams-bot",
+                            width: 920,
+                            height: 720,
+                            title: "Connectors · Teams bot",
+                            appicon: "img/joshu/connectors.png"
+                        });
+                        return;
+                    }
+                } catch (e) {}
+                window.open(url, "_blank");
+            }
+
+            function refreshTeamsBotUi(uuid){
+                if (!uuid){
+                    resetTeamsBotUi();
+                    return;
+                }
+                $("#teamsBotStatus").html(`<i class="ui loading spinner icon"></i> Checking Teams…`);
+                $.ajax({
+                    url: "/joshu/api/share-chat/" + encodeURIComponent(uuid) + "/teams",
+                    method: "GET",
+                    xhrFields: { withCredentials: true },
+                    success: function(data){
+                        if (!data || !data.ok){
+                            $("#teamsBotStatus").html(`<span style="color:#b00020;">Could not load Teams status</span>`);
+                            return;
+                        }
+                        if (data.configured && data.conversationId){
+                            $("#teamsBindCommand").hide();
+                            $("#btnTeamsCopyBind, #btnOpenConnectorsTeams").hide().prop("disabled", true);
+                            $("#btnTeamsUnlink").show().prop("disabled", false);
+                            $("#teamsBotStatus").html(
+                                `Bound to a Teams conversation <code>${escapeHtml(data.conversationId)}</code>` +
+                                (data.conversationType ? ` (${escapeHtml(data.conversationType)})` : "") +
+                                `. Ask in that chat (group chats: @mention the bot).`
+                            );
+                            return;
+                        }
+                        $("#btnTeamsUnlink").hide().prop("disabled", true);
+                        if (!data.botConfigured){
+                            $("#teamsBindCommand").hide();
+                            $("#btnTeamsCopyBind").hide().prop("disabled", true);
+                            $("#btnOpenConnectorsTeams").show().prop("disabled", false);
+                            $("#teamsBotStatus").html(
+                                `Set up the <strong>Teams bot</strong> in Connectors first ` +
+                                `(Azure Bot + sideload app package), then come back to copy the bind command.`
+                            );
+                            return;
+                        }
+                        $("#btnOpenConnectorsTeams").show().prop("disabled", false);
+                        var cmd = data.bindCommand || ("bind " + uuid);
+                        $("#teamsBindCommand").val(cmd).show();
+                        $("#btnTeamsCopyBind").show().prop("disabled", false);
+                        var pubHint = data.messagesUrlIsPublic
+                            ? ""
+                            : ` <span style="color:#b00020;">Messaging endpoint is not public yet</span> — set a tunnel / JOSHU_PUBLIC_URL in Connectors.`;
+                        $("#teamsBotStatus").html(
+                            `Bot is configured. Open a Teams chat with the bot, paste the bind command (or Share Chat URL), then ask questions.` +
+                            pubHint
+                        );
+                    },
+                    error: function(){
+                        $("#teamsBotStatus").html(`<span style="color:#b00020;">Could not reach Teams status API</span>`);
+                    }
+                });
             }
 
             function openConnectorsSlackbot(){
@@ -327,6 +427,44 @@
                 });
             }
 
+            function copyTeamsBindCommand(){
+                var cmd = $("#teamsBindCommand").val() || "";
+                if (!cmd) return;
+                if (navigator.clipboard && navigator.clipboard.writeText){
+                    navigator.clipboard.writeText(cmd).then(function(){
+                        $("#btnTeamsCopyBind").text("Copied");
+                        setTimeout(function(){ $("#btnTeamsCopyBind").text("Copy bind command"); }, 1200);
+                    });
+                    return;
+                }
+                var el = document.getElementById("teamsBindCommand");
+                el.style.display = "block";
+                el.select();
+                try { document.execCommand("copy"); } catch (e) {}
+            }
+
+            function unlinkTeamsChat(){
+                if (!shareCurrentEditingUUID) return;
+                if (!confirm("Unlink this share from its Teams conversation? The bot will stop answering there until you bind again.")) return;
+                var btn = $("#btnTeamsUnlink");
+                btn.addClass("loading").prop("disabled", true);
+                $.ajax({
+                    url: "/joshu/api/share-chat/" + encodeURIComponent(shareCurrentEditingUUID) + "/teams/unlink",
+                    method: "POST",
+                    contentType: "application/json",
+                    data: JSON.stringify({}),
+                    xhrFields: { withCredentials: true },
+                    success: function(){
+                        btn.removeClass("loading");
+                        refreshTeamsBotUi(shareCurrentEditingUUID);
+                    },
+                    error: function(xhr){
+                        btn.removeClass("loading").prop("disabled", false);
+                        alert("Unlink failed (" + xhr.status + ")");
+                    }
+                });
+            }
+
             function enableSharing(btn){
                 if (!shareingFileData || !shareingFileData.filepath) return;
                 $(btn).addClass("loading").prop("disabled", true);
@@ -448,6 +586,9 @@
                 $("#btnSlackUnlink").on("click", unlinkSlackChannel);
                 $("#btnInviteOwner").on("click", inviteOwnerToChannel);
                 $("#btnOpenConnectors").on("click", openConnectorsSlackbot);
+                $("#btnTeamsCopyBind").on("click", copyTeamsBindCommand);
+                $("#btnTeamsUnlink").on("click", unlinkTeamsChat);
+                $("#btnOpenConnectorsTeams").on("click", openConnectorsTeamsBot);
                 // Create / reuse share immediately (like File Share).
                 enableSharing($("#btnToggle"));
             });

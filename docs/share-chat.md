@@ -80,6 +80,11 @@ Share Chat also serves the CSS at `GET /joshu/share-chat/assets/joshu-public-pag
 | `POST` | `/joshu/api/share-chat/:shareUuid/disable` | Owner dialog: mark chat sharing off |
 | `GET` / `POST` | `/joshu/api/share-chat/:shareUuid/slack/channel` | Composio Slackbot: status / create named channel |
 | `POST` | `/joshu/api/share-chat/:shareUuid/slack/channel/unlink` | Drop channel mapping (+ disable trigger) |
+| `POST` | `/joshu/api/share-chat/teams/messages` | Azure Bot Framework messaging endpoint |
+| `GET` / `POST` | `/joshu/api/share-chat/teams/setup` | Teams bot credentials status / save |
+| `GET` | `/joshu/api/share-chat/teams/manifest.zip` | Sideloadable Teams app package |
+| `GET` | `/joshu/api/share-chat/:shareUuid/teams` | Bind status + bind command |
+| `POST` | `/joshu/api/share-chat/:shareUuid/teams/unlink` | Drop Teams conversation binding |
 | `POST` | `/joshu/api/share-chat/composio/triggers` | Composio webhook (raw body + signature) |
 | `POST` | `/joshu/api/share-chat/:shareUuid/slack/configure` | Register per-share Slack bot (admin, legacy) |
 | `GET` | `/joshu/api/share-chat/:shareUuid/slack/manifest` | Slack app manifest template |
@@ -140,6 +145,57 @@ Channel naming: owner chooses the name (Slack rules: lowercase, hyphens, ≤80).
 
 Public chat URL remains available alongside the Slack channel.
 
+## Microsoft Teams bot (free / personal Teams)
+
+Composio Graph Teams APIs do **not** support personal Microsoft accounts. For free Teams, Joshu uses a sideloaded **Azure Bot** (Bot Framework) instead.
+
+| Piece | Detail |
+|-------|--------|
+| Setup | **Connectors → Teams bot**: paste Entra App ID + client secret; copy Messaging endpoint into Azure Bot; download app package zip → Teams → Upload a custom app |
+| Bind | Chat sharing dialog → copy `bind <uuid>` (or paste Share Chat URL) into a Teams DM/group with the bot |
+| Registry | `.joshu/share-chat/teams-conversations.json` + `teams-bot.json` |
+| Messages | `POST /joshu/api/share-chat/teams/messages` (Bot Framework activities) → scoped answer → Connector reply |
+| Scopes | Manifest: `personal`, `groupChat` (group chats usually need @mention) |
+| Auth | Azure Bot JWT on inbound; client-credentials token for outbound. Local smoke: `JOSHU_TEAMS_BOT_SKIP_AUTH=true` |
+| Env overrides | `JOSHU_TEAMS_BOT_APP_ID`, `JOSHU_TEAMS_BOT_APP_PASSWORD`, optional `JOSHU_TEAMS_BOT_TENANT_ID` |
+
+No Microsoft Store approval for sideload. Public Store publishing is out of scope.
+
+### Local setup with ngrok (plain English)
+
+Microsoft Teams cannot talk to `localhost`. **ngrok** gives your laptop a public HTTPS URL that Azure Bot forwards messages through.
+
+**Tunnel Joshu’s API port (`8788`), not ArozOS (`8787`).**
+
+```bash
+# Terminal A — already running for you
+npm run dev:arozos
+
+# Terminal B — public HTTPS → Joshu
+ngrok http 8788
+```
+
+Copy the ngrok HTTPS origin (e.g. `https://abc123.ngrok-free.app`) and put it in `.env`:
+
+```bash
+JOSHU_PUBLIC_URL=https://abc123.ngrok-free.app/joshu
+```
+
+Restart Joshu after changing `.env`. The Teams messaging endpoint becomes:
+
+`https://abc123.ngrok-free.app/joshu/api/share-chat/teams/messages`
+
+Then do these **once**:
+
+1. **Azure Portal** → create an **Azure Bot** (pricing **F0** is fine) and a new Microsoft App ID / client secret. On the bot, **Channels → Microsoft Teams → Apply**.
+2. On the bot, **Configuration → Messaging endpoint** = the ngrok URL above (must match whenever ngrok restarts / URL changes).
+3. In Joshu desktop → **Connectors → Teams bot**: paste App ID + client secret → **Save**. Confirm the messaging URL shows your ngrok host (not `127.0.0.1`).
+4. **Download Teams app package** → in the Teams app: **Apps → Manage your apps → Upload a custom app** → pick the zip → Add.
+5. Open a chat with that bot. In Joshu **File → Share → Chat with files**, copy **bind command**, paste it into the Teams chat.
+6. Ask a question about the files (in a group chat, **@mention** the bot).
+
+If ngrok gives you a new URL, update **both** `JOSHU_PUBLIC_URL` and the Azure Bot messaging endpoint.
+
 ## Per-share Slack bots (legacy / Events API)
 
 Each share can still have its **own** Slack app credentials (not the main Hermes Slack bot):
@@ -197,6 +253,7 @@ Fetch a starter manifest: `GET .../slack/manifest`.
 | `src/shareChat/routes.ts` | HTTP + UI |
 | `src/shareChat/chatFlags.ts` | Per-UUID enable/disable flag |
 | `src/shareChat/slackChannels.ts` / `composioSlackbot.ts` / `composioTriggers.ts` | Composio Slackbot KB channels |
+| `src/shareChat/teamsBot*.ts` / `teamsConversations.ts` | Azure Bot Share Chat (free Teams) |
 | `src/shareChat/slackRegistry.ts` / `slackEvents.ts` | Legacy per-share Events API bots |
 | `apps/share-chat/index.html` | Public chat page (brandbar + server-injected identity) |
 | `arozos/web-overlays-vanilla/joshu-public-pages.css` | Shared guest CSS (File Share + Share Chat) |

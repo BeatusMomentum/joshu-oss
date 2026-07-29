@@ -84,7 +84,15 @@ export function reduceCwmWorkspace(workspace: CwmWorkspace, event: CwmEvent): Cw
     }
     case "PROPOSAL_CONFIRMED": {
       const proposal = requireProposal(next, event.proposalId);
-      const operations = event.operations.length > 0 ? event.operations : proposal.operations;
+      const rawOperations = event.operations.length > 0 ? event.operations : proposal.operations;
+      // Accepted proposals materialize as accepted-phase objects (sidebar list membership).
+      const operations = rawOperations.map((operation) => {
+        if (operation.type !== "UPSERT_OBJECT") return operation;
+        return {
+          type: "UPSERT_OBJECT" as const,
+          object: { ...operation.object, phase: "accepted" as const },
+        };
+      });
       next = applyCwmOperations(next, operations);
       next = {
         ...next,

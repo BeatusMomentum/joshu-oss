@@ -22,14 +22,16 @@ const AUTHORITY_POLICY: Readonly<Record<CwmActionClass, CwmAuthorityDecision>> =
     remainsProposed: false,
     requiresConfirmation: false,
   },
+  // Kept for replaying older event logs; new classification no longer emits this class.
   ORGANIZATIONAL: {
     actionClass: "ORGANIZATIONAL",
-    disposition: "STAGE_PROPOSAL",
-    appliesImmediately: false,
+    disposition: "APPLY_REVERSIBLY",
+    appliesImmediately: true,
     reversible: true,
-    remainsProposed: true,
+    remainsProposed: false,
     requiresConfirmation: false,
   },
+  // Kept for replaying older event logs that staged notes/questions.
   EPISTEMIC: {
     actionClass: "EPISTEMIC",
     disposition: "REQUIRE_CONFIRMATION",
@@ -64,32 +66,27 @@ const ACTION_RANK: Readonly<Record<CwmActionClass, number>> = {
 };
 
 /**
- * Conservatively classify a semantic operation. Callers may elevate an operation's class, but
- * should never downgrade the returned class.
+ * Kind-based authority for the local whiteboard session: everything applies immediately.
+ * COMMITMENT/EPISTEMIC remain in the policy table only so older event logs still replay.
  */
 export function classifyCwmOperation(
   operation: CwmSemanticOperation,
   workspace?: CwmWorkspace,
 ): CwmActionClass {
+  void workspace;
   switch (operation.type) {
     case "SET_FOCUS":
       return "EPHEMERAL";
     case "SET_SCENE_BINDING":
-      return "MECHANICAL";
     case "SET_MODE":
     case "UPSERT_REGION":
     case "REMOVE_REGION":
     case "UPSERT_RELATION":
     case "REMOVE_RELATION":
-      return "ORGANIZATIONAL";
     case "SET_OPENING_BRIEF":
-      return "EPISTEMIC";
     case "UPSERT_OBJECT":
-      return operation.object.layer === "COMMITMENT" ? "COMMITMENT" : "EPISTEMIC";
-    case "REMOVE_OBJECT": {
-      const existing = workspace?.objects[operation.objectId];
-      return existing?.layer === "COMMITMENT" ? "COMMITMENT" : "EPISTEMIC";
-    }
+    case "REMOVE_OBJECT":
+      return "MECHANICAL";
     default: {
       const exhaustive: never = operation;
       return exhaustive;

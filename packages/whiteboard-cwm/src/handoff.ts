@@ -29,45 +29,24 @@ function byUpdatedAt(left: CwmObject, right: CwmObject): number {
 
 /**
  * Classify materialized objects only. Pending proposal operations are deliberately inspected
- * nowhere, and rejected operations are confined to a separate recoverable-options lane.
+ * nowhere; dismissed decisions from rejected proposals stay in a recoverable lane.
  */
 export function classifyCwmHandoff(workspace: CwmWorkspace): CwmHandoffClassification {
   const accepted = Object.values(workspace.objects);
   const decisionsAndCommitments = accepted
-    .filter(
-      (object) =>
-        object.status !== "ARCHIVED" &&
-        object.kind !== "Task" &&
-        (object.layer === "COMMITMENT" ||
-          object.kind === "Decision" ||
-          object.status === "DECIDED"),
-    )
-    .sort(byUpdatedAt);
-  const committedIds = new Set(decisionsAndCommitments.map((object) => object.id));
-  const tasks = accepted
-    .filter((object) => object.kind === "Task" && object.status !== "ARCHIVED")
-    .sort(byUpdatedAt);
-  const evidence = accepted
-    .filter(
-      (object) =>
-        object.layer === "EVIDENCE" &&
-        object.status !== "ARCHIVED" &&
-        !committedIds.has(object.id),
-    )
+    .filter((object) => object.kind === "decision" && object.phase === "accepted")
     .sort(byUpdatedAt);
   const unresolvedQuestions = accepted
-    .filter(
-      (object) =>
-        object.kind === "Question" &&
-        object.status !== "DECIDED" &&
-        object.status !== "ARCHIVED",
-    )
+    .filter((object) => object.kind === "open_question" && object.phase !== "dismissed")
+    .sort(byUpdatedAt);
+  const evidence = accepted
+    .filter((object) => object.kind === "note" && object.phase !== "dismissed")
     .sort(byUpdatedAt);
   const rejectedOptions = Object.values(workspace.proposals)
     .filter((proposal) => proposal.status === "REJECTED")
     .flatMap((proposal) =>
       proposal.operations.flatMap((operation) =>
-        operation.type === "UPSERT_OBJECT" && operation.object.kind === "Option"
+        operation.type === "UPSERT_OBJECT" && operation.object.kind === "decision"
           ? [{ object: operation.object, proposal }]
           : [],
       ),
@@ -76,7 +55,8 @@ export function classifyCwmHandoff(workspace: CwmWorkspace): CwmHandoffClassific
 
   return {
     decisionsAndCommitments: decisionsAndCommitments.slice(0, MAX_SECTION_ITEMS),
-    tasks: tasks.slice(0, MAX_SECTION_ITEMS),
+    // Tasks folded into decisions in the simplified vocabulary.
+    tasks: [],
     evidence: evidence.slice(0, MAX_SECTION_ITEMS),
     unresolvedQuestions: unresolvedQuestions.slice(0, MAX_SECTION_ITEMS),
     rejectedOptions,
@@ -108,6 +88,24 @@ function proposalRationale(workspace: CwmWorkspace, objectId: string): string | 
     )?.rationale;
 }
 
+function renderObject(
+  object: CwmObject,
+  workspace: CwmWorkspace,
+  rationaleOverride?: string,
+): string {
+  const title = markdownText(object.title || object.kind, 160);
+  const rationale = rationaleOverride || proposalRationale(workspace, object.id);
+  const lines = [
+    `### ${title}`,
+    `- Semantic state: ${object.kind} · ${object.phase}`,
+    ...(rationale ? [`- Rationale: ${markdownText(rationale)}`] : []),
+    ...(object.provenance.length ? ["- Provenance:", ...provenanceLines(object)] : []),
+    "",
+    markdownText(object.body),
+  ];
+  return lines.join("\n");
+}
+
 function provenanceLines(object: CwmObject): string[] {
   return object.provenance.slice(0, 6).map((provenance) => {
     const label = markdownText(
@@ -122,24 +120,6 @@ function provenanceLines(object: CwmObject): string[] {
       : "";
     return `  - ${link}${locator}`;
   });
-}
-
-function renderObject(
-  object: CwmObject,
-  workspace: CwmWorkspace,
-  rationaleOverride?: string,
-): string {
-  const title = markdownText(object.title || object.kind, 160);
-  const rationale = rationaleOverride || proposalRationale(workspace, object.id);
-  const lines = [
-    `### ${title}`,
-    `- Semantic state: ${object.kind} · ${object.layer} · ${object.status}`,
-    ...(rationale ? [`- Rationale: ${markdownText(rationale)}`] : []),
-    ...(object.provenance.length ? ["- Provenance:", ...provenanceLines(object)] : []),
-    "",
-    markdownText(object.body),
-  ];
-  return lines.join("\n");
 }
 
 function renderSection(
@@ -173,31 +153,26 @@ export function renderCwmSessionMarkdown(input: RenderCwmHandoffInput): string {
   const boardUri = `joshu://${boardPath.replace(/^\/+/, "")}`;
   const sections = [
     renderSection(
-      "Accepted decisions and commitments",
+      "Accepted decisions",
       classified.decisionsAndCommitments.map((object) => renderObject(object, input.workspace)),
-      "_No accepted decisions or commitments._",
+      "_No accepted decisions._",
     ),
     renderSection(
-      "Tasks",
-      classified.tasks.map((object) => renderObject(object, input.workspace)),
-      "_No accepted tasks._",
-    ),
-    renderSection(
-      "Evidence",
+      "Notes",
       classified.evidence.map((object) => renderObject(object, input.workspace)),
-      "_No accepted evidence._",
+      "_No notes._",
     ),
     renderSection(
-      "Unresolved questions",
+      "Open questions",
       classified.unresolvedQuestions.map((object) => renderObject(object, input.workspace)),
-      "_No unresolved questions._",
+      "_No open questions._",
     ),
     renderSection(
-      "Rejected but recoverable options",
+      "Dismissed decisions",
       classified.rejectedOptions.map(({ object, proposal }) =>
-        renderObject(object, input.workspace, proposal.rationale || "Rejected during review"),
+        renderObject(object, input.workspace, proposal.rationale || "Dismissed during review"),
       ),
-      "_No rejected proposal options to recover._",
+      "_No dismissed decisions to recover._",
     ),
   ];
   const markdown = [

@@ -66,4 +66,132 @@ test("scene snapshots enforce count, text, and serialized byte caps", () => {
   assert.ok(snapshot.scenePreview.every((element) => element.text.length <= CWM_SNAPSHOT_MAX_ELEMENT_TEXT));
   assert.ok(snapshotSerializedBytes(snapshot) <= CWM_SNAPSHOT_MAX_BYTES);
   assert.equal(snapshot.scenePreview[0]?.id, "element-99", "selection should outrank viewport visibility");
+  assert.equal(snapshot.selectedItems[0]?.id, "element-99");
+  assert.match(snapshot.selectedItems[0]?.text ?? "", /Element 99/);
+});
+
+test("selected sticky containers resolve bound text for deixis", () => {
+  const stickyElements = [
+    {
+      id: "sticky-bg",
+      type: "rectangle",
+      x: 10,
+      y: 10,
+      width: 200,
+      height: 80,
+      isDeleted: false,
+      boundElements: [{ id: "sticky-text", type: "text" }],
+      link: null,
+    },
+    {
+      id: "sticky-text",
+      type: "text",
+      x: 20,
+      y: 20,
+      width: 180,
+      height: 60,
+      text: "Barnaby James & Megan Li\nStill need scheduling",
+      originalText: "Barnaby James & Megan Li\nStill need scheduling",
+      containerId: "sticky-bg",
+      isDeleted: false,
+      link: null,
+    },
+  ] as unknown as ExcalidrawElement[];
+
+  const snapshot = createBoundedSceneSnapshot({
+    elements: stickyElements,
+    appState: {
+      scrollX: 0,
+      scrollY: 0,
+      width: 1200,
+      height: 800,
+      zoom: { value: 1 },
+      selectedElementIds: { "sticky-bg": true },
+    } as Pick<
+      AppState,
+      "scrollX" | "scrollY" | "width" | "height" | "zoom" | "selectedElementIds"
+    >,
+    loadedFile: "Planning/board.excalidraw",
+    workspace: null,
+  });
+
+  assert.equal(snapshot.selectedItems.length, 1);
+  assert.equal(snapshot.selectedItems[0]?.id, "sticky-bg");
+  assert.equal(snapshot.selectionSource, "live");
+  assert.match(snapshot.selectedItems[0]?.text ?? "", /Barnaby James/);
+  assert.match(snapshot.scenePreview.find((item) => item.id === "sticky-bg")?.text ?? "", /Barnaby/);
+});
+
+test("anchored selection survives empty live Excalidraw selection (chat focus)", () => {
+  const stickyElements = [
+    {
+      id: "mauricio",
+      type: "text",
+      x: 10,
+      y: 10,
+      width: 200,
+      height: 40,
+      text: "Mauricio — call happened",
+      originalText: "Mauricio — call happened",
+      isDeleted: false,
+      link: null,
+    },
+    {
+      id: "barnaby",
+      type: "text",
+      x: 10,
+      y: 80,
+      width: 200,
+      height: 40,
+      text: "Barnaby James & Megan Li",
+      originalText: "Barnaby James & Megan Li",
+      isDeleted: false,
+      link: null,
+    },
+    {
+      id: "tyler",
+      type: "text",
+      x: 10,
+      y: 150,
+      width: 200,
+      height: 40,
+      text: "UP.Labs / Tyler",
+      originalText: "UP.Labs / Tyler",
+      isDeleted: false,
+      link: null,
+    },
+  ] as unknown as ExcalidrawElement[];
+
+  const snapshot = createBoundedSceneSnapshot({
+    elements: stickyElements,
+    appState: {
+      scrollX: 0,
+      scrollY: 0,
+      width: 1200,
+      height: 800,
+      zoom: { value: 1 },
+      // Empty: user clicked into the chat composer after selecting Mauricio + Barnaby.
+      selectedElementIds: {},
+    } as Pick<
+      AppState,
+      "scrollX" | "scrollY" | "width" | "height" | "zoom" | "selectedElementIds"
+    >,
+    loadedFile: "Planning/board.excalidraw",
+    workspace: null,
+    anchoredSelection: {
+      selection: ["mauricio", "barnaby"],
+      selectedItems: [
+        { id: "mauricio", type: "text", text: "Mauricio — call happened" },
+        { id: "barnaby", type: "text", text: "Barnaby James & Megan Li" },
+      ],
+    },
+  });
+
+  assert.equal(snapshot.selectionSource, "anchored");
+  assert.deepEqual(
+    snapshot.selectedItems.map((item) => item.id),
+    ["mauricio", "barnaby"],
+  );
+  assert.equal(snapshot.scenePreview[0]?.id, "mauricio");
+  assert.ok(!snapshot.selectedItems.some((item) => item.id === "tyler"));
 });

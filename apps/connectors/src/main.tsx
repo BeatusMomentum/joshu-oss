@@ -94,6 +94,18 @@ function oauthDoneCallbackUrl(): string {
   return `${window.location.origin}/joshu/oauth-done.html`;
 }
 
+const SHARE_CHAT_API = "/joshu/api/share-chat";
+
+type TeamsBotSetupStatus = {
+  ok?: boolean;
+  configured?: boolean;
+  appIdPreview?: string;
+  messagesUrl?: string;
+  messagesUrlIsPublic?: boolean;
+  setupRequired?: boolean;
+  steps?: string[];
+};
+
 type SlackbotSetupStatus = {
   clientId?: string;
   composioEnabled?: boolean;
@@ -132,6 +144,13 @@ function App() {
   const [slackbotWizardOpen, setSlackbotWizardOpen] = useState(false);
   const [slackbotMsg, setSlackbotMsg] = useState("");
   const [slackbotWebhookUrl, setSlackbotWebhookUrl] = useState("");
+  const [teamsBotSetup, setTeamsBotSetup] = useState<TeamsBotSetupStatus | null>(null);
+  const [teamsBotWizardOpen, setTeamsBotWizardOpen] = useState(false);
+  const [teamsBotAppId, setTeamsBotAppId] = useState("");
+  const [teamsBotAppPassword, setTeamsBotAppPassword] = useState("");
+  const [teamsBotTenantId, setTeamsBotTenantId] = useState("");
+  const [teamsBotDisplayName, setTeamsBotDisplayName] = useState("");
+  const [teamsBotMsg, setTeamsBotMsg] = useState("");
 
   const refreshStatus = useCallback(async () => {
     const res = await fetch(`${CONNECTORS_API}/status`, { cache: "no-store" });
@@ -188,6 +207,15 @@ function App() {
     return json;
   }, []);
 
+  const refreshTeamsBotSetup = useCallback(async () => {
+    const res = await fetch(`${SHARE_CHAT_API}/teams/setup`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const json = (await res.json()) as TeamsBotSetupStatus;
+    setTeamsBotSetup(json);
+    if (json.setupRequired) setTeamsBotWizardOpen(true);
+    return json;
+  }, []);
+
   const refreshAll = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -196,27 +224,28 @@ function App() {
       await refreshToolkits();
       await refreshDay0Status().catch(() => undefined);
       await refreshSlackbotSetup().catch(() => undefined);
+      await refreshTeamsBotSetup().catch(() => undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [refreshStatus, refreshToolkits, refreshDay0Status, refreshSlackbotSetup]);
+  }, [refreshStatus, refreshToolkits, refreshDay0Status, refreshSlackbotSetup, refreshTeamsBotSetup]);
 
   useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
 
-  // Deep-link from Chat sharing: /joshu/connectors#slackbot
+  // Deep-link from Chat sharing: #slackbot | #teams-bot
   useEffect(() => {
-    const openSlackbot = () => {
-      if (window.location.hash.replace(/^#/, "") === "slackbot") {
-        setSlackbotWizardOpen(true);
-      }
+    const openFromHash = () => {
+      const hash = window.location.hash.replace(/^#/, "");
+      if (hash === "slackbot") setSlackbotWizardOpen(true);
+      if (hash === "teams-bot") setTeamsBotWizardOpen(true);
     };
-    openSlackbot();
-    window.addEventListener("hashchange", openSlackbot);
-    return () => window.removeEventListener("hashchange", openSlackbot);
+    openFromHash();
+    window.addEventListener("hashchange", openFromHash);
+    return () => window.removeEventListener("hashchange", openFromHash);
   }, []);
 
   useEffect(() => {
@@ -388,6 +417,39 @@ function App() {
     }
   };
 
+  const saveTeamsBotCredentials = async () => {
+    setBusy("teams-bot-save");
+    setTeamsBotMsg("");
+    try {
+      const res = await fetch(`${SHARE_CHAT_API}/teams/setup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          appId: teamsBotAppId,
+          appPassword: teamsBotAppPassword,
+          tenantId: teamsBotTenantId || undefined,
+          displayName: teamsBotDisplayName || undefined,
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as TeamsBotSetupStatus & { error?: string };
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setTeamsBotSetup(json);
+      setTeamsBotAppPassword("");
+      setTeamsBotMsg(
+        "Saved. Set the Azure Bot messaging endpoint to the URL below, then download the app package and sideload it in Teams.",
+      );
+      await refreshTeamsBotSetup().catch(() => undefined);
+    } catch (err) {
+      setTeamsBotMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const downloadTeamsBotPackage = () => {
+    window.open(`${SHARE_CHAT_API}/teams/manifest.zip`, "_blank", "noopener,noreferrer");
+  };
+
   const disconnectAccount = async (connectedAccountId: string) => {
     setBusy(connectedAccountId);
     setError("");
@@ -549,6 +611,120 @@ function App() {
       </header>
 
       {error && <p className="error">{error}</p>}
+
+      <section className="card" id="teams-bot">
+        <h2>Teams bot (Share Chat)</h2>
+        <p className="hint">
+          Sideloaded Azure Bot for free/personal Teams — answers file questions in a DM or group chat.
+          Not the same as Composio Microsoft Teams (M365 Graph). No Store approval required.
+        </p>
+        <p className="hint">
+          Status:{" "}
+          {teamsBotSetup?.configured ? (
+            <>
+              configured{teamsBotSetup.appIdPreview ? ` (${teamsBotSetup.appIdPreview})` : ""}
+            </>
+          ) : (
+            "not configured"
+          )}
+        </p>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setTeamsBotWizardOpen((v) => !v)}
+        >
+          {teamsBotWizardOpen ? "Hide setup" : "Configure Teams bot"}
+        </button>
+        {teamsBotWizardOpen && (
+          <div className="slackbot-wizard">
+            {teamsBotSetup?.steps && teamsBotSetup.steps.length > 0 && (
+              <ol className="setup-steps">
+                {teamsBotSetup.steps.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+            )}
+            <div className="field">
+              <label htmlFor="teamsBotAppId">Application (client) ID</label>
+              <input
+                id="teamsBotAppId"
+                value={teamsBotAppId}
+                onChange={(e) => setTeamsBotAppId(e.target.value)}
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                autoComplete="off"
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="teamsBotAppPassword">Client secret</label>
+              <input
+                id="teamsBotAppPassword"
+                type="password"
+                value={teamsBotAppPassword}
+                onChange={(e) => setTeamsBotAppPassword(e.target.value)}
+                placeholder="Client secret value"
+                autoComplete="off"
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="teamsBotTenantId">Tenant ID (optional, single-tenant)</label>
+              <input
+                id="teamsBotTenantId"
+                value={teamsBotTenantId}
+                onChange={(e) => setTeamsBotTenantId(e.target.value)}
+                placeholder="Leave blank for multi-tenant / free Teams"
+                autoComplete="off"
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="teamsBotDisplayName">Display name (optional)</label>
+              <input
+                id="teamsBotDisplayName"
+                value={teamsBotDisplayName}
+                onChange={(e) => setTeamsBotDisplayName(e.target.value)}
+                placeholder="Joshu Files"
+                autoComplete="off"
+              />
+            </div>
+            {(teamsBotSetup?.messagesUrl || "").length > 0 && (
+              <div className="field">
+                <label htmlFor="teamsBotMessagesUrl">Messaging endpoint (paste into Azure Bot)</label>
+                <input
+                  id="teamsBotMessagesUrl"
+                  readOnly
+                  value={teamsBotSetup?.messagesUrl || ""}
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+                <p className="hint">
+                  {teamsBotSetup?.messagesUrlIsPublic
+                    ? "Public HTTPS URL detected."
+                    : "URL looks local — use a tunnel or set JOSHU_PUBLIC_URL so Azure can reach the box."}
+                </p>
+              </div>
+            )}
+            <div className="search-row">
+              <button
+                type="button"
+                className="btn primary"
+                disabled={
+                  busy === "teams-bot-save" || !teamsBotAppId.trim() || !teamsBotAppPassword.trim()
+                }
+                onClick={() => void saveTeamsBotCredentials()}
+              >
+                {busy === "teams-bot-save" ? "Saving…" : "Save credentials"}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={!teamsBotSetup?.configured}
+                onClick={downloadTeamsBotPackage}
+              >
+                Download Teams app package
+              </button>
+            </div>
+            {teamsBotMsg && <p className="hint">{teamsBotMsg}</p>}
+          </div>
+        )}
+      </section>
 
       <section className="card">
           <h2>Apps</h2>

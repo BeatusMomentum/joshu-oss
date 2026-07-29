@@ -10,6 +10,7 @@ import {
   createCompensatingEvent,
   createEmptyWorkspace,
   deriveInverseOperations,
+  normalizeCwmObjectKind,
   opRemoveObject,
   opSetFocus,
   opSetOpeningBrief,
@@ -25,12 +26,11 @@ import {
 const actor = "HUMAN";
 const timestamp = "2026-07-27T00:00:00.000Z";
 
-function object(id, layer = "EVIDENCE") {
+function object(id, kind = "note") {
   return {
     id,
-    kind: layer === "COMMITMENT" ? "Decision" : "Comment",
-    layer,
-    status: layer === "COMMITMENT" ? "DECIDED" : "CAPTURED",
+    kind,
+    phase: kind === "decision" ? "accepted" : "accepted",
     body: `Body for ${id}`,
     createdBy: actor,
     createdAt: timestamp,
@@ -43,7 +43,7 @@ function region(id, objectIds) {
   return {
     id,
     title: id,
-    status: "CAPTURED",
+    phase: "accepted",
     bounds: { x: 0, y: 0, width: 100, height: 50 },
     objectIds,
     createdBy: actor,
@@ -57,33 +57,14 @@ function relation(id, sourceId, targetId) {
     kind: "SUPPORTS",
     source: { kind: "OBJECT", id: sourceId },
     target: { kind: "OBJECT", id: targetId },
-    status: "CAPTURED",
+    phase: "accepted",
     createdBy: actor,
     createdAt: timestamp,
   };
 }
 
-test("authority policy preserves human control boundaries", () => {
-  assert.deepEqual(
-    [
-      authorityPolicyFor("EPHEMERAL").disposition,
-      authorityPolicyFor("MECHANICAL").disposition,
-      authorityPolicyFor("ORGANIZATIONAL").disposition,
-      authorityPolicyFor("EPISTEMIC").disposition,
-      authorityPolicyFor("COMMITMENT").disposition,
-    ],
-    [
-      "APPLY_IMMEDIATELY",
-      "APPLY_REVERSIBLY",
-      "STAGE_PROPOSAL",
-      "REQUIRE_CONFIRMATION",
-      "REQUIRE_CONFIRMATION",
-    ],
-  );
-  assert.equal(authorityPolicyFor("EPHEMERAL").appliesImmediately, true);
-  assert.equal(authorityPolicyFor("MECHANICAL").reversible, true);
-  assert.equal(authorityPolicyFor("ORGANIZATIONAL").remainsProposed, true);
-  assert.equal(authorityPolicyFor("EPISTEMIC").requiresConfirmation, true);
+test("authority policy applies object kinds immediately", () => {
+  assert.equal(authorityPolicyFor("MECHANICAL").appliesImmediately, true);
   assert.equal(authorityPolicyFor("COMMITMENT").requiresConfirmation, true);
 
   assert.equal(classifyCwmOperations([opSetFocus(null)]), "EPHEMERAL");
@@ -91,11 +72,13 @@ test("authority policy preserves human control boundaries", () => {
     classifyCwmOperations([opSetFocus(null), opSetSceneBinding("a", null)]),
     "MECHANICAL",
   );
-  assert.equal(classifyCwmOperations([opUpsertObject(object("a"))]), "EPISTEMIC");
+  assert.equal(classifyCwmOperations([opUpsertObject(object("a"))]), "MECHANICAL");
   assert.equal(
-    classifyCwmOperations([opUpsertObject(object("decision", "COMMITMENT"))]),
-    "COMMITMENT",
+    classifyCwmOperations([opUpsertObject(object("decision", "decision"))]),
+    "MECHANICAL",
   );
+  assert.equal(normalizeCwmObjectKind("Question"), "open_question");
+  assert.equal(normalizeCwmObjectKind("Task"), "decision");
 });
 
 test("operations are pure and object removal cleans references", () => {
@@ -136,16 +119,16 @@ test("derived inverse restores cascaded object removal exactly", () => {
   assert.deepEqual(restored, before);
 });
 
-test("proposal replay confirms semantics and compensation appends an inverse", () => {
+test("proposal replay confirms decisions and compensation appends an inverse", () => {
   const initial = createEmptyWorkspace({ id: "board-1" });
-  const operation = opUpsertObject(object("claim"));
+  const operation = opUpsertObject(object("claim", "decision"));
   const proposal = {
     id: "proposal-1",
     workspaceId: "board-1",
     proposedBy: "AI",
-    actionClass: "EPISTEMIC",
+    actionClass: "COMMITMENT",
     operations: [operation],
-    rationale: "Source-backed candidate",
+    rationale: "Move forward",
     status: "PENDING",
     createdAt: timestamp,
   };
@@ -155,7 +138,7 @@ test("proposal replay confirms semantics and compensation appends an inverse", (
     sequence: 1,
     kind: "PROPOSAL_CREATED",
     actor: proposal.proposedBy,
-    actionClass: "EPISTEMIC",
+    actionClass: "COMMITMENT",
     occurredAt: timestamp,
     operations: [],
     proposal,
@@ -168,7 +151,7 @@ test("proposal replay confirms semantics and compensation appends an inverse", (
     sequence: 2,
     kind: "PROPOSAL_CONFIRMED",
     actor,
-    actionClass: "EPISTEMIC",
+    actionClass: "COMMITMENT",
     occurredAt: timestamp,
     operations: [operation],
     inverseOperations,
@@ -191,7 +174,7 @@ test("proposal replay confirms semantics and compensation appends an inverse", (
   assert.equal(compensatedState.headSequence, 3);
 });
 
-test("reducer rejects unconfirmed epistemic application and sequence gaps", () => {
+test("reducer rejects unconfirmed decision application and sequence gaps", () => {
   const initial = createEmptyWorkspace({ id: "board-1" });
   const direct = {
     id: "event-1",
@@ -199,9 +182,9 @@ test("reducer rejects unconfirmed epistemic application and sequence gaps", () =
     sequence: 1,
     kind: "OPERATIONS_APPLIED",
     actor: "AI",
-    actionClass: "EPISTEMIC",
+    actionClass: "COMMITMENT",
     occurredAt: timestamp,
-    operations: [opUpsertObject(object("claim"))],
+    operations: [opUpsertObject(object("claim", "decision"))],
   };
   assert.throws(
     () => replayCwmEvents(initial, [direct]),
@@ -224,15 +207,47 @@ test("reducer rejects unconfirmed epistemic application and sequence gaps", () =
   );
 });
 
-test("runtime validation reports paths, referential errors, and bounded limits", () => {
-  const valid = applyCwmOperations(createEmptyWorkspace({ id: "board-1" }), [
-    opUpsertObject(object("a")),
-  ]);
-  assert.equal(validateCwmWorkspace(valid).ok, true);
-  assert.equal(assertValidCwmWorkspace(valid), valid);
+test("notes apply immediately without a proposal", () => {
+  const initial = createEmptyWorkspace({ id: "board-1" });
+  const ops = [opUpsertObject(object("n1", "note"))];
+  const applied = {
+    id: "event-1",
+    workspaceId: "board-1",
+    sequence: 1,
+    kind: "OPERATIONS_APPLIED",
+    actor: "AI",
+    actionClass: "MECHANICAL",
+    occurredAt: timestamp,
+    operations: ops,
+    inverseOperations: deriveInverseOperations(initial, ops),
+  };
+  const next = replayCwmEvents(initial, [applied]);
+  assert.equal(next.objects.n1.kind, "note");
+});
+
+test("runtime validation migrates legacy kinds and reports referential errors", () => {
+  const legacy = {
+    ...createEmptyWorkspace({ id: "board-1" }),
+    objects: {
+      a: {
+        id: "a",
+        kind: "Question",
+        layer: "SENSEMAKING",
+        status: "PROPOSED",
+        body: "legacy",
+        createdBy: actor,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        provenance: [],
+      },
+    },
+  };
+  const validated = assertValidCwmWorkspace(legacy);
+  assert.equal(validated.objects.a.kind, "open_question");
+  assert.equal(validated.objects.a.phase, "pending");
 
   const dangling = {
-    ...valid,
+    ...validated,
     regions: { r: region("r", ["missing"]) },
   };
   const result = validateCwmWorkspace(dangling);
@@ -246,7 +261,7 @@ test("runtime validation reports paths, referential errors, and bounded limits",
       error.message.includes("$.regions.r.objectIds[0]"),
   );
 
-  const bounded = validateCwmWorkspace(valid, { maxObjects: 0 });
+  const bounded = validateCwmWorkspace(validated, { maxObjects: 0 });
   assert.equal(bounded.ok, false);
   assert.match(bounded.errors[0].message, /at most 0 entries/);
 });

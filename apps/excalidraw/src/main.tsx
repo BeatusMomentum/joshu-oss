@@ -29,7 +29,6 @@ import {
 } from "./markdown/file";
 import { loadMarkdownDocument } from "./markdown/loadMarkdownDocument";
 import { CwmPanels } from "./cwm/CwmPanels";
-import { proposalDecisionFromFinalUtterance } from "./cwm/deicticResolver";
 import { JoshuPointerOverlay } from "./cwm/JoshuPointerOverlay";
 import { newBoardPathFromName } from "./cwm/newBoard";
 import {
@@ -824,22 +823,6 @@ function App() {
     (text: string, finalizedAt: number) => {
       const aligned = pointer.alignTranscript(text, finalizedAt);
       if (aligned) voiceSyncNowRef.current?.();
-
-      const decision = proposalDecisionFromFinalUtterance(text);
-      const controller = cwmRef.current;
-      if (
-        !decision ||
-        !controller ||
-        controller.pendingProposals.length !== 1 ||
-        controller.busyProposalId !== null
-      ) {
-        return;
-      }
-      const proposal = controller.pendingProposals[0]!;
-      void (decision === "accept"
-        ? controller.acceptProposal(proposal)
-        : controller.rejectProposal(proposal)
-      ).then(() => voiceSyncNowRef.current?.());
     },
     [pointer.alignTranscript],
   );
@@ -852,6 +835,19 @@ function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // When Hermes queues ok:true but browser coercion/apply fails, surface it — silent
+  // console.error alone looks like "blank board" to the user.
+  useEffect(() => {
+    const onGuiActionError = (event: Event) => {
+      const detail = (event as CustomEvent<{ action?: string; message?: string }>).detail;
+      const action = detail?.action ?? "guiAction";
+      const message = detail?.message ?? "unknown error";
+      setLoadError(`Board action failed (${action}): ${message}`);
+    };
+    window.addEventListener("joshu-app-gui-action-error", onGuiActionError);
+    return () => window.removeEventListener("joshu-app-gui-action-error", onGuiActionError);
   }, []);
 
   useEffect(() => {

@@ -17,7 +17,7 @@
     "guiActions": [
       {
         "name": "recallToBoard",
-        "description": "Retrieve a bounded, diverse packet from File Brain and Hindsight and stage source cards for visible human review",
+        "description": "Retrieve a bounded, diverse packet from File Brain and Hindsight and apply note cards to the board",
         "parameters": [
           {
             "name": "query",
@@ -34,7 +34,7 @@
       },
       {
         "name": "stageOpening",
-        "description": "Stage a proposed opening brief and source cards from what changed, tensions, open questions, and 2-3 possible starts",
+        "description": "Apply an opening brief and source notes from what changed, tensions, open questions, and 2-3 possible starts",
         "parameters": [
           {
             "name": "brief",
@@ -51,7 +51,7 @@
       },
       {
         "name": "proposeTransaction",
-        "description": "Stage safe semantic CWM upserts as an AI proposal; commitment, deletion, confirmation, and raw scene operations are forbidden",
+        "description": "Upsert CWM items (note/open_question/decision). All apply immediately with a small action note under each target. Deletion and raw scene ops are forbidden",
         "parameters": [
           {
             "name": "transaction",

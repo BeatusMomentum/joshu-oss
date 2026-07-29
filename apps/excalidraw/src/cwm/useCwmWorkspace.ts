@@ -3,13 +3,12 @@ import {
   type CwmActor,
   type CwmEvent,
   type CwmFocus,
-  type CwmLayer,
   type CwmObject,
   type CwmObjectKind,
+  type CwmPhase,
   type CwmProposal,
   type CwmRegion,
   type CwmSemanticOperation,
-  type CwmStatus,
   type CwmWorkspace,
 } from "@joshu/whiteboard-cwm";
 import { createJoshuPlatformData } from "@joshu/platform-data";
@@ -24,9 +23,38 @@ import {
   materializeConfirmedOperations,
   normalizeSemanticOperations,
   removeCwmPreviews,
-  withPendingProposalPreviews,
 } from "./sceneMaterializer";
-import { createBoundedSceneSnapshot, type CwmSceneSnapshot } from "./sceneSnapshot";
+import {
+  createBoundedSceneSnapshot,
+  type CwmAnchoredSelection,
+  type CwmSceneSnapshot,
+  type CwmSelectedItem,
+  type CreateSceneSnapshotInput,
+} from "./sceneSnapshot";
+
+/** Keep last canvas selection while the user types in chat (Excalidraw clears live selection). */
+const ANCHORED_SELECTION_TTL_MS = 5 * 60 * 1000;
+
+function captureLiveSelectionAnchor(
+  elements: readonly ExcalidrawElement[],
+  appState: CreateSceneSnapshotInput["appState"],
+  workspace: CwmWorkspace | null,
+): (CwmAnchoredSelection & { capturedAt: number }) | null {
+  const snapshot = createBoundedSceneSnapshot({
+    elements,
+    appState,
+    loadedFile: null,
+    workspace,
+  });
+  if (snapshot.selectionSource !== "live" || snapshot.selectedItems.length === 0) {
+    return null;
+  }
+  return {
+    selection: snapshot.selection,
+    selectedItems: snapshot.selectedItems as readonly CwmSelectedItem[],
+    capturedAt: Date.now(),
+  };
+}
 import {
   MAX_RECALL_CARDS,
   normalizeRecallPayload,
@@ -41,12 +69,9 @@ export type CwmUiStatus =
   | { readonly kind: "error"; readonly message: string };
 
 export interface PromoteSelectionInput {
-  readonly kind: CwmObjectKind;
-  readonly layer: CwmLayer;
-  readonly status: CwmStatus;
+  readonly kind?: CwmObjectKind;
+  readonly phase?: CwmPhase;
 }
-
-export type HumanPromotion = "ENDORSE" | "DISPUTE" | "COMMIT";
 
 export interface ProposeOperationsOptions {
   readonly actor?: CwmActor;
@@ -89,6 +114,25 @@ function sceneEnvelope(
   ) as unknown;
 }
 
+function sceneFingerprint(elements: readonly ExcalidrawElement[]): string {
+  let versionSum = 0;
+  let textHash = 0;
+  for (const element of elements) {
+    if (element.isDeleted) continue;
+    versionSum += Number(element.version) || 0;
+    const text =
+      element.type === "text"
+        ? String((element as { originalText?: string; text?: string }).originalText || (element as { text?: string }).text || "")
+        : "";
+    for (let index = 0; index < text.length; index += 1) {
+      textHash = (textHash + text.charCodeAt(index) * (index + 1)) % 1_000_000_007;
+    }
+  }
+  return `${elements.length}:${versionSum}:${textHash}`;
+}
+
+const AUTOSAVE_DEBOUNCE_MS = 1_200;
+
 export function useCwmWorkspace(
   api: ExcalidrawImperativeAPI | null,
   boardPath: string | null,
@@ -100,6 +144,12 @@ export function useCwmWorkspace(
   const eventsRef = useRef<readonly CwmEvent[]>([]);
   const deicticContextRef = useRef<DeicticContext | null>(null);
   const focusRef = useRef<CwmFocus | null>(null);
+  const anchoredSelectionRef = useRef<(CwmAnchoredSelection & { capturedAt: number }) | null>(
+    null,
+  );
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autosaveInFlightRef = useRef(false);
+  const lastSavedFingerprintRef = useRef<string>("");
   const [workspace, setWorkspaceState] = useState<CwmWorkspace | null>(null);
   const [events, setEvents] = useState<readonly CwmEvent[]>([]);
   const [focus, setFocusState] = useState<CwmFocus | null>(null);
@@ -170,6 +220,12 @@ export function useCwmWorkspace(
     setRecentEvents([]);
     setHandoffPath(null);
     setEphemeralFocus(null);
+    anchoredSelectionRef.current = null;
+    lastSavedFingerprintRef.current = "";
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
     if (!eligiblePath) {
       setStatus({
         kind: "ineligible",
@@ -189,21 +245,112 @@ export function useCwmWorkspace(
     return () => controller.abort();
   }, [eligiblePath, refresh, setEphemeralFocus, setRecentEvents, setWorkspace]);
 
+  const runAutosave = useCallback(
+    async (reason: string) => {
+      const current = workspaceRef.current;
+      if (!api || !eligiblePath || !current || autosaveInFlightRef.current) return;
+      const acceptedElements = removeCwmPreviews(api.getSceneElements());
+      const fingerprint = sceneFingerprint(acceptedElements);
+      if (fingerprint === lastSavedFingerprintRef.current) return;
+
+      autosaveInFlightRef.current = true;
+      try {
+        const checkpoint = await cwmApiClient.checkpoint({
+          path: eligiblePath,
+          headSequence: current.headSequence,
+          actor: "HUMAN",
+          scene: sceneEnvelope(api, acceptedElements),
+          reason: `Autosave · ${reason}`,
+        });
+        lastSavedFingerprintRef.current = fingerprint;
+        setWorkspace(checkpoint.workspace);
+        setRecentEvents((value) => [...value, checkpoint.event].slice(-100));
+        setStatus({
+          kind: "ready",
+          message: `Autosaved · head ${checkpoint.workspace.headSequence}`,
+        });
+      } catch (error) {
+        if (error instanceof CwmApiError && error.status === 409) {
+          await refresh().catch(() => undefined);
+          return;
+        }
+        // Non-fatal: keep editing; next change will retry.
+        console.warn("[cwm] autosave failed", error);
+      } finally {
+        autosaveInFlightRef.current = false;
+      }
+    },
+    [api, eligiblePath, refresh, setRecentEvents, setWorkspace],
+  );
+
+  const scheduleAutosave = useCallback(
+    (reason: string, delayMs = AUTOSAVE_DEBOUNCE_MS) => {
+      if (!api || !eligiblePath || !workspaceRef.current) return;
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = setTimeout(() => {
+        autosaveTimerRef.current = null;
+        void runAutosave(reason);
+      }, delayMs);
+    },
+    [api, eligiblePath, runAutosave],
+  );
+
   useEffect(() => {
     if (!api) {
       setSelectedElements([]);
       return;
     }
-    const updateSelection = () => setSelectedElements(selectedSceneElements(api));
+    const updateSelection = (
+      elements?: readonly ExcalidrawElement[],
+      appState?: ReturnType<ExcalidrawImperativeAPI["getAppState"]>,
+    ) => {
+      const scene = elements ?? api.getSceneElements();
+      const state = appState ?? api.getAppState();
+      setSelectedElements(scene.filter((element) => state.selectedElementIds[element.id] && !element.isDeleted));
+      // Capture from the onChange payload — do not re-query after chat focus may have cleared it.
+      const nextAnchor = captureLiveSelectionAnchor(scene, state, workspaceRef.current);
+      if (nextAnchor) {
+        anchoredSelectionRef.current = nextAnchor;
+      }
+      // Mechanical sidecar autosave — not an agent action.
+      if (workspaceRef.current && eligiblePath) {
+        const fingerprint = sceneFingerprint(removeCwmPreviews(scene));
+        if (fingerprint !== lastSavedFingerprintRef.current) {
+          scheduleAutosave("scene-change");
+        }
+      }
+    };
     updateSelection();
-    return api.onChange(updateSelection);
-  }, [api]);
+    // Seed fingerprint after load so the first paint does not immediately rewrite the file.
+    if (eligiblePath && lastSavedFingerprintRef.current === "") {
+      lastSavedFingerprintRef.current = sceneFingerprint(removeCwmPreviews(api.getSceneElements()));
+    }
+    return api.onChange((elements, appState) => updateSelection(elements, appState));
+  }, [api, eligiblePath, scheduleAutosave]);
+
+  useEffect(() => {
+    const flush = () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+      void runAutosave("pagehide");
+    };
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  }, [runAutosave]);
 
   useEffect(() => {
     if (!api || !workspace) return;
+    // Strip any leftover proposal ghosts from earlier confirmation UX.
     const current = api.getSceneElements();
-    const next = withPendingProposalPreviews(current, workspace);
-    api.updateScene({ elements: next });
+    const cleaned = removeCwmPreviews(current);
+    if (cleaned.length !== current.length) {
+      api.updateScene({ elements: cleaned });
+    }
   }, [api, workspace]);
 
   const pendingProposals = useMemo(
@@ -244,11 +391,20 @@ export function useCwmWorkspace(
         });
         setWorkspace(result.workspace);
         setRecentEvents((value) => [...value, result.event].slice(-100));
+        // Session whiteboard: apply immediately and leave a small action note under targets.
+        if (api) {
+          const nextElements = materializeConfirmedOperations(
+            api.getSceneElements(),
+            normalized,
+            current,
+            rationale,
+          );
+          api.updateScene({ elements: nextElements });
+          scheduleAutosave("cwm-apply", 250);
+        }
         setStatus({
           kind: "ready",
-          message: result.proposal
-            ? `Proposal staged for review · head ${result.workspace.headSequence}`
-            : `CWM change applied · head ${result.workspace.headSequence}`,
+          message: `CWM change applied · head ${result.workspace.headSequence}`,
         });
         return result;
       } catch (error) {
@@ -259,7 +415,7 @@ export function useCwmWorkspace(
         setMutationBusy(false);
       }
     },
-    [eligiblePath, refresh, setRecentEvents, setWorkspace],
+    [api, eligiblePath, refresh, scheduleAutosave, setRecentEvents, setWorkspace],
   );
 
   const recallToBoard = useCallback(
@@ -295,9 +451,8 @@ export function useCwmWorkspace(
           type: "UPSERT_OBJECT",
           object: {
             id: objectId,
-            kind: "Source",
-            layer: "EVIDENCE",
-            status: "PROPOSED",
+            kind: "note",
+            phase: "accepted",
             title: card.title,
             body: card.text,
             createdBy: "AI",
@@ -330,7 +485,7 @@ export function useCwmWorkspace(
   );
 
   const promoteSelection = useCallback(
-    async (input: PromoteSelectionInput) => {
+    async (input: PromoteSelectionInput = {}) => {
       const current = workspaceRef.current;
       if (!current || selectedElements.length === 0) return;
       const now = new Date().toISOString();
@@ -344,15 +499,16 @@ export function useCwmWorkspace(
       if (!ordinary.length) throw new Error("Select one or more ordinary canvas elements to type");
 
       const bindings: Record<string, readonly string[]> = {};
+      const kind = input.kind ?? "note";
+      const phase = input.phase ?? (kind === "decision" ? "pending" : "accepted");
       const operations = ordinary.map<CwmSemanticOperation>((element) => {
         const objectId = `object-${element.id}`;
         bindings[objectId] = [element.id];
         const body = textForElement(element).slice(0, 20_000);
         const object: CwmObject = {
           id: objectId,
-          kind: input.kind,
-          layer: input.layer,
-          status: input.status,
+          kind,
+          phase,
           title: body.slice(0, 120),
           body,
           createdBy: "HUMAN",
@@ -388,59 +544,6 @@ export function useCwmWorkspace(
     [proposeOperations, selectedElements],
   );
 
-  const promoteSelectedObjects = useCallback(
-    async (promotion: HumanPromotion) => {
-      const eligible = selectedObjects.filter((object) => object.status !== "ARCHIVED");
-      if (!eligible.length) throw new Error("Select one or more non-archived typed objects");
-      const now = new Date().toISOString();
-      const operations = eligible.map<CwmSemanticOperation>((object, index) => {
-        const status =
-          promotion === "ENDORSE" ? "ENDORSED" : promotion === "DISPUTE" ? "DISPUTED" : "DECIDED";
-        const label =
-          promotion === "ENDORSE"
-            ? "Endorsed"
-            : promotion === "DISPUTE"
-              ? "Marked disputed"
-              : "Committed/decided";
-        return {
-          type: "UPSERT_OBJECT",
-          object: {
-            ...object,
-            kind: promotion === "COMMIT" && object.kind !== "Task" ? "Decision" : object.kind,
-            layer: promotion === "COMMIT" ? "COMMITMENT" : object.layer,
-            status,
-            updatedAt: now,
-            provenance: [
-              ...object.provenance.slice(-31),
-              {
-                id: `human-promotion-${now.replace(/\D/g, "").slice(0, 17)}-${index + 1}`,
-                kind: "HUMAN_INPUT",
-                sourceId: object.id,
-                locator: `cwm:${promotion.toLocaleLowerCase()}`,
-                excerpt: `${label} through the local jWhiteboard selection inspector`,
-                capturedBy: "HUMAN",
-                capturedAt: now,
-                confidence: 1,
-              },
-            ],
-          },
-        };
-      });
-      const label =
-        promotion === "ENDORSE"
-          ? "Endorse"
-          : promotion === "DISPUTE"
-            ? "Mark disputed"
-            : "Commit/decide";
-      await proposeOperations(
-        operations,
-        `${label} ${eligible.length} selected typed object${eligible.length === 1 ? "" : "s"} by explicit local human action`,
-        { actor: "HUMAN" },
-      );
-    },
-    [proposeOperations, selectedObjects],
-  );
-
   const createRegion = useCallback(
     async (title: string) => {
       const current = workspaceRef.current;
@@ -457,7 +560,7 @@ export function useCwmWorkspace(
       const region: CwmRegion = {
         id: `region-${now.replace(/\D/g, "")}-${Math.random().toString(36).slice(2, 7)}`,
         title: title.trim(),
-        status: "CAPTURED",
+        phase: "accepted",
         bounds: { x, y, width: Math.max(0, maxX - x), height: Math.max(0, maxY - y) },
         objectIds,
         createdBy: "HUMAN",
@@ -592,7 +695,7 @@ export function useCwmWorkspace(
           message: `Proposal rejected · head ${rejected.workspace.headSequence}`,
         });
       } catch (error) {
-        api.updateScene({ elements: withPendingProposalPreviews(withoutPreview, current) });
+        api.updateScene({ elements: withoutPreview });
         if (error instanceof CwmApiError && error.status === 409) await refresh();
         setStatus({ kind: "error", message: `Reject failed — ${errorMessage(error)}` });
       } finally {
@@ -690,7 +793,16 @@ export function useCwmWorkspace(
     const current = workspaceRef.current;
     if (!api) return null;
     const snapshotWorkspace = current ? { ...current, focus: focusRef.current } : null;
-    return createBoundedSceneSnapshot({
+    const anchored = anchoredSelectionRef.current;
+    const anchoredStillFresh =
+      anchored && Date.now() - anchored.capturedAt < ANCHORED_SELECTION_TTL_MS
+        ? { selection: anchored.selection, selectedItems: anchored.selectedItems }
+        : null;
+    if (anchored && !anchoredStillFresh) {
+      anchoredSelectionRef.current = null;
+    }
+
+    const snapshot = createBoundedSceneSnapshot({
       elements: api.getSceneElements(),
       appState: api.getAppState(),
       loadedFile,
@@ -698,7 +810,18 @@ export function useCwmWorkspace(
       pendingProposal: Object.values(current?.proposals ?? {}).find(
         (proposal) => proposal.status === "PENDING",
       ),
+      anchoredSelection: anchoredStillFresh,
     });
+
+    // Refresh the anchor whenever Excalidraw reports a live selection.
+    if (snapshot.selectionSource === "live" && snapshot.selectedItems.length > 0) {
+      anchoredSelectionRef.current = {
+        selection: snapshot.selection,
+        selectedItems: snapshot.selectedItems,
+        capturedAt: Date.now(),
+      };
+    }
+    return snapshot;
   }, [api, loadedFile]);
 
   const getGuiSnapshot = useCallback(
@@ -710,6 +833,7 @@ export function useCwmWorkspace(
       ...(getSceneSnapshot() ?? {
         loadedFile,
         selection: [],
+        selectedItems: [],
         focusedRegions: [],
         openingBrief: null,
         pendingProposal: null,
@@ -734,7 +858,6 @@ export function useCwmWorkspace(
     handoffPath,
     recallToBoard,
     promoteSelection,
-    promoteSelectedObjects,
     createRegion,
     showFocus,
     focusRegion,

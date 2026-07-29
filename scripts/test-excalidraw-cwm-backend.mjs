@@ -38,13 +38,12 @@ const scene = {
 };
 const timestamp = "2026-07-27T02:00:00.000Z";
 
-function semanticObject(id) {
+function semanticObject(id, kind = "note") {
   return {
     id,
-    kind: "Claim",
-    layer: "EVIDENCE",
-    status: "CAPTURED",
-    body: `Evidence ${id}`,
+    kind,
+    phase: kind === "decision" ? "pending" : "accepted",
+    body: `Body ${id}`,
     createdBy: "AI",
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -52,8 +51,8 @@ function semanticObject(id) {
   };
 }
 
-function operationFor(id) {
-  return { type: "UPSERT_OBJECT", object: semanticObject(id) };
+function operationFor(id, kind = "note") {
+  return { type: "UPSERT_OBJECT", object: semanticObject(id, kind) };
 }
 
 let sequence = 0;
@@ -158,41 +157,56 @@ try {
     bootstrapped.workspace.id,
   );
 
-  // Epistemic operations are staged by authority policy, then explicitly confirmed.
-  const proposedA = await service.propose({
+  // Notes apply immediately; decisions are staged until explicitly confirmed.
+  const appliedNote = await service.propose({
     path: boardRelativePath,
     headSequence: 0,
-    operations: [operationFor("claim-a")],
-    rationale: "Capture source-backed evidence",
+    operations: [operationFor("note-a", "note")],
+    rationale: "Capture source-backed note",
   });
-  assert.equal(proposedA.authority.disposition, "REQUIRE_CONFIRMATION");
-  assert.equal(proposedA.proposal.status, "PENDING");
-  assert.equal(proposedA.workspace.objects["claim-a"], undefined);
-  assert.equal(proposedA.workspace.headSequence, 1);
+  assert.equal(appliedNote.authority.disposition, "APPLY_REVERSIBLY");
+  assert.equal(appliedNote.proposal, undefined);
+  assert.equal(appliedNote.workspace.objects["note-a"].body, "Body note-a");
+  assert.equal(appliedNote.workspace.headSequence, 1);
 
-  const confirmedA = await service.confirm({
+  const proposedDecision = await service.propose({
     path: boardRelativePath,
     headSequence: 1,
-    proposalId: proposedA.proposal.id,
+    operations: [operationFor("decision-a", "decision")],
+    rationale: "Move forward",
   });
-  assert.equal(confirmedA.workspace.objects["claim-a"].body, "Evidence claim-a");
-  assert.equal(confirmedA.workspace.proposals[proposedA.proposal.id].status, "CONFIRMED");
-  assert.equal(confirmedA.workspace.headSequence, 2);
+  assert.equal(proposedDecision.authority.disposition, "REQUIRE_CONFIRMATION");
+  assert.equal(proposedDecision.proposal.status, "PENDING");
+  assert.equal(proposedDecision.workspace.objects["decision-a"], undefined);
+  assert.equal(proposedDecision.workspace.headSequence, 2);
+
+  const confirmedDecision = await service.confirm({
+    path: boardRelativePath,
+    headSequence: 2,
+    proposalId: proposedDecision.proposal.id,
+  });
+  assert.equal(confirmedDecision.workspace.objects["decision-a"].body, "Body decision-a");
+  assert.equal(confirmedDecision.workspace.objects["decision-a"].phase, "accepted");
+  assert.equal(
+    confirmedDecision.workspace.proposals[proposedDecision.proposal.id].status,
+    "CONFIRMED",
+  );
+  assert.equal(confirmedDecision.workspace.headSequence, 3);
 
   const proposedB = await service.propose({
     path: boardRelativePath,
-    headSequence: 2,
-    operations: [operationFor("claim-b")],
+    headSequence: 3,
+    operations: [operationFor("decision-b", "decision")],
   });
   const rejectedB = await service.reject({
     path: boardRelativePath,
-    headSequence: 3,
+    headSequence: 4,
     proposalId: proposedB.proposal.id,
     reason: "Not enough support",
   });
-  assert.equal(rejectedB.workspace.objects["claim-b"], undefined);
+  assert.equal(rejectedB.workspace.objects["decision-b"], undefined);
   assert.equal(rejectedB.workspace.proposals[proposedB.proposal.id].status, "REJECTED");
-  assert.equal(rejectedB.workspace.headSequence, 4);
+  assert.equal(rejectedB.workspace.headSequence, 5);
 
   await assert.rejects(
     service.propose({
@@ -200,19 +214,19 @@ try {
       headSequence: 0,
       operations: [operationFor("stale")],
     }),
-    (error) => error?.status === 409 && error?.details?.actualHeadSequence === 4,
+    (error) => error?.status === 409 && error?.details?.actualHeadSequence === 5,
   );
 
   // Compensation names the original materializing event and applies its stored inverse.
   const compensated = await service.compensate({
     path: boardRelativePath,
-    headSequence: 4,
-    eventId: confirmedA.event.id,
-    reason: "Undo confirmed evidence",
+    headSequence: 5,
+    eventId: confirmedDecision.event.id,
+    reason: "Undo confirmed decision",
   });
-  assert.equal(compensated.event.compensatesEventId, confirmedA.event.id);
-  assert.equal(compensated.workspace.objects["claim-a"], undefined);
-  assert.equal(compensated.workspace.headSequence, 5);
+  assert.equal(compensated.event.compensatesEventId, confirmedDecision.event.id);
+  assert.equal(compensated.workspace.objects["decision-a"], undefined);
+  assert.equal(compensated.workspace.headSequence, 6);
 
   const checkpointScene = {
     ...scene,
@@ -221,18 +235,18 @@ try {
   };
   const checkpointed = await service.checkpoint({
     path: boardRelativePath,
-    headSequence: 5,
+    headSequence: 6,
     scene: checkpointScene,
   });
   assert.equal(checkpointed.event.actionClass, "MECHANICAL");
   assert.match(checkpointed.event.reason, /^CHECKPOINT/);
   assert.deepEqual(JSON.parse(await readFile(derived.boardPath, "utf8")), checkpointScene);
-  assert.equal(checkpointed.workspace.headSequence, 6);
+  assert.equal(checkpointed.workspace.headSequence, 7);
 
   await assert.rejects(
     service.checkpoint({
       path: boardRelativePath,
-      headSequence: 6,
+      headSequence: 7,
       scene: { type: "excalidraw", version: 2, elements: [] },
     }),
     (error) => error?.status === 400,
@@ -241,7 +255,7 @@ try {
   const markdown = "# Curatorial handoff\n\n- Confirmed findings\n- Open questions\n";
   const consolidated = await service.consolidate({
     path: boardRelativePath,
-    headSequence: 6,
+    headSequence: 7,
     markdown,
     fileName: "session-handoff.md",
   });
@@ -251,15 +265,15 @@ try {
     markdown,
   );
   assert.match(consolidated.event.reason, /^CONSOLIDATED Planning\/cwm-sessions\//);
-  assert.equal(consolidated.workspace.headSequence, 7);
+  assert.equal(consolidated.workspace.headSequence, 8);
 
   const tail = await service.getEventTail(boardRelativePath, {
-    afterSequence: 5,
+    afterSequence: 6,
     limit: 10,
   });
   assert.deepEqual(
     tail.events.map((event) => event.sequence),
-    [6, 7],
+    [7, 8],
   );
 
   // Simulate interruption after event append but before sidecar rename; read repairs by replay.
@@ -269,8 +283,8 @@ try {
     "utf8",
   );
   const recovered = await service.getHead(boardRelativePath);
-  assert.equal(recovered.workspace.headSequence, 7);
-  assert.equal(JSON.parse(await readFile(derived.workspacePath, "utf8")).headSequence, 7);
+  assert.equal(recovered.workspace.headSequence, 8);
+  assert.equal(JSON.parse(await readFile(derived.workspacePath, "utf8")).headSequence, 8);
 
   // The per-board promise lock admits exactly one writer at a shared optimistic head.
   const concurrentResults = await Promise.allSettled([
@@ -296,7 +310,7 @@ try {
   assert.equal(concurrentHead.events.length, 1);
 
   const lines = (await readFile(derived.eventsPath, "utf8")).trim().split("\n");
-  assert.equal(lines.length, 7);
+  assert.equal(lines.length, 8);
   console.log("OK: Curatorial Whiteboard backend persistence (11 coverage groups)");
 } finally {
   await rm(tempRoot, { recursive: true, force: true });

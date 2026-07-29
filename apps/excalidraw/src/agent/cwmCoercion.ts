@@ -3,6 +3,7 @@ import {
   CWM_OBJECT_KINDS,
   CWM_RELATION_KINDS,
   assertValidCwmOperation,
+  normalizeCwmObjectKind,
   type CwmFocus,
   type CwmObjectKind,
   type CwmProvenance,
@@ -84,6 +85,19 @@ function coerceProvenance(
   now: string,
   prefix: string,
 ): CwmProvenance[] {
+  // Models often pass a free-text provenance string instead of an array.
+  if (typeof value === "string" && value.trim()) {
+    return [
+      {
+        id: `${prefix}-1`,
+        kind: "CONVERSATION",
+        sourceId: "conversation",
+        excerpt: value.trim().slice(0, 480),
+        capturedBy: "AI",
+        capturedAt: now,
+      },
+    ];
+  }
   return objectList(value).map((entry, index) => {
     const sourceUri = text(entry.sourceUri, `${prefix}[${index}].sourceUri`, false);
     const sourceId = text(entry.sourceId, `${prefix}[${index}].sourceId`, false);
@@ -133,26 +147,59 @@ export function coerceStageOpening(
   args: UnknownRecord,
   now = new Date().toISOString(),
 ): readonly CwmSemanticOperation[] {
-  const brief = record(args.brief, "brief");
+  // Models often pass brief as a string plus top-level tensions/sources.
+  const brief: UnknownRecord =
+    typeof args.brief === "string" && args.brief.trim()
+      ? {
+          summary: args.brief.trim(),
+          tensions: args.tensions,
+          whatChanged: args.whatChanged,
+          openQuestions: args.openQuestions,
+          starts: args.starts,
+        }
+      : args.brief && typeof args.brief === "object" && !Array.isArray(args.brief)
+        ? {
+            ...(args.brief as UnknownRecord),
+            tensions: (args.brief as UnknownRecord).tensions ?? args.tensions,
+            whatChanged: (args.brief as UnknownRecord).whatChanged ?? args.whatChanged,
+            openQuestions: (args.brief as UnknownRecord).openQuestions ?? args.openQuestions,
+            starts: (args.brief as UnknownRecord).starts ?? args.starts,
+          }
+        : record(args.brief, "brief");
   const sourceEntries = objectList(args.sources);
   const timestampId = now.replace(/\D/g, "").slice(0, 17) || "session";
   const sourceOperations = sourceEntries.map<CwmSemanticOperation>((source, index) => {
-    const sourceUri = text(source.sourceUri, `sources[${index}].sourceUri`, false);
-    const sourceId = text(source.sourceId, `sources[${index}].sourceId`, false);
+    const path = text(source.path, `sources[${index}].path`, false);
+    const sourceUri = text(
+      source.sourceUri ?? (path.startsWith("http") || path.startsWith("joshu://") ? path : ""),
+      `sources[${index}].sourceUri`,
+      false,
+    );
+    const sourceId = text(
+      source.sourceId ?? path ?? source.label,
+      `sources[${index}].sourceId`,
+      false,
+    );
     if (!sourceUri && !sourceId) {
-      throw new Error(`sources[${index}] must include sourceUri or sourceId`);
+      throw new Error(`sources[${index}] must include sourceUri, sourceId, or path`);
     }
-    const id = `source-${timestampId}-${safeId(source.id ?? source.title, "card")}-${index + 1}`.slice(
+    const id = `source-${timestampId}-${safeId(source.id ?? source.title ?? sourceId, "card")}-${index + 1}`.slice(
       0,
       128,
     );
-    const body = text(source.body ?? source.excerpt, `sources[${index}].body`);
+    const body = text(
+      source.body ?? source.excerpt ?? source.label ?? sourceId,
+      `sources[${index}].body`,
+    );
     const provenance: CwmProvenance = {
       id: `provenance-${id}`.slice(0, 128),
       kind: provenanceKind(source.kind, Boolean(sourceUri)),
       ...(sourceId ? { sourceId: sourceId.slice(0, 128) } : {}),
       ...(sourceUri ? { sourceUri } : {}),
-      excerpt: text(source.excerpt ?? source.body, "source excerpt", false).slice(0, 480),
+      excerpt: text(source.excerpt ?? source.body ?? source.label, "source excerpt", false).slice(
+        0,
+        480,
+      ),
       capturedBy: "AI",
       capturedAt: now,
     };
@@ -160,10 +207,9 @@ export function coerceStageOpening(
       type: "UPSERT_OBJECT",
       object: {
         id,
-        kind: "Source",
-        layer: "EVIDENCE",
-        status: "PROPOSED",
-        title: text(source.title, `sources[${index}].title`, false) || body.slice(0, 120),
+        kind: "note",
+        phase: "accepted",
+        title: text(source.title ?? source.label, `sources[${index}].title`, false) || body.slice(0, 120),
         body,
         createdBy: "AI",
         createdAt: now,
@@ -189,6 +235,24 @@ export function coerceStageOpening(
   ];
 }
 
+function classifyAgentKind(raw: unknown, body: string, title: string): CwmObjectKind {
+  const normalized = normalizeCwmObjectKind(raw);
+  if (CWM_OBJECT_KINDS.includes(raw as CwmObjectKind)) return raw as CwmObjectKind;
+  if (normalized !== "note") return normalized;
+  const haystack = `${title}\n${body}`.toLowerCase();
+  if (
+    /\b(decid(e|ed|ion)|commit(ment)?|ship it|do this|let'?s do|assign|deadline|owner)\b/.test(
+      haystack,
+    )
+  ) {
+    return "decision";
+  }
+  if (/\?/.test(haystack) || /\b(open question|unresolved|should we|how do we)\b/.test(haystack)) {
+    return "open_question";
+  }
+  return "note";
+}
+
 /**
  * Prefer nested `operation.object`. Recover flat hallucinations such as
  * `{ type:"UPSERT_OBJECT", text:"...", id:"sticky-1" }` (no nested object).
@@ -207,13 +271,45 @@ function resolveObjectInput(operation: UnknownRecord, index: number): UnknownRec
   }
   return {
     id: operation.id,
-    kind: operation.kind ?? "Comment",
-    layer: operation.layer ?? "SENSEMAKING",
+    kind: operation.kind ?? "note",
     title: operation.title ?? flatBody.split("\n")[0]?.slice(0, 120),
     body: flatBody,
     provenance: operation.provenance,
     tags: operation.tags,
   };
+}
+
+const SEMANTIC_OP_TYPES = new Set([
+  "UPSERT_OBJECT",
+  "UPSERT_RELATION",
+  "UPSERT_REGION",
+  "REMOVE_OBJECT",
+  "SET_MODE",
+  "SET_OPENING_BRIEF",
+  "SET_FOCUS",
+  "SET_SCENE_BINDING",
+]);
+
+/**
+ * Models often put the op verb in `kind` (UPSERT_OBJECT) instead of `type`.
+ * Do not confuse that with object.kind (note|open_question|decision).
+ */
+function resolveOperationType(operation: UnknownRecord): string {
+  const type = typeof operation.type === "string" ? operation.type.trim() : "";
+  if (type) return type;
+  const kind = typeof operation.kind === "string" ? operation.kind.trim() : "";
+  if (SEMANTIC_OP_TYPES.has(kind)) return kind;
+  // Flat sticky payload at the operation root → UPSERT_OBJECT.
+  if (
+    operation.object ||
+    operation.body ||
+    operation.title ||
+    operation.text ||
+    (kind && (CWM_OBJECT_KINDS as readonly string[]).includes(kind))
+  ) {
+    return "UPSERT_OBJECT";
+  }
+  return "";
 }
 
 function coerceObjectOperation(
@@ -222,22 +318,20 @@ function coerceObjectOperation(
   index: number,
 ): CwmSemanticOperation {
   const input = resolveObjectInput(operation, index);
-  if (input.layer === "COMMITMENT") {
-    throw new Error("AI transactions cannot create commitment-layer objects");
-  }
-  const kind = CWM_OBJECT_KINDS.includes(input.kind as CwmObjectKind)
-    ? (input.kind as CwmObjectKind)
-    : "Comment";
+  const body = text(input.body, "object.body");
+  const title = text(input.title, "object.title", false);
+  const kind = classifyAgentKind(input.kind, body, title);
+  // Decisions also apply immediately in a whiteboard session (no Accept chips).
+  const phase = "accepted";
   let provenance = coerceProvenance(input.provenance, now, `provenance-${index + 1}`);
   // Conversation-grounded sticky notes may omit provenance; default to an explicit chat source.
   if (!provenance.length) {
-    const body = text(input.body, "object.body", false);
     provenance = [
       {
         id: `provenance-conversation-${index + 1}`,
         kind: "CONVERSATION",
         sourceId: "conversation",
-        excerpt: (body || text(input.title, "object.title", false) || "chat").slice(0, 480),
+        excerpt: (body || title || "chat").slice(0, 480),
         capturedBy: "AI",
         capturedAt: now,
       },
@@ -248,10 +342,9 @@ function coerceObjectOperation(
     object: {
       id: safeId(input.id, `ai-object-${index + 1}`),
       kind,
-      layer: input.layer === "EVIDENCE" ? "EVIDENCE" : "SENSEMAKING",
-      status: "PROPOSED",
-      title: text(input.title, "object.title", false),
-      body: text(input.body, "object.body"),
+      phase,
+      title,
+      body,
       createdBy: "AI",
       createdAt: now,
       updatedAt: now,
@@ -298,8 +391,8 @@ function normalizeTransactionArgs(args: UnknownRecord): UnknownRecord {
         {
           type: "UPSERT_OBJECT",
           object: {
-            kind: "Comment",
-            layer: "SENSEMAKING",
+            kind: "note",
+            phase: "accepted",
             title: title || content.split("\n")[0]?.slice(0, 120) || "Sticky note",
             body: content,
             provenance: [
@@ -319,6 +412,7 @@ function normalizeTransactionArgs(args: UnknownRecord): UnknownRecord {
 export function coerceAgentTransaction(
   args: UnknownRecord,
   now = new Date().toISOString(),
+  workspace?: CwmWorkspace | null,
 ): { readonly rationale: string; readonly operations: readonly CwmSemanticOperation[] } {
   const normalizedArgs = normalizeTransactionArgs(args);
   const transaction = record(normalizedArgs.transaction, "transaction");
@@ -332,10 +426,29 @@ export function coerceAgentTransaction(
 
   const operations = rawOperations.map((raw, index) => {
     const operation = record(raw, `operations[${index}]`);
+    const opType = resolveOperationType(operation);
     let coerced: CwmSemanticOperation;
-    switch (operation.type) {
+    switch (opType) {
       case "UPSERT_OBJECT":
         coerced = coerceObjectOperation(operation, now, index);
+        // Status updates on existing notes/questions must auto-apply — do not upgrade them to
+        // decisions (which park behind Accept chips and often look like "nothing happened").
+        if (
+          coerced.type === "UPSERT_OBJECT" &&
+          coerced.object.kind === "decision" &&
+          workspace?.objects[coerced.object.id] &&
+          workspace.objects[coerced.object.id]!.kind !== "decision"
+        ) {
+          const existingKind = workspace.objects[coerced.object.id]!.kind;
+          coerced = {
+            ...coerced,
+            object: {
+              ...coerced.object,
+              kind: existingKind,
+              phase: "accepted",
+            },
+          };
+        }
         break;
       case "UPSERT_RELATION": {
         const relation = record(operation.relation, `operations[${index}].relation`);
@@ -358,7 +471,7 @@ export function coerceAgentTransaction(
               : "RELATES_TO",
             source: record(relation.source, "relation.source") as { kind: "OBJECT" | "REGION"; id: string },
             target: record(relation.target, "relation.target") as { kind: "OBJECT" | "REGION"; id: string },
-            status: "PROPOSED",
+            phase: "accepted",
             label: text(relation.label, "relation.label", false),
             createdBy: "AI",
             createdAt: now,
@@ -375,7 +488,7 @@ export function coerceAgentTransaction(
           region: {
             id: safeId(region.id, `ai-region-${index + 1}`),
             title: text(region.title, "region.title"),
-            status: "PROPOSED",
+            phase: "accepted",
             bounds: {
               x: Number(bounds.x),
               y: Number(bounds.y),
@@ -413,7 +526,7 @@ export function coerceAgentTransaction(
       }
       default:
         throw new Error(
-          `operations[${index}].type is not agent-safe; removal, focus, commitment, and scene binding are forbidden`,
+          `operations[${index}] needs type (or kind) UPSERT_OBJECT/UPSERT_RELATION/UPSERT_REGION/SET_MODE/SET_OPENING_BRIEF; got ${JSON.stringify(opType || operation.type || operation.kind || null)}`,
         );
     }
     return assertValidCwmOperation(coerced);

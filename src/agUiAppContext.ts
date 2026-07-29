@@ -97,13 +97,17 @@ export function buildAppAgentSystemMessages(
     }
     if (manifest.id === "excalidraw") {
       lines.push(
+        "CORE TENET (AG-UI): embedded jWhiteboard chat must interact with the open board. Chat-only reviews are a protocol failure.",
         "jWhiteboard board writes require proposeTransaction/stageOpening/recallToBoard via app_gui_action.",
         "NEVER mutate the open board with write_file, patch, terminal edits, or skill_view('excalidraw').",
         "Those edit the .excalidraw file on disk; the open canvas does not auto-reload, so the user sees nothing.",
         "proposeTransaction args.transaction must include rationale plus operations[] of UPSERT_OBJECT (etc).",
-        "Each UPSERT_OBJECT needs nested object:{kind,layer,title,body,provenance}. Do not send {type:\"add_note\", content:\"...\"}.",
-        "One UPSERT_OBJECT per sticky note. Prefer Question/Comment under SENSEMAKING with CONVERSATION provenance.",
-        "On success, say the items are staged in the Review tray (dashed previews) — never claim they are accepted or already visible as committed stickies.",
+        "Each UPSERT_OBJECT needs nested object:{kind,title,body,provenance} with kind note|open_question|decision.",
+        "One UPSERT_OBJECT per sticky note. All kinds apply immediately; a small action note appears under each target.",
+        "If gui.selectedItems is set, update ONLY those selected notes — never substitute other board items from chat memory.",
+        "When gui.cwmReady is true: any review/orient/capture/empty-board turn MUST call proposeTransaction, recallToBoard, or stageOpening in the same turn before finishing.",
+        "If scenePreview is empty, the canvas is empty — stage stickies now; do not invent that prior chats left content visible.",
+        "Never claim items are on the board unless this turn successfully queued one of those board-write guiActions.",
         "If app_gui_action returns ok:false, report the error; do not fall back to file edits.",
       );
     }
@@ -114,16 +118,134 @@ export function buildAppAgentSystemMessages(
   }
 
   if (state.gui && Object.keys(state.gui).length > 0) {
+    const selectedItems = Array.isArray((state.gui as { selectedItems?: unknown }).selectedItems)
+      ? ((state.gui as { selectedItems: unknown[] }).selectedItems)
+      : [];
+    if (selectedItems.length > 0) {
+      // Put selection first so deixis cannot be buried under scenePreview / chat bias.
+      lines.push(
+        `REQUIRED CANVAS SELECTION (authoritative for "these"/"those"/"both of these"/"this"): ${JSON.stringify(selectedItems)}`,
+        "Operate on these selectedItems only. Do not replace them with entities mentioned earlier in the conversation.",
+      );
+    }
     lines.push(
       `Current GUI snapshot (authoritative for what the user sees now): ${JSON.stringify(state.gui)}`,
       "When the user asks what is open or visible, answer from activeView and list/detail preview fields in the snapshot — not from chat history or hidden background state.",
+      "DEIXIS: if gui.selectedItems is non-empty (selectionSource live or anchored), phrases like 'these'/'those'/'both of these'/'this' refer to selectedItems (use their text). Selection outranks prior chat entities and other board items.",
     );
   }
 
   return [{ role: "system", content: lines.join("\n") }];
 }
 
+/** Compact selection list for prompts — keep short so deixis survives log truncation. */
+export function formatSelectedItemsGrounding(
+  gui: Record<string, unknown> | undefined,
+): string | null {
+  if (!gui) return null;
+  const selectedItems = Array.isArray(gui.selectedItems) ? gui.selectedItems : [];
+  if (selectedItems.length === 0) return null;
+  const compact = selectedItems
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as Record<string, unknown>;
+      const text = readString(row.text);
+      const id = readString(row.id);
+      if (!text && !id) return null;
+      return text || id;
+    })
+    .filter((value): value is string => Boolean(value));
+  if (compact.length === 0) return null;
+  const source = readString(gui.selectionSource) || "unknown";
+  return (
+    `[Canvas selection (${source}): ${compact.map((text) => JSON.stringify(text)).join("; ")}. ` +
+    `Phrases like "these"/"those"/"both" refer ONLY to these items.]`
+  );
+}
+
+/**
+ * Prefix the latest user turn with canvas selection so demonstratives cannot be
+ * resolved from chat memory when the GUI snapshot is empty or buried in system text.
+ */
+export function groundUserMessagesWithSelection(
+  messages: readonly HermesChatMessage[],
+  gui: Record<string, unknown> | undefined,
+): HermesChatMessage[] {
+  const grounding = formatSelectedItemsGrounding(gui);
+  if (!grounding) return [...messages];
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  if (lastUserIndex < 0) return [...messages];
+  const target = messages[lastUserIndex]!;
+  const content = typeof target.content === "string" ? target.content : "";
+  if (content.includes("[Canvas selection (")) return [...messages];
+  return messages.map((message, index) =>
+    index === lastUserIndex
+      ? { ...message, content: `${grounding}\n${content}` }
+      : message,
+  );
+}
+
 export function getManifestForAppId(appId: string | undefined): JoshuAppManifest | undefined {
   if (!appId) return undefined;
   return getAppManifest(appId);
+}
+
+/** Board-mutating guiActions — chat text alone does not satisfy the AG-UI whiteboard tenet. */
+export const EXCALIDRAW_BOARD_MUTATING_ACTIONS = new Set([
+  "proposeTransaction",
+  "recallToBoard",
+  "stageOpening",
+]);
+
+const TRIVIAL_WHITEBOARD_ACK =
+  /^(thanks|thank you|thx|ok|okay|k|got it|cool|great|sure|yes|yep|yeah|no|nope|nm|👍|🙏)[.!]*$/i;
+
+const WHITEBOARD_MUST_WRITE =
+  /\b(review|action items?|what'?s open|whats open|next steps?|capture|put (?:it |them )?on|add (?:a |the )?note|stage|orient|start session|summarize|dump|inventory|todo|to-?dos?)\b/i;
+
+export function isExcalidrawBoardMutatingAction(action: string | undefined): boolean {
+  return Boolean(action && EXCALIDRAW_BOARD_MUTATING_ACTIONS.has(action));
+}
+
+export function latestUserText(messages: readonly HermesChatMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+    return typeof message.content === "string" ? message.content.trim() : "";
+  }
+  return "";
+}
+
+/**
+ * When true, an embedded jWhiteboard turn that emits no board-write guiAction is incomplete.
+ * Snapshot-only Q&A on a populated board is allowed; empty boards and review/orient turns are not.
+ */
+export function requiresExcalidrawBoardMutation(
+  gui: Record<string, unknown> | undefined,
+  userText: string,
+): boolean {
+  if (!gui || gui.cwmReady !== true) return false;
+  const text = userText
+    .replace(/^\[Canvas selection \([^\]]*\)[^\]]*\]\s*/i, "")
+    .trim();
+  if (!text || TRIVIAL_WHITEBOARD_ACK.test(text)) return false;
+  const scenePreview = Array.isArray(gui.scenePreview) ? gui.scenePreview : [];
+  if (scenePreview.length === 0) return true;
+  return WHITEBOARD_MUST_WRITE.test(text);
+}
+
+/** System nudge injected for the one-shot AG-UI board-mutation retry. */
+export function buildWhiteboardBoardMutationNudge(): string {
+  return [
+    "PROTOCOL VIOLATION: this jWhiteboard turn finished without a board-write guiAction.",
+    "Embedded AG-UI chats must change the open canvas — chat-only inventories are forbidden.",
+    "Immediately call app_gui_action with proposeTransaction, recallToBoard, or stageOpening",
+    "(appId=excalidraw) and put concrete stickies on the board. Do not answer with a chat-only list.",
+  ].join(" ");
 }

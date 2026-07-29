@@ -58,6 +58,16 @@ if [[ "${TERMINAL_MAIL_GUARD_OUT}" == *"applied terminal mail-guard patch"* ]]; 
   RESYNC_APPLIED=1
 fi
 
+TERMINAL_SECRETS_GUARD_SCRIPT="${ROOT}/scripts/patch-hermes-terminal-secrets-guard.mjs"
+TERMINAL_SECRETS_GUARD_OUT="$(node "${TERMINAL_SECRETS_GUARD_SCRIPT}" tools/terminal_tool.py 2>&1)" || {
+  echo "${TERMINAL_SECRETS_GUARD_OUT}" >&2
+  exit 1
+}
+echo "${TERMINAL_SECRETS_GUARD_OUT}"
+if [[ "${TERMINAL_SECRETS_GUARD_OUT}" == *"applied terminal secrets-guard patch"* ]]; then
+  RESYNC_APPLIED=1
+fi
+
 if [[ "${RESYNC_APPLIED}" -eq 1 ]]; then
   echo "[hermes-patch] Hermes browser patches changed — restart Hermes gateway"
   exit 2

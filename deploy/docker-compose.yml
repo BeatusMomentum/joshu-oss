@@ -35,6 +35,9 @@ services:
       # Optional hotfix mounts (0.1.7+ bakes these in; keep for bootstrapping without rebuild).
       - ./scripts/vps-start.sh:/opt/joshu/scripts/vps-start.sh:ro
       - ../scripts/patch-camofox-single-tab.mjs:/opt/joshu/scripts/patch-camofox-single-tab.mjs:ro
+      # jterm: Hermes must not cat instance.env / GHCR secrets (until baked in image).
+      - ../scripts/patch-hermes-terminal-secrets-guard.mjs:/opt/joshu/scripts/patch-hermes-terminal-secrets-guard.mjs:ro
+      - ../scripts/apply-hermes-hitl-patch.sh:/opt/joshu/scripts/apply-hermes-hitl-patch.sh:ro
       - ../scripts/lib:/opt/joshu/scripts/lib:ro
       - ../scripts/bootstrap-joshu-files.sh:/opt/joshu/scripts/bootstrap-joshu-files.sh:ro
       - ../scripts/bootstrap-executive-assistant.sh:/opt/joshu/scripts/bootstrap-executive-assistant.sh:ro

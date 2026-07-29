@@ -8,47 +8,50 @@ authority rules, and an append-only audit trail beside an eligible board.
 This document describes the completed **local prototype**. It does not describe
 a deployed service or a collaboration backend.
 
+**Pause-point (2026-07-28):** session mode now applies writes immediately (no
+Accept chips). Some sections below still describe proposal/Accept review — treat
+those as legacy. Current behavior, known grounding failures, and the unbuilt
+Hermes-bypass for pointer intents:
+[`jwhiteboard-developer-guide.md` — Session prototype status](jwhiteboard-developer-guide.md#session-prototype-status-paused-2026-07-28).
+
 ## Principles
 
 1. **Separate appearance from meaning.** Excalidraw elements own rendering and
-   geometry. The CWM sidecar owns semantic objects, relations, regions, status,
+   geometry. The CWM sidecar owns semantic objects, relations, regions, phase,
    provenance, focus, and proposals. Scene bindings connect the two by opaque
    element IDs.
-2. **Separate evidence, interpretation, and commitment.** Material does not
-   become a decision merely because it appears on the board.
+2. **Separate notes, questions, and decisions.** Material does not become a
+   commitment merely because it appears on the board.
 3. **Preserve provenance and disagreement.** Source links, excerpts,
-   uncertainty, contradictions, open questions, and rejected options remain
+   uncertainty, contradictions, open questions, and dismissed decisions remain
    inspectable.
-4. **AI proposes; a human disposes.** Agent-authored semantics begin as
-   `PROPOSED`. Agent actions cannot accept, reject, commit, delete, bind raw
-   scene elements, or patch scene JSON.
+4. **AI and human write the session board directly.** Notes, open questions, and
+   decisions apply immediately. A small plain text note appears under each
+   acted-on sticky. Agent actions cannot delete history, bind raw scene
+   elements, or patch scene JSON.
 5. **Prefer bounded context.** Agent snapshots, retrieval packets, pointer
    history, transactions, and handoffs have explicit limits.
 6. **Make change recoverable.** Durable changes are represented by ordered,
    append-only events. Reversible changes store inverse operations and undo is
    another compensating event, never deletion or rewriting of history.
 
-## Three semantic layers and statuses
+## Simplified kinds and phases
 
-Every semantic object belongs to one layer:
+Every semantic object has one kind:
 
-- `EVIDENCE` — sources, extracts, observations, and other grounding material.
-- `SENSEMAKING` — claims, questions, hypotheses, clusters, options, comments,
-  and interpretations.
-- `COMMITMENT` — accepted decisions, tasks, and other explicit commitments.
+- `note` — evidence, comments, and other non-commitment material.
+- `open_question` — unresolved questions.
+- `decision` — items to move forward on (apply immediately in-session).
 
-Objects, relations, and regions use these statuses:
+And one phase:
 
-- `CAPTURED` — recorded without an endorsement claim.
-- `PROPOSED` — staged for review and not yet accepted.
-- `ENDORSED` — explicitly supported by a human.
-- `DISPUTED` — explicitly contested or unresolved.
-- `DECIDED` — explicitly committed or decided.
-- `ARCHIVED` — retained but no longer active.
+- `pending` — legacy; new session writes use `accepted`.
+- `accepted` — applied on the board / decisions list.
+- `dismissed` — rejected or archived.
 
-The model also supports workflow modes `ORIENT`, `CURATE`, `DIVERGE`,
-`CONVERGE`, and `COMMIT`. A mode is guidance, not authority: entering a mode
-does not itself endorse an object or accept a proposal.
+Legacy layer/status vocabularies from earlier prototypes are normalized on load
+into these kinds and phases. Workflow modes `ORIENT`, `CURATE`, `DIVERGE`,
+`CONVERGE`, and `COMMIT` remain guidance only.
 
 ## Local architecture
 
@@ -60,8 +63,8 @@ The prototype has four local pieces:
 2. The Joshu server exposes a localhost-only Express API and persists boards,
    sidecars, event logs, checkpoints, and handoffs under the resolved
    `joshu's files` root.
-3. The jWhiteboard React wrapper loads the CWM workspace, renders the semantic
-   inspector and review tray, materializes confirmed proposals, captures the
+3. The jWhiteboard React wrapper loads the CWM workspace, renders the Move-forward
+   list and pending decision chips, materializes confirmed decisions, captures the
    Joshu Pointer, and supplies bounded context to the embedded agent.
 4. The embedded app agent uses the `whiteboard-gui` skill and a restricted set
    of semantic GUI actions. File Brain and Hindsight are accessed through the
@@ -164,20 +167,12 @@ Transactions take the strongest class of any included operation:
 | Class | Examples | Disposition |
 |-------|----------|-------------|
 | `EPHEMERAL` | focus | Apply immediately; not durable semantic authority. |
-| `MECHANICAL` | scene binding, checkpoint marker | Apply immediately with stored inverse where material state changes. |
-| `ORGANIZATIONAL` | mode, region, relation | Stage as a reversible proposal. |
-| `EPISTEMIC` | evidence/sensemaking object, opening brief | Require confirmation. |
-| `COMMITMENT` | commitment-layer object or deletion of one | Require confirmation. |
+| `MECHANICAL` | note/open_question upsert, region, relation, binding, opening brief | Apply immediately with stored inverse where material state changes. |
+| `COMMITMENT` | `decision` upsert or deletion of a decision | Stage as a pending chip; require human Accept. |
 
-Pending proposals appear as visually distinct previews and in the **Review
-tray**. **Accept** first durably confirms the proposal, then materializes its
-scene representation and checkpoints the accepted scene. **Reject** removes
-the preview and records rejection without changing accepted semantics.
-
-The selection inspector provides explicit human **Endorse**, **Mark disputed**,
-and **Commit/Decide** actions. These actions also enter the review tray before
-changing accepted semantic state. Pending proposals are excluded from accepted
-session handoffs.
+Pending decisions appear as **chips next to their source**. **Accept** confirms
+the decision into the Move-forward list and materializes/checkpoints the scene.
+**Dismiss** removes the chip without changing accepted semantics.
 
 ## Embedded agent, actions, skill, and Start Session
 
@@ -187,28 +182,27 @@ and `ea-time-block`.
 
 The agent can call only:
 
-- `recallToBoard(query, limit?)` — retrieve and stage up to six source cards;
-- `stageOpening(brief, sources?)` — stage an opening brief and source cards;
-- `proposeTransaction(transaction)` — stage validated semantic upserts;
+- `recallToBoard(query, limit?)` — retrieve and apply up to six note cards;
+- `stageOpening(brief, sources?)` — apply an opening brief and source notes;
+- `proposeTransaction(transaction)` — upsert notes/questions immediately, or
+  stage decisions as pending chips;
 - `showFocus(focus)` — update ephemeral semantic focus;
 - `focusRegion(regionId)` — navigate to an existing region;
 - `openBoard(path)` — open another eligible relative board.
 
 The bridge does not expose raw Excalidraw mutation, scene binding, removal,
-commitment, confirmation, acceptance, or rejection. When the board window is
-open, Hermes must not fall back to `write_file` / `patch` / the diagram
-`excalidraw` skill: those edit the file on disk while the live canvas does not
-auto-reload. Board mutations go through `app_gui_action` and appear first as
-Review-tray proposals. AI-created objects and
-relations require source-linked provenance, are forced to `PROPOSED`, and may
-use only `EVIDENCE` or `SENSEMAKING`. AI transactions cannot enter `COMMIT`
-mode.
+confirmation, acceptance, or dismissal. When the board window is open, Hermes
+must not fall back to `write_file` / `patch` / the diagram `excalidraw` skill:
+those edit the file on disk while the live canvas does not auto-reload. Board
+mutations go through `app_gui_action`. Notes and open questions apply
+immediately; decisions require human Accept. AI transactions cannot enter
+`COMMIT` mode.
 
 **Start Session** sends a programmatic prompt to the embedded agent. The skill
 instructs it to inspect the current bounded GUI snapshot, optionally retrieve a
 small grounding packet, preserve tensions and open questions, offer two or
-three possible starts, and call `stageOpening`. The result remains visibly
-staged until a human accepts or rejects it.
+three possible starts, and call `stageOpening`. Notes land on the board;
+decisions wait as pending chips.
 
 ## Bounded agent snapshot
 
@@ -223,6 +217,8 @@ The agent receives a compact GUI snapshot, not the raw scene:
 - at most 40 ranked scene-preview elements.
 
 Selection and focused objects outrank visible and off-screen elements.
+The snapshot includes `selectedItems` with resolved sticky text (including text bound
+to a selected container). Demonstratives must prefer `selectedItems` over prior chat.
 Element text is capped at 120 characters and the serialized snapshot is capped
 at **8 KiB**. Preview items are removed until the envelope fits; if necessary,
 proposal operations, selection, and focused-region IDs are reduced as well.
@@ -268,7 +264,7 @@ four, 24 candidates per lane, and 600 characters per card. Results are
 deduplicated by normalized text and alternate file and memory lanes when both
 are available.
 
-Recall creates `Source` / `EVIDENCE` / `PROPOSED` objects with `FILE` or
+Recall creates `note` / `accepted` objects with `FILE` or
 `MEMORY` provenance and stages them for review. It does not accept cards, write
 Hindsight memory, or perform broad unbounded retrieval.
 
@@ -301,10 +297,10 @@ to the board with a `joshu://` URI.
    under `Planning/`; or open an existing durable `.excalidraw` board under
    `joshu's files`.
 2. Confirm the Curatorial workspace status is **ready**.
-3. Select ordinary canvas elements and type them by object kind, layer, and
-   status. Review the resulting proposal.
-4. Accept or reject proposals in the review tray. Use the selection inspector
-   to endorse, dispute, or commit already typed objects.
+3. Draw freely; ask Joshu to add notes or open questions. Decisions appear as
+   pending chips next to their source.
+4. Accept or dismiss pending decision chips. Accepted decisions land in the
+   Move-forward sidebar list.
 5. Create soft regions for navigation and focus.
 6. Use **Joshu Pointer** while speaking to ground “this,” “these,” or a sweep;
    confirm low-confidence highlighting before consequential proposals.
@@ -415,12 +411,12 @@ contract.
 
 As of July 2026, the local prototype is implemented with:
 
-- semantic layers, statuses, provenance, regions, relations, focus, proposals,
-  authority classification, validation, event replay, and compensation;
+- semantic kinds (`note` / `open_question` / `decision`), phases, provenance,
+  regions, relations, focus, proposals, authority classification, validation,
+  event replay, and compensation;
 - exact sibling sidecars, atomic scene checkpoints, optimistic concurrency,
   crash-tail repair, and bounded consolidation handoffs;
-- the jWhiteboard semantic inspector, pending previews, explicit review tray,
-  human promotion controls, and status handling;
+- the jWhiteboard Move-forward list, pending decision chips, and status handling;
 - an embedded board-scoped agent, restricted semantic actions,
   `whiteboard-gui` skill, and **Start Session**;
 - bounded GUI snapshots, File Brain/Hindsight recall, Joshu Pointer, voice

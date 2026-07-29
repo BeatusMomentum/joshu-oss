@@ -10,12 +10,11 @@ import {
 
 const timestamp = "2026-07-27T01:00:00.000Z";
 
-function object(id, kind, layer, status, body = `Body for ${id}`) {
+function object(id, kind, phase, body = `Body for ${id}`) {
   return {
     id,
     kind,
-    layer,
-    status,
+    phase,
     title: id,
     body,
     createdBy: "HUMAN",
@@ -36,15 +35,15 @@ function object(id, kind, layer, status, body = `Body for ${id}`) {
 }
 
 test("handoff classification excludes pending proposals from accepted decisions", () => {
-  const acceptedDecision = object("accepted", "Decision", "COMMITMENT", "DECIDED");
-  const pendingDecision = object("pending", "Decision", "COMMITMENT", "DECIDED");
-  const rejectedOption = object("recoverable", "Option", "SENSEMAKING", "PROPOSED");
+  const acceptedDecision = object("accepted", "decision", "accepted");
+  const pendingDecision = object("pending", "decision", "pending");
+  const rejectedDecision = object("recoverable", "decision", "pending");
   const workspace = {
     ...createEmptyWorkspace({ id: "board" }),
     objects: {
       accepted: acceptedDecision,
-      evidence: object("evidence", "Source", "EVIDENCE", "ENDORSED"),
-      question: object("question", "Question", "SENSEMAKING", "DISPUTED"),
+      evidence: object("evidence", "note", "accepted"),
+      question: object("question", "open_question", "accepted"),
     },
     proposals: {
       pending: {
@@ -60,8 +59,8 @@ test("handoff classification excludes pending proposals from accepted decisions"
         id: "rejected",
         workspaceId: "board",
         proposedBy: "AI",
-        actionClass: "EPISTEMIC",
-        operations: [{ type: "UPSERT_OBJECT", object: rejectedOption }],
+        actionClass: "COMMITMENT",
+        operations: [{ type: "UPSERT_OBJECT", object: rejectedDecision }],
         rationale: "Useful alternative if assumptions change",
         status: "REJECTED",
         createdAt: timestamp,
@@ -82,8 +81,8 @@ test("handoff classification excludes pending proposals from accepted decisions"
     consolidatedAt: "2026-07-27T02:00:00.000Z",
   });
   assert.match(markdown, /Planning\/strategy\.excalidraw/);
-  assert.match(markdown, /## Accepted decisions and commitments/);
-  assert.match(markdown, /## Rejected but recoverable options/);
+  assert.match(markdown, /## Accepted decisions/);
+  assert.match(markdown, /## Dismissed decisions/);
   assert.match(markdown, /Useful alternative if assumptions change/);
   assert.doesNotMatch(markdown, /### pending/);
   assert.ok(markdown.length <= MAX_CWM_HANDOFF_MARKDOWN_LENGTH);
@@ -93,7 +92,7 @@ test("handoff rendering stays bounded for large accepted workspaces", () => {
   const objects = Object.fromEntries(
     Array.from({ length: 100 }, (_, index) => {
       const id = `evidence-${index}`;
-      return [id, object(id, "Source", "EVIDENCE", "ENDORSED", "x".repeat(10_000))];
+      return [id, object(id, "note", "accepted", "x".repeat(10_000))];
     }),
   );
   const workspace = { ...createEmptyWorkspace({ id: "large" }), objects };
@@ -105,5 +104,5 @@ test("handoff rendering stays bounded for large accepted workspaces", () => {
   assert.ok(markdown.length <= MAX_CWM_HANDOFF_MARKDOWN_LENGTH);
   const renderedEvidence = (markdown.match(/^### evidence-/gm) ?? []).length;
   assert.ok(renderedEvidence > 0 && renderedEvidence <= 12);
-  assert.match(markdown, /## Rejected but recoverable options/);
+  assert.match(markdown, /## Dismissed decisions/);
 });

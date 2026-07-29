@@ -11,6 +11,7 @@ import type { NextFunction, Request, Response, Router } from "express";
 import { resolveManifestVoiceTools } from "@joshu/app-sdk";
 import type { HermesApiRunner, HermesChatMessage } from "./hermesApi.js";
 import { buildTurnSystemMessages } from "./hermesApi.js";
+import type { StreamHermesChatCallbacks } from "./hermesApi.js";
 import {
   appGuiActionFromHermesToolRaw,
   drainAppGuiActionsForAgUi,
@@ -22,8 +23,13 @@ import { isComposioEnabled, syncComposioHermesMcp } from "./composioApi.js";
 import {
   buildAppAgentSessionId,
   buildAppAgentSystemMessages,
+  buildWhiteboardBoardMutationNudge,
   getManifestForAppId,
+  groundUserMessagesWithSelection,
+  isExcalidrawBoardMutatingAction,
+  latestUserText,
   parseAppAgentState,
+  requiresExcalidrawBoardMutation,
   resolveAppIdFromRequest,
 } from "./agUiAppContext.js";
 import {
@@ -76,12 +82,14 @@ function emitAppGuiActionEvents(
   messageId: string,
   guiAction: AppGuiAction,
   clientToolNames: Set<string>,
+  onEmitted?: (action: AppGuiAction) => void,
 ): void {
   agUiSseSend(res, {
     type: EVENT.CUSTOM,
     name: "app_action",
     value: guiAction,
   });
+  onEmitted?.(guiAction);
 
   if (!clientToolNames.has(guiAction.action)) return;
 
@@ -112,11 +120,12 @@ function drainAndEmitAppGuiActions(
   threadId: string,
   activeSessionId: string,
   clientToolNames: Set<string>,
+  onEmitted?: (action: AppGuiAction) => void,
 ): void {
   const actions = drainAppGuiActionsForAgUi(appId, threadId, activeSessionId);
   for (const action of actions) {
     if (!isAllowedAppGuiAction(action)) continue;
-    emitAppGuiActionEvents(res, messageId, action, clientToolNames);
+    emitAppGuiActionEvents(res, messageId, action, clientToolNames, onEmitted);
   }
 }
 
@@ -263,7 +272,15 @@ export function registerAgUiRoutes(
     const appId = resolveAppIdFromRequest(req.query.appId, appState);
     const manifest = getManifestForAppId(appId);
     const appSystemMessages = buildAppAgentSystemMessages(manifest, appState);
+    const groundedMessages = groundUserMessagesWithSelection(messages, appState.gui);
     const sessionKey = appId ? buildAppAgentSessionId(appId, threadId) : undefined;
+    const selectedCount = Array.isArray(appState.gui?.selectedItems)
+      ? appState.gui.selectedItems.length
+      : 0;
+    console.info(
+      `[ag-ui] app=${appId ?? "none"} thread=${threadId} selectedItems=${selectedCount}` +
+        ` selectionSource=${String(appState.gui?.selectionSource ?? "n/a")}`,
+    );
 
     res.set({
       "Content-Type": "text/event-stream",
@@ -283,6 +300,12 @@ export function registerAgUiRoutes(
 
     let activeSessionId = threadId;
     const emittedClientToolStarts = new Set<string>();
+    let boardMutationsThisRun = 0;
+    const noteEmittedGuiAction = (action: AppGuiAction) => {
+      if (appId === "excalidraw" && isExcalidrawBoardMutatingAction(action.action)) {
+        boardMutationsThisRun += 1;
+      }
+    };
 
     try {
       if (isComposioEnabled()) {
@@ -291,100 +314,171 @@ export function registerAgUiRoutes(
       await runner.ensureGatewayReady().catch(() => undefined);
 
       const turnSystemMessages = buildTurnSystemMessages(projectRoot, { browser: null });
+      const hermesHandlers: StreamHermesChatCallbacks = {
+        onSession: (sid) => {
+          activeSessionId = sid;
+        },
+        onDelta: (text) => {
+          if (text) {
+            agUiSseSend(res, { type: EVENT.TEXT_MESSAGE_CONTENT, messageId, delta: text });
+          }
+        },
+        onClientToolCall: (tool) => {
+          if (tool.phase === "start" && !emittedClientToolStarts.has(tool.toolCallId)) {
+            emittedClientToolStarts.add(tool.toolCallId);
+            agUiSseSend(res, {
+              type: EVENT.TOOL_CALL_START,
+              toolCallId: tool.toolCallId,
+              toolCallName: tool.toolCallName,
+              parentMessageId: messageId,
+            });
+          }
+          if (tool.phase === "args" && tool.argumentsDelta) {
+            agUiSseSend(res, {
+              type: EVENT.TOOL_CALL_ARGS,
+              toolCallId: tool.toolCallId,
+              delta: tool.argumentsDelta,
+            });
+          }
+          if (tool.phase === "end") {
+            agUiSseSend(res, {
+              type: EVENT.TOOL_CALL_END,
+              toolCallId: tool.toolCallId,
+              toolCallName: tool.toolCallName,
+            });
+          }
+        },
+        onTool: (tool) => {
+          const shortName = tool.tool?.replace(/^.*\./, "") ?? "";
+          if (clientToolNames.has(tool.tool ?? "") || clientToolNames.has(shortName)) {
+            return;
+          }
+          const toolCallId = tool.toolCallId ?? `tool_${tool.tool ?? "unknown"}`;
+          if (tool.status === "running") {
+            agUiSseSend(res, {
+              type: EVENT.TOOL_CALL_START,
+              toolCallId,
+              toolCallName: tool.tool ?? "tool",
+            });
+          }
+          if (tool.status === "completed") {
+            agUiSseSend(res, {
+              type: EVENT.TOOL_CALL_END,
+              toolCallId,
+              toolCallName: tool.tool ?? "tool",
+            });
+            if (shortName === "desktop_open") {
+              let actions = drainDesktopActionsForChat(activeSessionId);
+              if (actions.length === 0) {
+                const fromTool = desktopActionFromHermesToolRaw(tool.raw);
+                if (fromTool) actions = [fromTool];
+              }
+              for (const action of actions) {
+                agUiSseSend(res, {
+                  type: EVENT.CUSTOM,
+                  name: "desktop_action",
+                  value: { action },
+                });
+              }
+            }
+            if (shortName === "app_gui_action") {
+              let guiActions = drainAppGuiActionsForAgUi(appId, threadId, activeSessionId);
+              if (guiActions.length === 0) {
+                const fromTool = appGuiActionFromHermesToolRaw(tool.raw);
+                if (fromTool) guiActions = [fromTool];
+              }
+              for (const guiAction of guiActions) {
+                if (!isAllowedAppGuiAction(guiAction)) continue;
+                emitAppGuiActionEvents(
+                  res,
+                  messageId,
+                  guiAction,
+                  clientToolNames,
+                  noteEmittedGuiAction,
+                );
+              }
+            }
+          }
+        },
+      };
+
+      const baseHermesMessages = [
+        ...turnSystemMessages,
+        ...appSystemMessages,
+        ...groundedMessages.filter(isHermesChatMessage),
+      ];
 
       await runner.streamHermesChat(
         {
           sessionId: threadId,
           sessionKey,
-          messages: [...turnSystemMessages, ...appSystemMessages, ...messages.filter(isHermesChatMessage)],
+          messages: baseHermesMessages,
           signal: controller.signal,
           clientTools: openAiClientTools.length ? openAiClientTools : undefined,
           clientToolNames: clientToolNames.size ? clientToolNames : undefined,
         },
-        {
-          onSession: (sid) => {
-            activeSessionId = sid;
-          },
-          onDelta: (text) => {
-            if (text) {
-              agUiSseSend(res, { type: EVENT.TEXT_MESSAGE_CONTENT, messageId, delta: text });
-            }
-          },
-          onClientToolCall: (tool) => {
-            if (tool.phase === "start" && !emittedClientToolStarts.has(tool.toolCallId)) {
-              emittedClientToolStarts.add(tool.toolCallId);
-              agUiSseSend(res, {
-                type: EVENT.TOOL_CALL_START,
-                toolCallId: tool.toolCallId,
-                toolCallName: tool.toolCallName,
-                parentMessageId: messageId,
-              });
-            }
-            if (tool.phase === "args" && tool.argumentsDelta) {
-              agUiSseSend(res, {
-                type: EVENT.TOOL_CALL_ARGS,
-                toolCallId: tool.toolCallId,
-                delta: tool.argumentsDelta,
-              });
-            }
-            if (tool.phase === "end") {
-              agUiSseSend(res, {
-                type: EVENT.TOOL_CALL_END,
-                toolCallId: tool.toolCallId,
-                toolCallName: tool.toolCallName,
-              });
-            }
-          },
-          onTool: (tool) => {
-            const shortName = tool.tool?.replace(/^.*\./, "") ?? "";
-            if (clientToolNames.has(tool.tool ?? "") || clientToolNames.has(shortName)) {
-              return;
-            }
-            const toolCallId = tool.toolCallId ?? `tool_${tool.tool ?? "unknown"}`;
-            if (tool.status === "running") {
-              agUiSseSend(res, {
-                type: EVENT.TOOL_CALL_START,
-                toolCallId,
-                toolCallName: tool.tool ?? "tool",
-              });
-            }
-            if (tool.status === "completed") {
-              agUiSseSend(res, {
-                type: EVENT.TOOL_CALL_END,
-                toolCallId,
-                toolCallName: tool.tool ?? "tool",
-              });
-              if (shortName === "desktop_open") {
-                let actions = drainDesktopActionsForChat(activeSessionId);
-                if (actions.length === 0) {
-                  const fromTool = desktopActionFromHermesToolRaw(tool.raw);
-                  if (fromTool) actions = [fromTool];
-                }
-                for (const action of actions) {
-                  agUiSseSend(res, {
-                    type: EVENT.CUSTOM,
-                    name: "desktop_action",
-                    value: { action },
-                  });
-                }
-              }
-              if (shortName === "app_gui_action") {
-                let guiActions = drainAppGuiActionsForAgUi(appId, threadId, activeSessionId);
-                if (guiActions.length === 0) {
-                  const fromTool = appGuiActionFromHermesToolRaw(tool.raw);
-                  if (fromTool) guiActions = [fromTool];
-                }
-                for (const guiAction of guiActions) {
-                  if (!isAllowedAppGuiAction(guiAction)) continue;
-                  emitAppGuiActionEvents(res, messageId, guiAction, clientToolNames);
-                }
-              }
-            }
-          },
-        },
+        hermesHandlers,
       );
 
-      drainAndEmitAppGuiActions(res, messageId, appId, threadId, activeSessionId, clientToolNames);
+      drainAndEmitAppGuiActions(
+        res,
+        messageId,
+        appId,
+        threadId,
+        activeSessionId,
+        clientToolNames,
+        noteEmittedGuiAction,
+      );
+
+      // Mechanical AG-UI tenet: whiteboard review/empty-board turns must mutate the canvas.
+      const mustWriteBoard = requiresExcalidrawBoardMutation(
+        appState.gui,
+        latestUserText(groundedMessages),
+      );
+      if (mustWriteBoard && boardMutationsThisRun === 0 && !controller.signal.aborted) {
+        console.warn(
+          `[ag-ui] whiteboard board-mutation gate: no proposeTransaction/recallToBoard/stageOpening — retrying once`,
+        );
+        await runner.streamHermesChat(
+          {
+            sessionId: threadId,
+            sessionKey,
+            messages: [
+              ...baseHermesMessages,
+              { role: "system", content: buildWhiteboardBoardMutationNudge() },
+              {
+                role: "user",
+                content:
+                  "Continue: put the results on the board now via app_gui_action (proposeTransaction, recallToBoard, or stageOpening). Do not reply with a chat-only list.",
+              },
+            ],
+            signal: controller.signal,
+            clientTools: openAiClientTools.length ? openAiClientTools : undefined,
+            clientToolNames: clientToolNames.size ? clientToolNames : undefined,
+          },
+          hermesHandlers,
+        );
+        drainAndEmitAppGuiActions(
+          res,
+          messageId,
+          appId,
+          threadId,
+          activeSessionId,
+          clientToolNames,
+          noteEmittedGuiAction,
+        );
+        if (boardMutationsThisRun === 0) {
+          console.warn(
+            `[ag-ui] whiteboard board-mutation gate: still no board GUI after retry`,
+          );
+          agUiSseSend(res, {
+            type: EVENT.TEXT_MESSAGE_CONTENT,
+            messageId,
+            delta:
+              "\n\n(Board was not updated — this turn never called proposeTransaction / recallToBoard / stageOpening.)",
+          });
+        }
+      }
 
       agUiSseSend(res, { type: EVENT.TEXT_MESSAGE_END, messageId });
       agUiSseSend(res, { type: EVENT.RUN_FINISHED, threadId, runId });

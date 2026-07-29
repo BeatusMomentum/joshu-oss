@@ -281,6 +281,16 @@ User message (app window open)
 
 **Fix:** put those rows in the snapshot; forbid platform tools for visible data in `<app>-gui` skill.
 
+### Whiteboard tenet (jWhiteboard / excalidraw)
+
+Embedded whiteboard chat is not a sidecar transcript. When CWM is ready, **review / orient /
+capture turns and any turn on an empty board must mutate the canvas** via `proposeTransaction`,
+`recallToBoard`, or `stageOpening`. The AG-UI run adapter enforces this mechanically: if the
+first Hermes pass emits none of those guiActions, it retries once with a protocol nudge, then
+surfaces an honest “board was not updated” note if the retry still skips the board.
+
+Snapshot-only Q&A on a **populated** board (“how many stickies do I see?”) remains allowed.
+
 ### GUI snapshot contract
 
 Design `getGuiSnapshot()` so the model cannot confuse **visible** vs **background** state.
