@@ -13,19 +13,21 @@ import {
   PHONE_VAD_THRESHOLD,
   TWILIO_PHONE_SESSION_HANGUP_MS,
   TWILIO_PHONE_SESSION_WARN_MS,
-  TWILIO_THINK_PASSWORD,
+  resolveTwilioThinkPassword,
   VOICE_S2S_PROVIDER,
 } from "./config.js";
 import { runJoshuThink } from "./brainThink.js";
 import { JOSHU_IDENTITY } from "./config.js";
 import { createVoiceS2sClient, voiceS2sProviderLabel } from "./createVoiceS2sClient.js";
-import { normalizeThinkToolName } from "./realtimeTools.js";
+import { normalizeThinkToolName, PHONE_TOOL_NAMES } from "./realtimeTools.js";
 import type { FunctionCallPayload, ResponseSpeechReason, VoiceS2sClient } from "./voiceS2sTypes.js";
 import { matchesThinkPassphrase } from "./phonePassphrase.js";
 import { classifyUserTranscript } from "./userInputGate.js";
 import { voiceLog, voiceWarn } from "./voiceLog.js";
 
 const MAX_TRANSCRIPT_TURNS = 12;
+/** Clear utterances that fail passphrase match before the call is hung up. */
+const MAX_PASSPHRASE_ATTEMPTS = 3;
 
 /** Realtime sometimes apologizes for lacking access, then calls think in the same response. */
 const LIMITATION_DENIAL_RE =
@@ -91,6 +93,10 @@ export class TwilioRealtimeSession {
   private activeJob: ActiveJoshuJob | null = null;
   private thinkAuthorized = false;
   private requiresRestatedIntentAfterUnlock = false;
+  /** Failed clear passphrase attempts this call (hang up at MAX_PASSPHRASE_ATTEMPTS). */
+  private passphraseFailures = 0;
+  /** True after too many wrong passphrase attempts — ignore further turns. */
+  private hangingUpForAuth = false;
   private sessionWarnTimer: ReturnType<typeof setTimeout> | null = null;
   private sessionHangupTimer: ReturnType<typeof setTimeout> | null = null;
   /** No warn/hangup timers after successful passphrase unlock. */
@@ -130,8 +136,11 @@ export class TwilioRealtimeSession {
     this.lastAssistantItem = null;
     this.responseStartTimestampTwilio = null;
     this.markQueue = [];
-    this.thinkAuthorized = !TWILIO_THINK_PASSWORD;
+    // PSTN requires a passphrase (media stream is rejected if unset). Call starts locked.
+    this.thinkAuthorized = false;
     this.requiresRestatedIntentAfterUnlock = false;
+    this.passphraseFailures = 0;
+    this.hangingUpForAuth = false;
     this.startMetadata = metadata;
     this.greetingSent = false;
     this.sessionTimerDisabled = false;
@@ -144,6 +153,8 @@ export class TwilioRealtimeSession {
         systemPrompt: PHONE_SYSTEM_PROMPT,
         injectPresentation: "voice_only",
         turnDetection: PHONE_VAD,
+        // PSTN implements `think` only; declaring open_desktop made the model fake app opens.
+        toolNames: PHONE_TOOL_NAMES,
       },
       {
         sessionId: callSid,
@@ -162,7 +173,10 @@ export class TwilioRealtimeSession {
       onSpeechStopped: () => {
         this.lastSpeechStoppedAt = performance.now();
         // Gemini has no OpenAI speech_stopped — unlock early so auto-reply audio is not muted.
-        this.allowGeminiCallerReply("user speech stopped");
+        // Stay muted until passphrase unlock so Gemini cannot chat while the call is locked.
+        if (this.thinkAuthorized) {
+          this.allowGeminiCallerReply("user speech stopped");
+        }
         voiceLog(this.callSid, "vad", "user speech stopped (awaiting transcript)");
       },
       onTranscriptionComplete: (text) => this.handleUserTranscription(text),
@@ -278,14 +292,28 @@ export class TwilioRealtimeSession {
     const owner = this.normalizePhone(metadata?.ownerCaller);
     const ownerCheckEnabled = Boolean(owner);
     const isOwner = ownerCheckEnabled && Boolean(caller) && caller === owner;
-    const greeting = !ownerCheckEnabled
-      ? "Hi. Great to hear from you."
-      : isOwner
-        ? "Hi. Great to hear from you."
-        : "Hello. Friendly heads up: this phone session is limited to sixty seconds.";
+    // Always ask for the passphrase — the call stays locked until it matches (3 tries).
+    const greeting =
+      ownerCheckEnabled && !isOwner
+        ? "Hello. This phone session is limited to sixty seconds. Please say your passphrase."
+        : "Hi. Please say your passphrase.";
     this.joshuInitiatedResponse = true;
     s2s.injectControlMessage(greeting);
     this.greetingSent = true;
+  }
+
+  /** Speak a short line, then close the Twilio media stream (hangs up the call). */
+  private hangUpAfterMessage(message: string, delayMs = 2500): void {
+    this.hangingUpForAuth = true;
+    this.joshuInitiatedResponse = true;
+    this.s2s?.injectControlMessage(message);
+    setTimeout(() => {
+      try {
+        this.ws.close();
+      } catch {
+        // no-op
+      }
+    }, delayMs);
   }
 
   private scheduleSessionDeadline(): void {
@@ -389,6 +417,7 @@ export class TwilioRealtimeSession {
     const kind = classifyUserTranscript(text);
     const s2s = this.s2s;
     if (!s2s) return;
+    if (this.hangingUpForAuth) return;
 
     if (kind === "empty") {
       voiceLog(this.callSid, "turn", "empty input (VAD only, no transcript) — ignoring");
@@ -397,21 +426,53 @@ export class TwilioRealtimeSession {
 
     this.turn += 1;
 
+    // Call-level lock: until passphrase matches, do not chat or think — only auth.
+    if (!this.thinkAuthorized) {
+      if (kind === "unclear") {
+        voiceLog(this.callSid, "auth", `#${this.turn} unclear while locked → ${JSON.stringify(text)}`);
+        this.joshuInitiatedResponse = true;
+        s2s.injectControlMessage("Sorry, I didn't catch that. Please say your passphrase.");
+        return;
+      }
+
+      const justUnlocked = this.updateThinkAuthorization(text, "transcript");
+      if (justUnlocked) {
+        if (!this.utteranceLooksLikeTaskRequest(text)) {
+          this.requiresRestatedIntentAfterUnlock = true;
+        }
+        this.joshuInitiatedResponse = true;
+        if (this.geminiPhone) {
+          this.allowGeminiCallerReply("passphrase unlock");
+        }
+        s2s.injectControlMessage("Unlocked. Please repeat your request.");
+        return;
+      }
+
+      this.passphraseFailures += 1;
+      voiceWarn(this.callSid, "auth", "passphrase rejected", {
+        attempt: this.passphraseFailures,
+        maxAttempts: MAX_PASSPHRASE_ATTEMPTS,
+        heardPreview: text.slice(0, 80),
+      });
+      if (this.passphraseFailures >= MAX_PASSPHRASE_ATTEMPTS) {
+        voiceWarn(this.callSid, "auth", "hanging up after passphrase failures");
+        this.hangUpAfterMessage("Too many incorrect attempts. Goodbye.");
+        return;
+      }
+      const left = MAX_PASSPHRASE_ATTEMPTS - this.passphraseFailures;
+      this.joshuInitiatedResponse = true;
+      s2s.injectControlMessage(
+        left === 1
+          ? "That's not the passphrase. One try left."
+          : "That's not the passphrase. Please try again.",
+      );
+      return;
+    }
+
     if (kind === "unclear") {
       voiceLog(this.callSid, "turn", `#${this.turn} USER (unclear) → ${JSON.stringify(text)} — reprompting`);
       this.joshuInitiatedResponse = true;
       s2s.injectRepromptMessage();
-      return;
-    }
-
-    const justUnlocked = this.updateThinkAuthorization(text, "transcript");
-    if (justUnlocked) {
-      // Passphrase is auth-only; keep transcript so an earlier task request can still be used.
-      if (!this.utteranceLooksLikeTaskRequest(text)) {
-        this.requiresRestatedIntentAfterUnlock = true;
-      }
-      this.joshuInitiatedResponse = true;
-      s2s.injectControlMessage("Unlocked. Please repeat your request.");
       return;
     }
 
@@ -448,9 +509,11 @@ export class TwilioRealtimeSession {
   }
 
   private updateThinkAuthorization(text: string, source: string): boolean {
-    if (!TWILIO_THINK_PASSWORD || this.thinkAuthorized) return false;
-    if (matchesThinkPassphrase(text, TWILIO_THINK_PASSWORD)) {
+    const password = resolveTwilioThinkPassword();
+    if (!password || this.thinkAuthorized) return false;
+    if (matchesThinkPassphrase(text, password)) {
       this.thinkAuthorized = true;
+      this.passphraseFailures = 0;
       this.disableSessionTimeLimit("passphrase");
       voiceLog(this.callSid, "auth", `think password accepted (${source})`);
       return true;
@@ -473,8 +536,7 @@ export class TwilioRealtimeSession {
 
   /** Control secret is used only for unlock checks; never forward it to Hermes context. */
   private sanitizeTextForThinkContext(text: string): string {
-    if (!TWILIO_THINK_PASSWORD) return text;
-    const password = TWILIO_THINK_PASSWORD.trim();
+    const password = resolveTwilioThinkPassword().trim();
     if (!password) return text;
     const escaped = password.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const redacted = text.replace(new RegExp(escaped, "gi"), " ");
@@ -483,6 +545,8 @@ export class TwilioRealtimeSession {
 
   private onGeminiInputTranscript(text: string): void {
     if (!this.geminiPhone || !text.trim()) return;
+    // Do not unmute Gemini organic audio while the call is still passphrase-locked.
+    if (!this.thinkAuthorized) return;
     this.allowGeminiCallerReply("input transcript");
     this.geminiUserTurnNeedsReply = true;
   }
@@ -512,7 +576,9 @@ export class TwilioRealtimeSession {
       this.currentResponseReason === "progress" &&
       this.greetingSent
     ) {
-      this.allowGeminiCallerReply("speech during greeting");
+      if (this.thinkAuthorized) {
+        this.allowGeminiCallerReply("speech during greeting");
+      }
       voiceLog(this.callSid, "vad", "user speech during greeting (not barge-in)");
       return;
     }
@@ -692,20 +758,15 @@ export class TwilioRealtimeSession {
       args,
     });
 
-    if (toolName !== "think") {
-      voiceWarn(this.callSid, "tool", `unknown tool ${call.name}`);
-      s2s.sendFunctionOutput(call.callId, JSON.stringify({ error: `Unknown tool: ${call.name}` }));
-      return;
-    }
-
-    if (TWILIO_THINK_PASSWORD && !this.thinkAuthorized) {
+    // Auth gate runs before tool dispatch — no tool may execute on a locked call.
+    if (!this.thinkAuthorized) {
       const heardForUnlock = [
         typeof args.user_quote === "string" ? args.user_quote : "",
         typeof args.summary === "string" ? args.summary : "",
         ...this.transcript.map((t) => t.text),
       ];
       if (!this.tryAuthorizeThinkFromContext(heardForUnlock, "think_tool")) {
-        voiceWarn(this.callSid, "auth", "blocked think call before passphrase", {
+        voiceWarn(this.callSid, "auth", `blocked ${toolName} call before passphrase`, {
           heardPreview: heardForUnlock.join(" ").slice(0, 120),
         });
         s2s.sendFunctionOutput(
@@ -713,14 +774,31 @@ export class TwilioRealtimeSession {
           JSON.stringify({
             status: "denied",
             reason: "missing_passphrase",
-            message: "Think is locked until the caller says the passphrase.",
+            message:
+              "Call is locked. Nothing was done. Do not claim any action succeeded — ask for the passphrase.",
           }),
           { triggerResponse: false },
         );
         this.joshuInitiatedResponse = true;
-        s2s.injectControlMessage("Please say your passphrase to unlock personal data requests.");
+        s2s.injectControlMessage("Please say your passphrase.");
         return;
       }
+      if (this.geminiPhone) {
+        this.allowGeminiCallerReply("passphrase unlock via think_tool");
+      }
+    }
+
+    if (toolName !== "think") {
+      // Not declared to the model on PSTN (see PHONE_TOOL_NAMES) — hallucinated call.
+      voiceWarn(this.callSid, "tool", `unsupported tool on phone: ${call.name}`);
+      s2s.sendFunctionOutput(
+        call.callId,
+        JSON.stringify({
+          status: "unsupported",
+          message: `${call.name} is not available on a phone call. Nothing happened — do not tell the caller it worked. Use think instead.`,
+        }),
+      );
+      return;
     }
 
     if (this.requiresRestatedIntentAfterUnlock) {

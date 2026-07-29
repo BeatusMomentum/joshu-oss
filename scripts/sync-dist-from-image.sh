@@ -19,9 +19,10 @@ DIST_DIR="${INSTALL_DIR}/dist"
 APP_SDK_DIST="${INSTALL_DIR}/packages/app-sdk/dist"
 BOX_STATE_DIST="${INSTALL_DIR}/packages/box-state/dist"
 EMAIL_SIG_DIST="${INSTALL_DIR}/packages/email-signature/dist"
+WHITEBOARD_CWM_DIST="${INSTALL_DIR}/packages/whiteboard-cwm/dist"
 PROVENANCE="${DIST_DIR}/.release-provenance.json"
 
-mkdir -p "$DIST_DIR" "$APP_SDK_DIST" "$BOX_STATE_DIST" "$EMAIL_SIG_DIST"
+mkdir -p "$DIST_DIR" "$APP_SDK_DIST" "$BOX_STATE_DIST" "$EMAIL_SIG_DIST" "$WHITEBOARD_CWM_DIST"
 
 echo "[sync-dist-from-image] pulling ${IMAGE_REF}"
 docker pull "$IMAGE_REF"
@@ -48,6 +49,12 @@ if docker cp "${CID}:/opt/joshu/packages/email-signature/dist/." "$EMAIL_SIG_DIS
   echo "[sync-dist-from-image] email-signature dist synced"
 else
   echo "[sync-dist-from-image] email-signature dist not in image (skipped)"
+fi
+
+if docker cp "${CID}:/opt/joshu/packages/whiteboard-cwm/dist/." "$WHITEBOARD_CWM_DIST/" 2>/dev/null; then
+  echo "[sync-dist-from-image] whiteboard-cwm dist synced"
+else
+  echo "[sync-dist-from-image] whiteboard-cwm dist not in image (skipped)"
 fi
 
 GIT_REF=""

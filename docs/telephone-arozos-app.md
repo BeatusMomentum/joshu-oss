@@ -1,0 +1,65 @@
+# Telephone (ArozOS desktop app)
+
+**Telephone** shows the phone number assigned to the box and lets the owner view/change the spoken **think passphrase** used on inbound PSTN calls.
+
+Related: [`vps-sandbox/voice-realtime.md`](vps-sandbox/voice-realtime.md) · [`vps-sandbox/voice-think-speak.md`](vps-sandbox/voice-think-speak.md)
+
+---
+
+## Stack
+
+| Layer | Path |
+|-------|------|
+| Desktop UI | `apps/telephone/` → `dist/telephone/` → `arozos/subservice/telephone/app/` |
+| ArozOS subservice | `arozos/subservice/telephone/` |
+| REST API | `src/telephoneSettings/` → `/joshu/api/telephone` |
+| Owner override | `.joshu/telephone/settings.json` (under the Aroz user on the shared `joshu_arozos` volume) |
+| Provision env | `TWILIO_PHONE_NUMBER`, `TWILIO_THINK_PASSWORD` in `/etc/joshu/instance.env` |
+| Runtime readers | Joshu (`telephoneSettings/resolve.ts`) + voice-realtime (`thinkPassword.ts`) |
+
+**Display name:** **Telephone**. Icon: `img/joshu/telephone.png` — GNOME `call-start` handset (CC BY-SA 3.0 US); Tango has no phone glyph, so this icon is **not** produced by `build-arozos-desktop-file-icons.sh`. See [`THIRD_PARTY.md`](THIRD_PARTY.md#design-assets).
+
+---
+
+## Behavior
+
+### Phone number
+
+From `TWILIO_PHONE_NUMBER` (set at Twilio provision / in `instance.env`) or an optional override in `settings.json`. Displayed as a formatted number; copy uses E.164.
+
+### Think passphrase
+
+Every inbound call starts **locked**. Joshu asks for this phrase; there is no ungated chat mode. **Three incorrect clear attempts hang up** the call (unclear/filler does not count). Full call UX: [voice-realtime.md — Think passphrase](vps-sandbox/voice-realtime.md#think-passphrase-twilio_think_password).
+
+Owner can change it in the app:
+
+- **Show / Hide** reveals the currently configured passphrase (from settings file or env).
+- **New passphrase** is always empty on load and after save — never prefilled with the live secret. **Save passphrase** stays disabled until the field is non-empty.
+- On save, the override is written to `.joshu/telephone/settings.json` and read by Joshu + voice-realtime on the **next inbound call** (no stack recreate required for the override path).
+
+Precedence for both values: settings file → `instance.env` → process env.
+
+If no passphrase is configured anywhere, PSTN stays disabled (routes not registered; media streams rejected).
+
+---
+
+## API
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `GET` | `/joshu/api/telephone` | Status: number, display form, passphrase (for Show), configured flags, sources |
+| `PUT` | `/joshu/api/telephone` | Body: `{ thinkPassword?: string, phoneNumber?: string }` — validates passphrase (3–64 chars, STT-friendly charset) |
+
+---
+
+## Dev / hotpatch
+
+```bash
+npm run dev:telephone      # Vite :3012
+npm run build:telephone
+bash scripts/hotpatch-telephone.sh root@your-box.example.com
+# optional: also write TWILIO_PHONE_NUMBER into instance.env
+bash scripts/hotpatch-telephone.sh root@your-box.example.com +15551234567
+```
+
+After hotpatch, hard-refresh the ArozOS desktop and open **Telephone**.

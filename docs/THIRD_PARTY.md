@@ -98,6 +98,7 @@ Applied automatically via `npm run prepare`.
 | **Vanilla Box Stack** (`arozos/web-overlays-vanilla/`) | AGPL (functional, unbranded) |
 | **Joshu brand pack** (paper-shell, icons) | **JDL** — private `joshu-design` repo; not in public OSS tree |
 | **Tango PNG library** | Public domain |
+| **`arozos/icons/telephone.png`** (Telephone app) | **CC BY-SA 3.0 US** — `call-start` from the [GNOME icon theme](https://github.com/GNOME/adwaita-icon-theme), © GNOME Project ([source](https://commons.wikimedia.org/wiki/File:Gnome-call-start.svg)). Tango has no handset glyph. |
 
 ---
 

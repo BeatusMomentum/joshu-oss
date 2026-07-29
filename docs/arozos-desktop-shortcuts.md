@@ -37,6 +37,7 @@ Joshu-owned apps update **both** `moduleInfo.json` and shortcuts. Subservice dir
 | Schedules | Schedules | `Schedules.shortcut` | `arozos/subservice/schedules/` |
 | Welcome | Welcome | `Welcome.shortcut` | `arozos/subservice/welcome/` |
 | jTerm | jTerm | `jTerm.shortcut` | `arozos/subservice/jterm/` |
+| Telephone | Telephone | `Telephone.shortcut` | `arozos/subservice/telephone/` |
 | Hermes Admin | *(url shortcut)* | `Hermes Admin.shortcut` | VPS: `https://hermes-admin.<customer-domain>/`; local dev: Joshu proxy at `/joshu/hermes-admin/` |
 | Files | *(stock)* `File Manager` | `File Manager.shortcut` | — |
 | Settings | *(stock)* `System Setting` | `System Setting.shortcut` | — |

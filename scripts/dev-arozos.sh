@@ -339,6 +339,7 @@ prepare_arozos_template() {
   rsync -a "${ROOT_DIR}/arozos/subservice/safety-settings/" "${AROZ_TEMPLATE}/subservice/safety-settings/"
   rsync -a "${ROOT_DIR}/arozos/subservice/welcome/" "${AROZ_TEMPLATE}/subservice/welcome/"
   rsync -a "${ROOT_DIR}/arozos/subservice/jterm/" "${AROZ_TEMPLATE}/subservice/jterm/"
+  rsync -a "${ROOT_DIR}/arozos/subservice/telephone/" "${AROZ_TEMPLATE}/subservice/telephone/"
   rsync -a "${ROOT_DIR}/arozos/subservice/placeholder-image/" "${AROZ_TEMPLATE}/subservice/placeholder-image/"
   bash "${ROOT_DIR}/scripts/install-proprietary-apps.sh" "${AROZ_TEMPLATE}/subservice"
   (
@@ -354,6 +355,7 @@ prepare_arozos_template() {
     npm run build:safety-settings
     npm run build:welcome
     npm run build:jterm
+    npm run build:telephone
   )
   mkdir -p "${AROZ_TEMPLATE}/subservice/excalidraw/app"
   rsync -a --delete "${ROOT_DIR}/dist/excalidraw/" "${AROZ_TEMPLATE}/subservice/excalidraw/app/"
@@ -377,6 +379,8 @@ prepare_arozos_template() {
   rsync -a --delete "${ROOT_DIR}/dist/welcome/" "${AROZ_TEMPLATE}/subservice/welcome/app/"
   mkdir -p "${AROZ_TEMPLATE}/subservice/jterm/app"
   rsync -a --delete "${ROOT_DIR}/dist/jterm/" "${AROZ_TEMPLATE}/subservice/jterm/app/"
+  mkdir -p "${AROZ_TEMPLATE}/subservice/telephone/app"
+  rsync -a --delete "${ROOT_DIR}/dist/telephone/" "${AROZ_TEMPLATE}/subservice/telephone/app/"
   chmod +x "${AROZ_TEMPLATE}/subservice/joshu/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/excalidraw/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/hermes-chat/start.sh"
@@ -390,6 +394,7 @@ prepare_arozos_template() {
   chmod +x "${AROZ_TEMPLATE}/subservice/safety-settings/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/welcome/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/jterm/start.sh"
+  chmod +x "${AROZ_TEMPLATE}/subservice/telephone/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/placeholder-image/start.sh"
 }
 

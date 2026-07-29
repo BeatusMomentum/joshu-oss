@@ -25,6 +25,7 @@ import {
   rmsInt16,
 } from "./hermesVoiceVad.js";
 import { markdownSpeechPlaintext } from "./markdownSpeechPlaintext.js";
+import { resolveThinkPassword } from "./telephoneSettings/resolve.js";
 
 const SAMPLE_RATE = 8000;
 /** Twilio frames near 20ms; encode outbound similarly */
@@ -105,7 +106,7 @@ function mediaStreamWssUrl(secret: string, publicBasePath = envTrim("PUBLIC_BASE
 
 /** Strip wrapping quotes — instance.env often stores `TWILIO_THINK_PASSWORD="Falken's Maze"`. */
 function twilioThinkPassword(): string {
-  return envTrim("TWILIO_THINK_PASSWORD").replace(/^["']|["']$/g, "");
+  return resolveThinkPassword();
 }
 
 /**

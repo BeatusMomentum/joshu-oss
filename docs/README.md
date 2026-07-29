@@ -16,6 +16,8 @@ Docs for **self-hosting** the Joshu box stack, building ArozOS apps, and integra
 | **jWhiteboard** | [`jwhiteboard-user-guide.md`](jwhiteboard-user-guide.md) · [`jwhiteboard-developer-guide.md`](jwhiteboard-developer-guide.md) · [`excalidraw-sandbox.md`](excalidraw-sandbox.md) |
 | **Schedules** | [`schedules-arozos-app.md`](schedules-arozos-app.md) |
 | **Welcome** | [`welcome-onboarding.md`](welcome-onboarding.md) |
+| **jTerm** | [`jterm-arozos-app.md`](jterm-arozos-app.md) |
+| **Telephone** | [`telephone-arozos-app.md`](telephone-arozos-app.md) |
 | **jMovie** | [`jmovie-arozos-app.md`](jmovie-arozos-app.md) |
 
 Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
@@ -37,7 +39,7 @@ Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 | **Day 0 mail analysis** | [`day0-cold-start.md`](day0-cold-start.md) |
 | App SDK + `joshu.app.json` | [`app-sdk.md`](app-sdk.md) |
 | **Joshu app architecture (gentle intro)** — skills → GUI + voice | [`joshu-app-architecture-intro.md`](joshu-app-architecture-intro.md) |
-| **Voice (S2S, think vs speak, instant ack)** | [`voice-realtime.md`](voice-realtime.md) · [`voice-think-speak.md`](voice-think-speak.md) |
+| **Voice (S2S, think vs speak, instant ack)** | [`vps-sandbox/voice-realtime.md`](vps-sandbox/voice-realtime.md) · [`vps-sandbox/voice-think-speak.md`](vps-sandbox/voice-think-speak.md) |
 | Platform architecture + `@joshu/platform-data` | [`platform-architecture.md`](platform-architecture.md) · [`platform-data.md`](platform-data.md) |
 | jWhiteboard user guide (how to run a session) | [`jwhiteboard-user-guide.md`](jwhiteboard-user-guide.md) |
 | jWhiteboard developer guide (architecture, code map, runtime, debugging) | [`jwhiteboard-developer-guide.md`](jwhiteboard-developer-guide.md) |

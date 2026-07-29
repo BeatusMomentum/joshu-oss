@@ -18,6 +18,7 @@ WELCOME_SHORTCUT_CONTENT=$'module\nWelcome\nWelcome\nimg/joshu/chat.png\n'
 CONNECTORS_SHORTCUT_CONTENT=$'module\nConnectors\nConnectors\nimg/joshu/connectors.png\n'
 SAFETY_SHORTCUT_CONTENT=$'module\nSafety\nSafety\nimg/joshu/system-setting.png\n'
 JTERM_SHORTCUT_CONTENT=$'module\njTerm\njTerm\nimg/joshu/terminal.png\n'
+TELEPHONE_SHORTCUT_CONTENT=$'module\nTelephone\nTelephone\nimg/joshu/telephone.png\n'
 HERMES_ADMIN_DASHBOARD_PATH="${PUBLIC_BASE_PATH:-/joshu}/hermes-admin/"
 
 # VPS direct mode: https://hermes-admin.<CUSTOMER_DOMAIN>/ — not /joshu/hermes-admin (local dev only).
@@ -61,6 +62,7 @@ JOSHU_AROZ_SUBSERVICE_IDS=(
   safety-settings
   welcome
   jterm
+  telephone
 )
 
 _write_desktop_shortcut() {
@@ -184,6 +186,10 @@ install_jterm_shortcuts() {
   _write_desktop_shortcut "jTerm.shortcut" "${JTERM_SHORTCUT_CONTENT}"
 }
 
+install_telephone_shortcuts() {
+  _write_desktop_shortcut "Telephone.shortcut" "${TELEPHONE_SHORTCUT_CONTENT}"
+}
+
 install_all_joshu_desktop_shortcuts() {
   install_files_shortcuts
   install_settings_shortcuts
@@ -200,6 +206,7 @@ install_all_joshu_desktop_shortcuts() {
   install_safety_shortcuts
   install_welcome_shortcuts
   install_jterm_shortcuts
+  install_telephone_shortcuts
   if [[ "${JOSHU_HERMES_DASHBOARD_ENABLED:-true}" =~ ^(1|true|yes)$ ]]; then
     install_hermes_admin_shortcuts
   fi

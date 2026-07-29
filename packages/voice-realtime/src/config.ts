@@ -141,7 +141,11 @@ export const PHONE_SYSTEM_PROMPT = envTrim(
   buildVoiceSystemPrompt(resolvedIdentity, "phone"),
 );
 
-/** Optional spoken passphrase required before phone calls may use think/Hermes. */
+/**
+ * Env-only snapshot (boot). Prefer `resolveTwilioThinkPassword()` at call time so the
+ * Telephone app can override via `.joshu/telephone/settings.json` without recreate.
+ */
+export { resolveTwilioThinkPassword } from "./thinkPassword.js";
 export const TWILIO_THINK_PASSWORD = envTrim("TWILIO_THINK_PASSWORD").replace(/^["']|["']$/g, "");
 
 /** PSTN: spoken time warning (default 60s). */

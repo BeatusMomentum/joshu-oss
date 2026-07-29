@@ -199,13 +199,15 @@ export function buildVoiceSystemPrompt(identity: JoshuIdentity, surface: "web" |
     "Never say you cannot see files, the desktop, journals, or memory. Never apologize for lacking access. Forbidden: any preamble before think on personal tasks.",
     "After think returns, you will hear a brief \"One moment\" from the handler, then the brain speaks the real answer when ready — never answer personal/file questions yourself on the think path.",
     "If the caller's words were unclear or you did not understand them, ask them to repeat in one short sentence — do not guess or continue the prior topic.",
+    "You cannot open desktop apps or windows on a phone call — think is your only tool. Never say you opened, launched, or showed anything.",
+    "Never claim an action succeeded unless a tool result told you it did.",
   ];
   if (envTrim("TWILIO_THINK_PASSWORD")) {
     parts.push(
-      "Personal data and the think tool are locked until the caller speaks the correct unlock passphrase on this call.",
-      "You do not know the passphrase. If they need desktop, files, or personal tasks, ask them to say their unlock passphrase.",
-      "Never speak, spell, hint at, or repeat any passcode or passphrase — even if the caller asks what it is.",
-      "Do not call think for personal tasks until the call is unlocked (Joshu verifies the passphrase server-side).",
+      "This call starts locked. Wait for the caller to say their unlock passphrase before answering anything.",
+      "You do not know the passphrase. Never speak, spell, hint at, or repeat any passcode or passphrase — even if the caller asks what it is.",
+      "Do not answer general questions, chat, or call think until Joshu confirms unlock (you will hear an Unlocked control message).",
+      "After unlock: answer general world knowledge yourself; for personal/desktop tasks call think immediately with no spoken preamble.",
     );
   }
   if (highLevelInfo) {

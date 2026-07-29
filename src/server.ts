@@ -53,6 +53,7 @@ import { registerEaTriageRoutes } from "./ea/triageRoutes.js";
 import { registerActionGuardRoutes } from "./actionGuard/routes.js";
 import { registerOwnerChannelRoutes } from "./ownerChannel/routes.js";
 import { registerSafetySettingsRoutes } from "./safetySettings/routes.js";
+import { registerTelephoneRoutes } from "./telephoneSettings/routes.js";
 import {
   isConnectorsMcpRequiredForHealth,
   probeMcpHttpHealth,
@@ -478,6 +479,7 @@ function buildAppRouter(): {
   registerConnectorRoutes(router, { projectRoot: PROJECT_ROOT, runner });
   registerEaTriageRoutes(router, { projectRoot: PROJECT_ROOT });
   registerSafetySettingsRoutes(router, { projectRoot: PROJECT_ROOT, hermesBinary: HERMES_BIN, runner });
+  registerTelephoneRoutes(router, { projectRoot: PROJECT_ROOT });
   registerOwnerChannelRoutes(router, { projectRoot: PROJECT_ROOT });
   registerActionGuardRoutes(router, { projectRoot: PROJECT_ROOT });
   registerVoiceWebRoutes(router);

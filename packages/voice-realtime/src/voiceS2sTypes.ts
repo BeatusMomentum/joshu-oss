@@ -27,6 +27,8 @@ export type VoiceS2sConfig = {
   turnDetection?: RealtimeTurnDetection;
   /** App-specific fast tools merged into Realtime session (manifest voiceCommands). */
   extraTools?: Array<Record<string, unknown>>;
+  /** Restrict declared base tools to those this surface implements (default: all). */
+  toolNames?: readonly string[];
 };
 
 export type FunctionCallPayload = {

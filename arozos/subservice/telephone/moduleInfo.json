@@ -1,0 +1,15 @@
+{
+  "Name": "Telephone",
+  "Desc": "Box phone number and spoken unlock passphrase",
+  "Group": "Joshu Apps",
+  "IconPath": "img/joshu/telephone.png",
+  "Version": "0.1.0",
+  "StartDir": "telephone/index.html",
+  "SupportFW": true,
+  "LaunchFWDir": "telephone/index.html",
+  "SupportEmb": false,
+  "LaunchEmb": "",
+  "InitFWSize": [520, 640],
+  "InitEmbSize": [480, 560],
+  "SupportedExt": []
+}

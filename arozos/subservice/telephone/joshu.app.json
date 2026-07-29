@@ -1,0 +1,10 @@
+{
+  "id": "telephone",
+  "name": "Telephone",
+  "version": "0.1.0",
+  "license": "AGPL-3.0",
+  "publisher": "joshu",
+  "entry": "telephone/index.html",
+  "apiPrefix": "/joshu/api/telephone",
+  "description": "View the box phone number and change the PSTN think passphrase"
+}

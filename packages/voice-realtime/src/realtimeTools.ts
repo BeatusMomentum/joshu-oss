@@ -44,6 +44,24 @@ export const REALTIME_TOOL_DEFINITIONS = [
   },
 ];
 
+/**
+ * Tools a surface actually implements. Declaring a tool the handler cannot execute makes the
+ * model call it and narrate fake success ("I've opened the Welcome app"), so surfaces opt in.
+ * PSTN implements `think` only — `open_desktop` is browser/desktop-session work.
+ */
+export const PHONE_TOOL_NAMES = ["think"] as const;
+
+/** Base tool definitions filtered to `names` (all when omitted), plus app-specific extras. */
+export function selectRealtimeTools(
+  names?: readonly string[],
+  extraTools: Array<Record<string, unknown>> = [],
+): Array<Record<string, unknown>> {
+  const base = names
+    ? REALTIME_TOOL_DEFINITIONS.filter((tool) => names.includes(tool.name))
+    : REALTIME_TOOL_DEFINITIONS;
+  return [...base, ...extraTools];
+}
+
 /** Legacy tool names from older Realtime sessions / prompts. */
 export const LEGACY_THINK_TOOL_NAMES = new Set(["ask_joshu", "delegate_to_joshu"]);
 
@@ -55,8 +73,9 @@ export function normalizeThinkToolName(name: string): string {
 /** Gemini Live API tool declarations (function calling). */
 export function geminiToolDefinitions(
   extraTools: Array<Record<string, unknown>> = [],
+  toolNames?: readonly string[],
 ): Array<{ functionDeclarations: Array<Record<string, unknown>> }> {
-  const allTools = [...REALTIME_TOOL_DEFINITIONS, ...extraTools];
+  const allTools = selectRealtimeTools(toolNames, extraTools);
   return [
     {
       functionDeclarations: allTools.map((tool) => ({
