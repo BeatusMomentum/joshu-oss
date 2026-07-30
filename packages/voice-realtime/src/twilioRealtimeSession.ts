@@ -22,12 +22,20 @@ import { createVoiceS2sClient, voiceS2sProviderLabel } from "./createVoiceS2sCli
 import { normalizeThinkToolName, PHONE_TOOL_NAMES } from "./realtimeTools.js";
 import type { FunctionCallPayload, ResponseSpeechReason, VoiceS2sClient } from "./voiceS2sTypes.js";
 import { matchesThinkPassphrase } from "./phonePassphrase.js";
+import {
+  getLockPromptClip,
+  LOCK_PROMPTS,
+  lockPromptsReady,
+  type LockPromptKey,
+} from "./lockPrompts.js";
 import { classifyUserTranscript } from "./userInputGate.js";
 import { voiceLog, voiceWarn } from "./voiceLog.js";
 
 const MAX_TRANSCRIPT_TURNS = 12;
 /** Clear utterances that fail passphrase match before the call is hung up. */
 const MAX_PASSPHRASE_ATTEMPTS = 3;
+/** 20 ms of μ-law 8 kHz — the frame size Twilio Media Streams expects. */
+const MULAW_FRAME_BYTES = 160;
 
 /** Realtime sometimes apologizes for lacking access, then calls think in the same response. */
 const LIMITATION_DENIAL_RE =
@@ -97,6 +105,12 @@ export class TwilioRealtimeSession {
   private passphraseFailures = 0;
   /** True after too many wrong passphrase attempts — ignore further turns. */
   private hangingUpForAuth = false;
+  /**
+   * Box has a full set of pre-rendered lock clips, so lock lines are played
+   * verbatim and the model is muted until unlock. False falls back to
+   * instructing the model, which may paraphrase (see lockPrompts.ts).
+   */
+  private deterministicLockPrompts = false;
   private sessionWarnTimer: ReturnType<typeof setTimeout> | null = null;
   private sessionHangupTimer: ReturnType<typeof setTimeout> | null = null;
   /** No warn/hangup timers after successful passphrase unlock. */
@@ -145,6 +159,15 @@ export class TwilioRealtimeSession {
     this.greetingSent = false;
     this.sessionTimerDisabled = false;
     this.suppressAssistantAudio = this.geminiPhone;
+    this.deterministicLockPrompts = lockPromptsReady();
+    if (!this.deterministicLockPrompts) {
+      voiceWarn(
+        callSid,
+        "auth",
+        "lock prompt clips missing — falling back to model-spoken lock lines " +
+          "(run scripts/generate-voice-lock-prompts.sh)",
+      );
+    }
 
     const provider = voiceS2sProviderLabel();
     this.s2s = createVoiceS2sClient(
@@ -181,6 +204,9 @@ export class TwilioRealtimeSession {
       },
       onTranscriptionComplete: (text) => this.handleUserTranscription(text),
         onAssistantTranscript: (delta) => {
+          // Muted output never reached the caller — keep it out of the spoken
+          // transcript and out of later think context.
+          if (this.modelMutedByLock()) return;
           if (
             this.geminiPhone &&
             this.suppressAssistantAudio &&
@@ -285,6 +311,16 @@ export class TwilioRealtimeSession {
     return (raw ?? "").replace(/[^\d+]/g, "");
   }
 
+  /**
+   * While locked, clips are the only voice on the line. The model still hears
+   * the caller (we need its transcription to check the passphrase) but nothing
+   * it generates reaches them — it has been observed answering a rejection with
+   * "Thank you." or "Unlocked.", which reads to the caller as being let in.
+   */
+  private modelMutedByLock(): boolean {
+    return this.deterministicLockPrompts && !this.thinkAuthorized;
+  }
+
   private injectGreeting(metadata?: StartMetadata): void {
     const s2s = this.s2s;
     if (!s2s || this.greetingSent) return;
@@ -293,20 +329,61 @@ export class TwilioRealtimeSession {
     const ownerCheckEnabled = Boolean(owner);
     const isOwner = ownerCheckEnabled && Boolean(caller) && caller === owner;
     // Always ask for the passphrase — the call stays locked until it matches (3 tries).
-    const greeting =
-      ownerCheckEnabled && !isOwner
-        ? "Hello. This phone session is limited to sixty seconds. Please say your passphrase."
-        : "Hi. Please say your passphrase.";
-    this.joshuInitiatedResponse = true;
-    s2s.injectControlMessage(greeting);
+    this.speakLockLine(ownerCheckEnabled && !isOwner ? "greeting_guest" : "greeting");
     this.greetingSent = true;
   }
 
-  /** Speak a short line, then close the Twilio media stream (hangs up the call). */
-  private hangUpAfterMessage(message: string, delayMs = 2500): void {
+  /**
+   * Say one of the fixed lock lines. Prefers the box's pre-rendered clip so the
+   * wording is guaranteed; falls back to instructing the model, which sounds
+   * natural but may paraphrase (see lockPrompts.ts).
+   *
+   * Returns the clip's playback length in ms, or 0 when the model is speaking.
+   */
+  private speakLockLine(key: LockPromptKey): number {
+    const clip = this.deterministicLockPrompts ? getLockPromptClip(key) : null;
+    if (!clip) {
+      this.joshuInitiatedResponse = true;
+      this.s2s?.injectControlMessage(LOCK_PROMPTS[key]);
+      return 0;
+    }
+    // Take the floor: on unlock the model is no longer muted and Gemini may
+    // already be mid-reply, which would talk over the clip.
+    if (this.assistantIsSpeaking()) {
+      this.s2s?.cancelActiveResponse();
+      this.clearOutbound();
+    }
+    this.resetAssistantPlaybackState();
+    this.playMulawClip(clip.mulawB64);
+    voiceLog(this.callSid, "auth", `spoke "${key}" from clip`, { durationMs: clip.durationMs });
+    return clip.durationMs;
+  }
+
+  /**
+   * Write a clip to the caller. Twilio buffers and paces playback itself, so
+   * frames go out back to back; the trailing mark tells us when it drained.
+   */
+  private playMulawClip(mulawB64: string): void {
+    const sid = this.streamSid;
+    if (!sid || this.ws.readyState !== 1) return;
+    const raw = Buffer.from(mulawB64, "base64");
+    for (let offset = 0; offset < raw.length; offset += MULAW_FRAME_BYTES) {
+      this.ws.send(
+        JSON.stringify({
+          event: "media",
+          streamSid: sid,
+          media: { payload: raw.subarray(offset, offset + MULAW_FRAME_BYTES).toString("base64") },
+        }),
+      );
+    }
+    this.sendMark();
+  }
+
+  /** Speak a lock line, then close the Twilio media stream (hangs up the call). */
+  private hangUpAfterLockLine(key: LockPromptKey, minDelayMs = 2500): void {
     this.hangingUpForAuth = true;
-    this.joshuInitiatedResponse = true;
-    this.s2s?.injectControlMessage(message);
+    // Clip playback is paced by Twilio, so wait out its full length before closing.
+    const delayMs = Math.max(minDelayMs, this.speakLockLine(key) + 750);
     setTimeout(() => {
       try {
         this.ws.close();
@@ -327,27 +404,16 @@ export class TwilioRealtimeSession {
     const effectiveWarn = Math.max(5000, warnMs);
     const effectiveHangup = Math.max(effectiveWarn + 5000, hangupMs);
 
+    // These only ever fire pre-unlock (unlock disables the timers), so they are
+    // lock lines too — the model is muted by then when clips are available.
     this.sessionWarnTimer = setTimeout(() => {
       if (this.sessionTimerDisabled || this.ws.readyState !== 1) return;
-      this.joshuInitiatedResponse = true;
-      this.s2s?.injectControlMessage(
-        "Heads up — this call is almost out of time. You have about thirty seconds left.",
-      );
+      this.speakLockLine("time_warning");
     }, effectiveWarn);
 
     this.sessionHangupTimer = setTimeout(() => {
       if (this.sessionTimerDisabled || this.ws.readyState !== 1) return;
-      this.joshuInitiatedResponse = true;
-      this.s2s?.injectControlMessage(
-        "This call has reached its time limit. I need to hang up now. Goodbye.",
-      );
-      setTimeout(() => {
-        try {
-          this.ws.close();
-        } catch {
-          // no-op
-        }
-      }, 2500);
+      this.hangUpAfterLockLine("time_up");
     }, effectiveHangup);
   }
 
@@ -372,6 +438,7 @@ export class TwilioRealtimeSession {
   private forwardMulawDelta(deltaB64: string, itemId?: string): void {
     const sid = this.streamSid;
     if (!sid || this.ws.readyState !== 1 || !deltaB64) return;
+    if (this.modelMutedByLock()) return;
     if (this.activeJob && this.currentResponseReason === "organic") return;
     if (
       this.geminiPhone &&
@@ -430,8 +497,7 @@ export class TwilioRealtimeSession {
     if (!this.thinkAuthorized) {
       if (kind === "unclear") {
         voiceLog(this.callSid, "auth", `#${this.turn} unclear while locked → ${JSON.stringify(text)}`);
-        this.joshuInitiatedResponse = true;
-        s2s.injectControlMessage("Sorry, I didn't catch that. Please say your passphrase.");
+        this.speakLockLine("unclear");
         return;
       }
 
@@ -440,11 +506,10 @@ export class TwilioRealtimeSession {
         if (!this.utteranceLooksLikeTaskRequest(text)) {
           this.requiresRestatedIntentAfterUnlock = true;
         }
-        this.joshuInitiatedResponse = true;
         if (this.geminiPhone) {
           this.allowGeminiCallerReply("passphrase unlock");
         }
-        s2s.injectControlMessage("Unlocked. Please repeat your request.");
+        this.speakLockLine("unlocked");
         return;
       }
 
@@ -456,16 +521,11 @@ export class TwilioRealtimeSession {
       });
       if (this.passphraseFailures >= MAX_PASSPHRASE_ATTEMPTS) {
         voiceWarn(this.callSid, "auth", "hanging up after passphrase failures");
-        this.hangUpAfterMessage("Too many incorrect attempts. Goodbye.");
+        this.hangUpAfterLockLine("locked_out");
         return;
       }
       const left = MAX_PASSPHRASE_ATTEMPTS - this.passphraseFailures;
-      this.joshuInitiatedResponse = true;
-      s2s.injectControlMessage(
-        left === 1
-          ? "That's not the passphrase. One try left."
-          : "That's not the passphrase. Please try again.",
-      );
+      this.speakLockLine(left === 1 ? "last_try" : "retry");
       return;
     }
 
@@ -561,6 +621,15 @@ export class TwilioRealtimeSession {
     }
   }
 
+  /** Audio is on the wire — either model deltas or a lock clip Twilio has not drained. */
+  private assistantIsSpeaking(): boolean {
+    return (
+      Boolean(this.lastAssistantItem) ||
+      this.markQueue.length > 0 ||
+      Boolean(this.assistantPartial.trim())
+    );
+  }
+
   /** After greeting finishes, clear Twilio mark state so the first caller turn is not treated as barge-in. */
   private resetAssistantPlaybackState(): void {
     this.markQueue = [];
@@ -584,12 +653,7 @@ export class TwilioRealtimeSession {
     }
 
     // speech_started fires on normal user turns too — only barge-in while assistant is playing.
-    const assistantSpeaking =
-      Boolean(this.lastAssistantItem) ||
-      this.markQueue.length > 0 ||
-      Boolean(this.assistantPartial.trim());
-
-    if (!assistantSpeaking) {
+    if (!this.assistantIsSpeaking()) {
       this.allowGeminiCallerReply("user speech started");
       voiceLog(this.callSid, "vad", "user speech started (listening — not barge-in)");
       return;
@@ -779,8 +843,7 @@ export class TwilioRealtimeSession {
           }),
           { triggerResponse: false },
         );
-        this.joshuInitiatedResponse = true;
-        s2s.injectControlMessage("Please say your passphrase.");
+        this.speakLockLine("need_passphrase");
         return;
       }
       if (this.geminiPhone) {
@@ -820,8 +883,7 @@ export class TwilioRealtimeSession {
           }),
           { triggerResponse: false },
         );
-        this.joshuInitiatedResponse = true;
-        s2s.injectControlMessage("Please repeat what you want me to do now that you're unlocked.");
+        this.speakLockLine("restate_intent");
         return;
       }
     }

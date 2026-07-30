@@ -39,6 +39,10 @@ Owner can change it in the app:
 
 Precedence for both values: settings file → `instance.env` → process env.
 
+### Choosing a phrase the phone can hear
+
+Matching is fuzzy, but it cannot rescue a phrase the transcriber never gets close to. Short words get absorbed into their neighbours over a phone line: one box configured with `swift olive` had it transcribed as `Swallowed all of` and `Swift Home`, so the call never unlocked. Prefer **two clear, distinct, multi-syllable words** (`harbor lantern`, `copper canyon`). If unlock keeps failing, `auth passphrase rejected … heardPreview` in the `voice-realtime` logs shows what was actually heard.
+
 If no passphrase is configured anywhere, PSTN stays disabled (routes not registered; media streams rejected).
 
 ---

@@ -4,7 +4,8 @@
  * then TWILIO_THINK_PASSWORD from env / instance.env.
  */
 import fs from "node:fs";
-import path from "node:path";
+
+import { joshuUserPath } from "./arozUserPaths.js";
 
 function envTrim(name: string): string {
   return process.env[name]?.trim() ?? "";
@@ -14,38 +15,8 @@ function stripWrappingQuotes(raw: string): string {
   return raw.replace(/^["']|["']$/g, "").trim();
 }
 
-function pickArozUser(usersRoot: string): string | null {
-  const overrideUser = envTrim("JOSHU_AROZ_USER");
-  if (overrideUser) {
-    const desktop = path.join(usersRoot, overrideUser, "Desktop");
-    return fs.existsSync(desktop) ? overrideUser : null;
-  }
-  try {
-    for (const ent of fs.readdirSync(usersRoot, { withFileTypes: true })) {
-      if (!ent.isDirectory() || ent.name === "admin") continue;
-      if (fs.existsSync(path.join(usersRoot, ent.name, "Desktop"))) return ent.name;
-    }
-    for (const ent of fs.readdirSync(usersRoot, { withFileTypes: true })) {
-      if (!ent.isDirectory()) continue;
-      if (fs.existsSync(path.join(usersRoot, ent.name, "Desktop"))) return ent.name;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function telephoneSettingsPath(): string | null {
-  const arozData = envTrim("AROZ_DATA") || "/var/lib/arozos";
-  const usersRoot = path.join(arozData, "files", "users");
-  if (!fs.existsSync(usersRoot)) return null;
-  const user = pickArozUser(usersRoot);
-  if (!user) return null;
-  return path.join(usersRoot, user, ".joshu", "telephone", "settings.json");
-}
-
 function readOverrideThinkPassword(): string {
-  const file = telephoneSettingsPath();
+  const file = joshuUserPath("telephone", "settings.json");
   if (!file || !fs.existsSync(file)) return "";
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { thinkPassword?: unknown };

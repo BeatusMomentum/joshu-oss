@@ -149,6 +149,8 @@ There is **no ungated phone mode**: every inbound call starts locked. The greeti
 
 Owner can view/change the passphrase in the **Telephone** desktop app ([`telephone-arozos-app.md`](../telephone-arozos-app.md)). Override in `.joshu/telephone/settings.json` is preferred over `TWILIO_THINK_PASSWORD` in env (`thinkPassword.ts` / `telephoneSettings/resolve.ts`) and applies on the next inbound call without recreate.
 
+Every line the caller hears before unlock is spoken from a **pre-rendered clip**, not by the model — see [Deterministic lock prompts](#deterministic-lock-prompts).
+
 | Stage | Behavior |
 | --- | --- |
 | Call start | `thinkAuthorized = false`; greeting: *"Please say your passphrase."* |
@@ -165,7 +167,26 @@ The Realtime system prompt ([`buildVoiceSystemPrompt(..., "phone")`](../../packa
 
 Env value: wrapping quotes are stripped (`"Falken's Maze"` → `Falken's Maze`).
 
-**Known Gemini quirk:** with `gemini_live`, the model may still emit a short organic turn after each control inject (clipped fragments). Declaring only `think` and denying tools while locked removes the main failure mode (fake `open_desktop` success). Full mute of organic audio while locked is still open.
+### Deterministic lock prompts
+
+The words spoken while a call is locked are part of the security behavior, so they cannot be left to the model. Instructed to say *"That's not the passphrase. Please try again."*, Gemini Live has been observed saying *"Thank you."* and even *"Unlocked. What…"* — the caller believes they were let in, keeps talking, and gets silence because the call is in fact still locked. That reads as "I said my passphrase and nothing happened."
+
+So each fixed line is rendered ahead of time in the box's own Joshu voice and streamed straight to Twilio as μ-law frames, bypassing the model:
+
+| Piece | Role |
+| --- | --- |
+| [`lockPrompts.ts`](../../packages/voice-realtime/src/lockPrompts.ts) | `LOCK_PROMPTS` registry (key → exact text) and the clip loader/cache |
+| [`generateLockPromptClips.ts`](../../packages/voice-realtime/src/generateLockPromptClips.ts) | Renders the registry via Gemini or OpenAI TTS using the box voice |
+| `scripts/generate-voice-lock-prompts.sh` | Wrapper; run by `vps-start.sh` on every box start |
+
+Clips live in `.joshu/voice/lock/<key>.pcm.b64` (PCM16 mono @ 24 kHz base64) beside a `clips.json` manifest recording the voice and text each was rendered from, so a re-run only re-synthesizes what changed. Override the directory with `VOICE_LOCK_PROMPT_DIR`; force a full re-render with `--force`.
+
+Two consequences worth knowing:
+
+- **While locked, the model is muted entirely** (`modelMutedByLock()`). It still receives caller audio — its transcription is what the passphrase is matched against — but nothing it generates reaches the caller, and muted output is kept out of the spoken transcript and later `think` context. This closes the old "Gemini emits a short organic turn after each control inject" quirk.
+- **A partial clip set disables the whole mechanism.** `lockPromptsReady()` requires every key, because a missing clip plus a muted model would be a silent call. With clips missing, the session logs `lock prompt clips missing` and falls back to instructing the model — natural sounding, but free to paraphrase.
+
+The session time-limit lines are in the registry too: those timers only ever fire before unlock, so they are lock lines as well.
 
 ### Session time limits
 
@@ -175,7 +196,7 @@ Timers run for every call until **passphrase unlock** (`disableSessionTimeLimit(
 
 ### Greeting and owner caller
 
-On OpenAI `session.ready`, Joshu injects a **greeting** via `injectControlMessage()` (not `injectAssistantMessage()` — the latter wraps Hermes-style instructions and caused wrong lines like “I need the topic…”).
+The greeting plays on `session.ready`, from the `greeting` / `greeting_guest` clip when available. Without clips it falls back to `injectControlMessage()` (not `injectAssistantMessage()` — the latter wraps Hermes-style instructions and caused wrong lines like “I need the topic…”).
 
 | `TWILIO_OWNER_CALLER` | Greeting |
 | --- | --- |
@@ -188,7 +209,8 @@ Joshu TwiML forwards `caller` and `ownerCaller` on the Media Stream ([`twilioPho
 
 | API | Use on phone |
 | --- | --- |
-| `injectControlMessage()` | Greeting, unlock prompts, session timeout lines |
+| Pre-rendered clip | Greeting, all lock/unlock prompts, session timeout lines — see [Deterministic lock prompts](#deterministic-lock-prompts) |
+| `injectControlMessage()` | Fallback for those lines when the box has no clips |
 | `injectProgressMessage()` | *"One moment."* and long-job ticks |
 | `injectAssistantMessage()` | Hermes result summary after `think` completes |
 
@@ -321,6 +343,8 @@ Useful log lines:
 | `auth passphrase rejected` | Clear utterance did not match; attempt N of 3 |
 | `auth hanging up after passphrase failures` | 3 wrong attempts — goodbye then hang up |
 | `auth blocked <tool> call before passphrase` | Server denied a tool while still locked |
+| `auth spoke "<key>" from clip` | A lock line played from its pre-rendered clip |
+| `auth lock prompt clips missing` | No full clip set — lock lines fall back to the model (run `scripts/generate-voice-lock-prompts.sh`) |
 | `tool unsupported tool on phone: <name>` | Model hallucinated a tool not declared on PSTN (`PHONE_TOOL_NAMES`) |
 | `auth blocked think until caller restates intent` | Unlocked but passphrase-only; waiting for task restatement |
 | `auth session time limit disabled (passphrase)` | 60s/90s timers cleared after unlock |
@@ -361,6 +385,8 @@ Full write-up: [voice-think-speak.md — OpenAI Platform observability](voice-th
 | No greeting until user speaks | Greeting before Realtime ready | Fixed: greeting on `onReady`; grep `session ready` then `speech-instruct` |
 | Weird greeting / “need the topic” | `injectAssistantMessage` for greeting | Use `injectControlMessage` for call control lines |
 | Passphrase never unlocks | Exact string match only / env quotes / stale env | Fuzzy match in `phonePassphrase.ts`; strip quotes; check Telephone `settings.json` override |
+| Passphrase never unlocks, `heardPreview` is nothing like it | Phrase is hard for phone STT — short words blur into neighbours (heard `swift olive` as `Swallowed all of`) | Pick two clear multi-syllable words in the Telephone app; grep `auth passphrase rejected` for what was actually heard |
+| Caller hears "Unlocked" / "Thank you" but the call stays locked | Model voiced a lock line and paraphrased it | Expected without clips — run `scripts/generate-voice-lock-prompts.sh`; grep `lock prompt clips missing` |
 | Passphrase sent to Hermes as a task | Unlock forwarded as command | Redact + auth-only unlock path; grep `sanitizeTextForThinkContext` |
 | `restate_after_unlock` loop | Flag not cleared | First clear post-unlock utterance clears; prior task in transcript can skip restate |
 | Call hangs up at ~90s | Session timer | Say passphrase to disable timers, or raise `TWILIO_PHONE_SESSION_HANGUP_MS` |
@@ -384,6 +410,9 @@ Full write-up: [voice-think-speak.md — OpenAI Platform observability](voice-th
 | [`userInputGate.ts`](../../packages/voice-realtime/src/userInputGate.ts) | PSTN transcript gate (clear / unclear / empty) |
 | [`phonePassphrase.ts`](../../packages/voice-realtime/src/phonePassphrase.ts) | STT-tolerant think passphrase matching |
 | [`thinkPassword.ts`](../../packages/voice-realtime/src/thinkPassword.ts) | Resolve passphrase (settings.json → env) |
+| [`lockPrompts.ts`](../../packages/voice-realtime/src/lockPrompts.ts) | Lock line text registry + pre-rendered clip loader |
+| [`generateLockPromptClips.ts`](../../packages/voice-realtime/src/generateLockPromptClips.ts) | Render lock clips in the box voice (Gemini / OpenAI TTS) |
+| [`arozUserPaths.ts`](../../packages/voice-realtime/src/arozUserPaths.ts) | Owner's `.joshu/` paths (Telephone settings, voice clips) |
 | [`loadEnv.ts`](../../packages/voice-realtime/src/loadEnv.ts) | `.env` load order for voice-realtime |
 | [`templates/joshu-info/highlevel-info.md`](../../templates/joshu-info/highlevel-info.md) | Baseline Joshu context for Realtime prompts |
 | [`packages/voice-client/`](../../packages/voice-client/) | Shared browser WebSocket client |
