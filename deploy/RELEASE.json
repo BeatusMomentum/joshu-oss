@@ -1,11 +1,11 @@
 {
-  "version": "0.1.37",
+  "version": "0.1.38",
   "channel": "stable",
-  "imageRef": "ghcr.io/db-aeon/joshu-oss:0.1.37",
-  "voiceImageRef": "ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.37",
+  "imageRef": "ghcr.io/db-aeon/joshu-oss:0.1.38",
+  "voiceImageRef": "ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.38",
   "hermesRef": "a91a57fa5a13d516c38b07a141a9ce8a3daabeb0",
   "gbrainRef": "fa2c7a6990a7a57b251979ef6e1988ff09529021",
   "camofoxBase": "ghcr.io/jo-inc/camofox-browser@sha256:3ab61b4742105922aab6f8c99460f55563b6f93e906975383ddce16ec8917f3f",
-  "builtAt": "2026-07-29T22:30:00.000Z",
-  "notes": "Telephone desktop app + PSTN unlock-only passphrase gate, voice think/speak docs, and sandbox runtime packaging for @joshu/whiteboard-cwm.\n\n## Highlights\n\n### Telephone (ArozOS)\n\n* New **Telephone** desktop app: view the box phone number and change the spoken unlock passphrase\n* Owner override lives in `.joshu/telephone/settings.json` and is preferred over `TWILIO_THINK_PASSWORD` without a stack recreate\n* REST API: `GET`/`PUT /joshu/api/telephone`\n\n### PSTN / voice-realtime\n\n* Inbound calls start **locked** — no chat or tools until the passphrase matches\n* Three incorrect clear attempts hang up; unclear/filler does not count\n* After unlock: think/Hermes path works as before; session time limit clears\n* Passphrase resolution shared between Joshu and voice-realtime (`thinkPassword.ts`)\n\n### Runtime packaging\n\n* Bake `@joshu/whiteboard-cwm` into the sandbox image and sync its dist on box update\n* Document voice unlock UX for self-host (`docs/vps-sandbox/voice-realtime.md`, `voice-think-speak.md`)"
+  "builtAt": "2026-07-30T16:45:00.000Z",
+  "notes": "Deterministic passphrase-lock voice prompts: locked PSTN calls are voiced from pre-rendered clips in the box voice, not by the speech-to-speech model (which paraphrased rejections as \"Unlocked\"). Clips live in a dedicated joshu_voice_clips volume and heal on voice-realtime startup.\n\n## Highlights\n\n### Deterministic lock prompts\n\n* Fixed lock lines (greeting, retry, unlock, hang-up, session timeout) are rendered ahead of time via Gemini/OpenAI TTS in the box Joshu voice\n* While locked, the model is muted — it still hears the caller for passphrase transcription, but nothing it generates reaches them\n* Partial clip sets keep the old model-spoken fallback rather than risk a silent call\n* `ensureLockPromptClips()` runs when voice-realtime starts listening for PSTN\n\n### Runtime\n\n* New writable volume `joshu_voice_clips` → `/var/lib/joshu-voice` (ArozOS stays read-only for voice-realtime)\n* Docs: passphrase tips for phone ASR (short words blur into neighbours); lock-prompt troubleshooting in `voice-realtime.md`"
 }
