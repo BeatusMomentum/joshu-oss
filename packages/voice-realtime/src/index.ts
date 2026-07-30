@@ -25,6 +25,7 @@ import {
   webVoiceDisableReasons,
 } from "./config.js";
 import { voiceS2sProviderLabel } from "./createVoiceS2sClient.js";
+import { ensureLockPromptClips } from "./generateLockPromptClips.js";
 import { safeEqualToken } from "./safeEqual.js";
 import { TwilioRealtimeSession } from "./twilioRealtimeSession.js";
 
@@ -301,6 +302,11 @@ server.listen(PORT, HOST, () => {
   }
   if (s2s) {
     console.info("[voice-realtime]   pstn     WSS /voice-rt/media/<secret> (Twilio Media Streams)");
+    // Locked calls are voiced by clips, so render any that are missing or stale.
+    // Not awaited: a call arriving mid-render just falls back to the model.
+    void ensureLockPromptClips().catch((err: unknown) => {
+      console.warn(`[voice-realtime] lock prompt clips unavailable: ${(err as Error).message}`);
+    });
   }
   console.info("");
   if (!s2s && !web) {

@@ -131,6 +131,8 @@ services:
     volumes:
       # Share Aroz user data so resolveJoshuIdentity() reads .joshu/identity.json (voiceId).
       - joshu_arozos:/var/lib/arozos:ro
+      # Writable home for derived voice assets (pre-rendered passphrase-lock clips).
+      - joshu_voice_clips:/var/lib/joshu-voice
     profiles:
       - voice-rt
 
@@ -143,3 +145,4 @@ volumes:
   joshu_hindsight_cache:
   joshu_postgres:
   joshu_gbrain:
+  joshu_voice_clips:

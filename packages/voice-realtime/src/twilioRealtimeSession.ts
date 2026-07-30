@@ -165,7 +165,7 @@ export class TwilioRealtimeSession {
         callSid,
         "auth",
         "lock prompt clips missing — falling back to model-spoken lock lines " +
-          "(run scripts/generate-voice-lock-prompts.sh)",
+          "(still rendering, or TTS unavailable)",
       );
     }
 

@@ -9,16 +9,16 @@
  * cannot answer. The words also carry the security story, so a paraphrase is a
  * correctness bug, not a style one.
  *
- * So each line is pre-rendered to audio in the box's own Joshu voice by
- * `scripts/generate-voice-lock-prompts.sh` and played straight down the Twilio
- * media stream, bypassing the model. Clips are optional: with none present the
- * session falls back to instructing the model, which sounds natural but can go
- * off-script.
+ * So each line is pre-rendered to audio in the box's own Joshu voice (see
+ * generateLockPromptClips.ts, run at service start) and played straight down
+ * the Twilio media stream, bypassing the model. Clips are optional: with none
+ * present the session falls back to instructing the model, which sounds natural
+ * but can go off-script.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { joshuUserPath } from "./arozUserPaths.js";
 import { pcm24kB64ToMulaw8kB64 } from "./audioResample.js";
 
 /**
@@ -61,17 +61,27 @@ function envTrim(name: string): string {
   return process.env[name]?.trim() ?? "";
 }
 
-/** Clips live beside the other box-local voice assets the box generates. */
-function clipPath(key: LockPromptKey): string | null {
-  const explicitDir = envTrim("VOICE_LOCK_PROMPT_DIR");
-  if (explicitDir) return join(explicitDir, `${key}.pcm.b64`);
-  return joshuUserPath("voice", "lock", `${key}.pcm.b64`);
+/**
+ * Clips are voice-realtime's own derived cache, not owner data, and the service
+ * mounts the ArozOS volume read-only — so they live in a directory it owns. In
+ * the container that is a small dedicated volume; in local dev it falls back
+ * inside the package.
+ */
+export function lockPromptDir(): string {
+  const explicit = envTrim("VOICE_LOCK_PROMPT_DIR");
+  if (explicit) return explicit;
+  if (existsSync("/var/lib/joshu-voice")) return "/var/lib/joshu-voice/lock";
+  return join(dirname(fileURLToPath(import.meta.url)), "..", ".cache", "lock-prompts");
+}
+
+function clipPath(key: LockPromptKey): string {
+  return join(lockPromptDir(), `${key}.pcm.b64`);
 }
 
 /** Generated as PCM16 mono @ 24 kHz (same format as the rest of the voice clips). */
 function loadClip(key: LockPromptKey): LockPromptClip | null {
   const path = clipPath(key);
-  if (!path || !existsSync(path)) return null;
+  if (!existsSync(path)) return null;
   try {
     const pcmB64 = readFileSync(path, "utf8").replace(/\s/g, "");
     if (!pcmB64) return null;

@@ -207,12 +207,6 @@ sync_companion_identity() {
     bash "${APP_DIR}/scripts/generate-voice-instant-ack.sh" \
       || echo "[vps-start] WARN: voice instant ack generation failed" >&2
   fi
-  # Phone lock lines must be spoken verbatim, so they are pre-rendered in the
-  # box voice; without them voice-realtime falls back to model-spoken lines.
-  if [[ "${JOSHU_VOICE_MODE:-realtime_s2s}" == "realtime_s2s" && -f "${APP_DIR}/scripts/generate-voice-lock-prompts.sh" ]]; then
-    bash "${APP_DIR}/scripts/generate-voice-lock-prompts.sh" \
-      || echo "[vps-start] WARN: voice lock prompt generation failed" >&2
-  fi
 }
 
 apply_hermes_langfuse_patches() {

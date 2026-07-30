@@ -176,10 +176,14 @@ So each fixed line is rendered ahead of time in the box's own Joshu voice and st
 | Piece | Role |
 | --- | --- |
 | [`lockPrompts.ts`](../../packages/voice-realtime/src/lockPrompts.ts) | `LOCK_PROMPTS` registry (key → exact text) and the clip loader/cache |
-| [`generateLockPromptClips.ts`](../../packages/voice-realtime/src/generateLockPromptClips.ts) | Renders the registry via Gemini or OpenAI TTS using the box voice |
-| `scripts/generate-voice-lock-prompts.sh` | Wrapper; run by `vps-start.sh` on every box start |
+| [`generateLockPromptClips.ts`](../../packages/voice-realtime/src/generateLockPromptClips.ts) | `ensureLockPromptClips()` — renders the registry via Gemini or OpenAI TTS in the box voice |
+| [`generateLockPromptClipsCli.ts`](../../packages/voice-realtime/src/generateLockPromptClipsCli.ts) | `node dist/generateLockPromptClipsCli.js [--force]` for out-of-band renders |
 
-Clips live in `.joshu/voice/lock/<key>.pcm.b64` (PCM16 mono @ 24 kHz base64) beside a `clips.json` manifest recording the voice and text each was rendered from, so a re-run only re-synthesizes what changed. Override the directory with `VOICE_LOCK_PROMPT_DIR`; force a full re-render with `--force`.
+voice-realtime calls `ensureLockPromptClips()` when it starts listening (PSTN only, not awaited), so an empty or stale clip set heals itself without an external hook.
+
+Clips are `/var/lib/joshu-voice/lock/<key>.pcm.b64` (PCM16 mono @ 24 kHz base64) plus a `clips.json` manifest recording the voice and text each came from, so a re-render only touches what changed. That path is a **dedicated writable volume** (`joshu_voice_clips`): these are voice-realtime's own derived assets, not owner data, and the service mounts the ArozOS volume read-only. Override with `VOICE_LOCK_PROMPT_DIR`; local dev falls back to `packages/voice-realtime/.cache/lock-prompts`.
+
+Gemini's TTS model is handed `Read this aloud …: <line>` — several lock lines are questions, and passed bare the model tries to *answer* them and the request fails. The style prefix is direction, not script, so it is not spoken.
 
 Two consequences worth knowing:
 
@@ -344,7 +348,7 @@ Useful log lines:
 | `auth hanging up after passphrase failures` | 3 wrong attempts — goodbye then hang up |
 | `auth blocked <tool> call before passphrase` | Server denied a tool while still locked |
 | `auth spoke "<key>" from clip` | A lock line played from its pre-rendered clip |
-| `auth lock prompt clips missing` | No full clip set — lock lines fall back to the model (run `scripts/generate-voice-lock-prompts.sh`) |
+| `auth lock prompt clips missing` | No full clip set — lock lines fall back to the model (still rendering at startup, or TTS unavailable) |
 | `tool unsupported tool on phone: <name>` | Model hallucinated a tool not declared on PSTN (`PHONE_TOOL_NAMES`) |
 | `auth blocked think until caller restates intent` | Unlocked but passphrase-only; waiting for task restatement |
 | `auth session time limit disabled (passphrase)` | 60s/90s timers cleared after unlock |
@@ -386,7 +390,7 @@ Full write-up: [voice-think-speak.md — OpenAI Platform observability](voice-th
 | Weird greeting / “need the topic” | `injectAssistantMessage` for greeting | Use `injectControlMessage` for call control lines |
 | Passphrase never unlocks | Exact string match only / env quotes / stale env | Fuzzy match in `phonePassphrase.ts`; strip quotes; check Telephone `settings.json` override |
 | Passphrase never unlocks, `heardPreview` is nothing like it | Phrase is hard for phone STT — short words blur into neighbours (heard `swift olive` as `Swallowed all of`) | Pick two clear multi-syllable words in the Telephone app; grep `auth passphrase rejected` for what was actually heard |
-| Caller hears "Unlocked" / "Thank you" but the call stays locked | Model voiced a lock line and paraphrased it | Expected without clips — run `scripts/generate-voice-lock-prompts.sh`; grep `lock prompt clips missing` |
+| Caller hears "Unlocked" / "Thank you" but the call stays locked | Model voiced a lock line and paraphrased it | Expected without clips — grep `lock prompt clips missing`, then `node dist/generateLockPromptClipsCli.js` in the voice container |
 | Passphrase sent to Hermes as a task | Unlock forwarded as command | Redact + auth-only unlock path; grep `sanitizeTextForThinkContext` |
 | `restate_after_unlock` loop | Flag not cleared | First clear post-unlock utterance clears; prior task in transcript can skip restate |
 | Call hangs up at ~90s | Session timer | Say passphrase to disable timers, or raise `TWILIO_PHONE_SESSION_HANGUP_MS` |

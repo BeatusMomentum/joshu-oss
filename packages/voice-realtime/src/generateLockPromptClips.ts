@@ -2,21 +2,18 @@
  * Render the fixed lock lines to audio in this box's own Joshu voice.
  *
  * Locked calls are voiced by these clips rather than by the speech-to-speech
- * model, which paraphrases (see lockPrompts.ts). Run at box start and after a
- * voice identity change:
+ * model, which paraphrases (see lockPrompts.ts). voice-realtime calls this on
+ * startup so a fresh clip volume heals itself; it is also runnable directly:
  *
- *   node dist/generateLockPromptClips.js [--force]
+ *   node dist/generateLockPromptClipsCli.js [--force]
  *
- * Output is PCM16 mono @ 24 kHz base64, one file per prompt key, beside the
- * box's other voice assets. A manifest records the voice and text each clip was
- * rendered from, so a re-run only re-synthesizes what actually changed.
+ * Output is PCM16 mono @ 24 kHz base64, one file per prompt key. A manifest
+ * records the voice and text each clip came from, so a re-run only
+ * re-synthesizes what actually changed.
  */
-import "./loadEnv.js";
-
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { joshuUserPath } from "./arozUserPaths.js";
 import { resamplePcm16 } from "./audioResample.js";
 import {
   envTrim,
@@ -26,7 +23,13 @@ import {
   resolveGeminiApiKey,
   VOICE_S2S_PROVIDER,
 } from "./config.js";
-import { LOCK_PROMPTS, LOCK_PROMPT_KEYS, type LockPromptKey } from "./lockPrompts.js";
+import {
+  clearLockPromptCache,
+  LOCK_PROMPTS,
+  LOCK_PROMPT_KEYS,
+  lockPromptDir,
+  type LockPromptKey,
+} from "./lockPrompts.js";
 
 const MANIFEST_BASENAME = "clips.json";
 const TARGET_SAMPLE_RATE = 24000;
@@ -56,18 +59,6 @@ type Manifest = {
 
 function log(message: string): void {
   console.info(`[lock-prompts] ${message}`);
-}
-
-function outputDir(): string {
-  const explicit = envTrim("VOICE_LOCK_PROMPT_DIR");
-  if (explicit) return explicit;
-  const boxDir = joshuUserPath("voice", "lock");
-  if (!boxDir) {
-    throw new Error(
-      "No Aroz user found — cannot place lock prompt clips (set VOICE_LOCK_PROMPT_DIR to override)",
-    );
-  }
-  return boxDir;
 }
 
 function readManifest(dir: string): Manifest | null {
@@ -171,11 +162,14 @@ async function synthesizeOpenai(text: string, voice: string): Promise<Buffer> {
   return Buffer.from(await res.arrayBuffer());
 }
 
-async function main(): Promise<void> {
-  const force = process.argv.includes("--force");
+/**
+ * Make sure every lock clip on disk matches the current voice and text.
+ * Returns how many were re-synthesized.
+ */
+export async function ensureLockPromptClips(force = false): Promise<number> {
   const gemini = VOICE_S2S_PROVIDER === "gemini_live";
   const voice = gemini ? GEMINI_LIVE_VOICE : OPENAI_REALTIME_VOICE;
-  const dir = outputDir();
+  const dir = lockPromptDir();
   mkdirSync(dir, { recursive: true });
 
   const previous = readManifest(dir);
@@ -207,9 +201,6 @@ async function main(): Promise<void> {
 
   writeFileSync(join(dir, MANIFEST_BASENAME), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   log(rendered ? `done — ${rendered} clip(s) rendered` : "done — all clips already current");
+  if (rendered > 0) clearLockPromptCache();
+  return rendered;
 }
-
-main().catch((err) => {
-  console.error(`[lock-prompts] ${(err as Error).message}`);
-  process.exit(1);
-});
