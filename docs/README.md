@@ -40,6 +40,7 @@ Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 | App SDK + `joshu.app.json` | [`app-sdk.md`](app-sdk.md) |
 | **Joshu app architecture (gentle intro)** — skills → GUI + voice | [`joshu-app-architecture-intro.md`](joshu-app-architecture-intro.md) |
 | **Voice (S2S, think vs speak, instant ack)** | [`vps-sandbox/voice-realtime.md`](vps-sandbox/voice-realtime.md) · [`vps-sandbox/voice-think-speak.md`](vps-sandbox/voice-think-speak.md) |
+| **Twilio phone (self-host PSTN)** | [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md) · [`telephone-arozos-app.md`](telephone-arozos-app.md) |
 | Platform architecture + `@joshu/platform-data` | [`platform-architecture.md`](platform-architecture.md) · [`platform-data.md`](platform-data.md) |
 | jWhiteboard user guide (how to run a session) | [`jwhiteboard-user-guide.md`](jwhiteboard-user-guide.md) |
 | jWhiteboard developer guide (architecture, code map, runtime, debugging) | [`jwhiteboard-developer-guide.md`](jwhiteboard-developer-guide.md) |

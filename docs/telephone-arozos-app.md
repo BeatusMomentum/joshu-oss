@@ -2,7 +2,7 @@
 
 **Telephone** shows the phone number assigned to the box and lets the owner view/change the spoken **think passphrase** used on inbound PSTN calls.
 
-Related: [`vps-sandbox/voice-realtime.md`](vps-sandbox/voice-realtime.md) · [`vps-sandbox/voice-think-speak.md`](vps-sandbox/voice-think-speak.md)
+Related: [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md) (buy number + wire Twilio) · [`vps-sandbox/voice-realtime.md`](vps-sandbox/voice-realtime.md) · [`vps-sandbox/voice-think-speak.md`](vps-sandbox/voice-think-speak.md)
 
 ---
 
@@ -25,7 +25,7 @@ Related: [`vps-sandbox/voice-realtime.md`](vps-sandbox/voice-realtime.md) · [`v
 
 ### Phone number
 
-From `TWILIO_PHONE_NUMBER` (set at Twilio provision / in `instance.env`) or an optional override in `settings.json`. Displayed as a formatted number; copy uses E.164.
+From `TWILIO_PHONE_NUMBER` (set in `instance.env` after you buy a Twilio number — see [`twilio-self-host.md`](vps-sandbox/twilio-self-host.md)) or an optional override in `settings.json`. Displayed as a formatted number; copy uses E.164. Managed fleet boxes get this at provision.
 
 ### Think passphrase
 

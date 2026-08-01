@@ -9,6 +9,8 @@ Low-latency **speech-to-speech** voice using OpenAI Realtime (`gpt-realtime-2`):
 
 Implementation: [`packages/voice-realtime/`](../../packages/voice-realtime/).
 
+**Self-host Twilio (buy number + Console + `instance.env`):** [`twilio-self-host.md`](twilio-self-host.md).
+
 ## Architecture
 
 ```mermaid
@@ -74,12 +76,18 @@ Joshu exposes read-only brain HTTP routes for other fast clients ([`file-brain.m
 
 ## Enable on VPS
 
+**First-time Twilio wiring** (account, number, Console webhook, all required secrets): follow [`twilio-self-host.md`](twilio-self-host.md). Summary of voice-related env once Twilio is bought:
+
 ```bash
 JOSHU_VOICE_MODE=realtime_s2s
-OPENAI_API_KEY=...
+OPENAI_API_KEY=...              # or GEMINI_API_KEY when JOSHU_VOICE_PROVIDER=gemini_live
 HERMES_API_KEY=...              # same as API_SERVER_KEY from provision
 HERMES_API_BASE_URL=http://127.0.0.1:8642
-TWILIO_MEDIA_STREAM_WSS_URL=wss://<customer>/voice-rt/media/<secret>
+TWILIO_AUTH_TOKEN=...
+TWILIO_MEDIA_STREAM_SECRET=...  # openssl rand -hex 32
+TWILIO_VOICE_WEBHOOK_URL=https://<host>/joshu/api/twilio/voice/inbound
+TWILIO_MEDIA_STREAM_WSS_URL=wss://<host>/voice-rt/media/<secret>
+TWILIO_THINK_PASSWORD=your-passphrase   # REQUIRED — without it PSTN routes stay disabled
 # Optional:
 # OPENAI_REALTIME_MODEL=gpt-realtime-2
 # OPENAI_REALTIME_REASONING_EFFORT=low
@@ -89,7 +97,6 @@ TWILIO_MEDIA_STREAM_WSS_URL=wss://<customer>/voice-rt/media/<secret>
 # VOICE_PHONE_VAD_EAGERNESS=high
 # VOICE_PHONE_VAD_THRESHOLD=0.62
 # OPENAI_REALTIME_VOICE=alloy
-# TWILIO_THINK_PASSWORD=your-passphrase   # REQUIRED — without it PSTN routes stay disabled
 # TWILIO_OWNER_CALLER=+15551234567
 # TWILIO_PHONE_SESSION_WARN_MS=60000
 # TWILIO_PHONE_SESSION_HANGUP_MS=90000
@@ -97,7 +104,7 @@ TWILIO_MEDIA_STREAM_WSS_URL=wss://<customer>/voice-rt/media/<secret>
 # TWILIO_PHONE_SYSTEM_PROMPT=...
 ```
 
-Managed / fleet boxes usually get `TWILIO_THINK_PASSWORD` as **two random English words** (e.g. `harbor comet`) at provision time. Self-host: set it yourself in `/etc/joshu/instance.env` (or override later in the Telephone app).
+Managed / fleet boxes usually get Twilio + `TWILIO_THINK_PASSWORD` (two random English words, e.g. `harbor comet`) at provision time. Self-host: set everything in [`twilio-self-host.md`](twilio-self-host.md) (or override the passphrase later in the Telephone app).
 
 Compose profile **`voice-rt`** starts the service on port **8792**. Caddy proxies `/voice-rt/*` → `127.0.0.1:8792`.
 
@@ -158,10 +165,11 @@ Every line the caller hears before unlock is spoken from a **pre-rendered clip**
 | Wrong passphrase | Spoken *"That's not the passphrase…"*; attempt counter increments |
 | 3 failures | *"Too many incorrect attempts. Goodbye."* then WebSocket close (~2.5s) |
 | Any tool call while locked | **Denied before dispatch** — server also checks `user_quote`, `summary`, and call transcript, so it may unlock from the `think_tool` source; otherwise the tool result tells the model nothing happened |
+| Unlock via `think_tool` with no task | Same as passphrase-only: defer the tool (`unlocked_no_request_yet`), speak *"Unlocked…"*, wait for a request. **Must not** start a Hermes job — the passphrase redacts to empty and the caller only hears progress ticks ("Still checking.") |
 | Declared tools | PSTN declares **`think` only** (`PHONE_TOOL_NAMES` in [`realtimeTools.ts`](../../packages/voice-realtime/src/realtimeTools.ts)). Browser keeps `open_desktop` + `think`. |
 | After unlock | Session time limit **disabled**; passphrase **redacted** from Hermes `summary` / `user_quote` / transcript context |
 | Passphrase-only turn | Speaks *"Unlocked. Please repeat your request."* — does **not** forward the passphrase as a Hermes command |
-| Restate intent | If unlock utterance was **only** the passphrase, `think` stays blocked until the user states a task (or a prior task-like utterance is still in the call transcript) |
+| Restate intent | If unlock utterance was **only** the passphrase, `think` stays blocked until the user states a task (or a prior task-like utterance is still in the call transcript). The post-unlock passphrase transcript itself (often empty after redact) must **not** clear this guard. |
 
 The Realtime system prompt ([`buildVoiceSystemPrompt(..., "phone")`](../../packages/voice-realtime/src/joshuIdentity.ts)) tells the model the call starts locked and **does not include the secret** — matching and enforcement are server-side only (`passphrase rejected` / `blocked <tool> call before passphrase` in logs).
 
@@ -228,7 +236,7 @@ All three end in `response.create`, but control/progress use short, explicit ins
 
 ### Prerequisites
 
-Same Twilio wiring as [phone-voice-local-test.md](phone-voice-local-test.md) (`TWILIO_AUTH_TOKEN`, hex `TWILIO_MEDIA_STREAM_SECRET`, path-style WSS URL).
+Same Twilio wiring as [`twilio-self-host.md` — Local development](twilio-self-host.md#local-development) (`TWILIO_AUTH_TOKEN`, hex `TWILIO_MEDIA_STREAM_SECRET`, path-style WSS URL, think passphrase).
 
 Repo root `.env`:
 
@@ -237,6 +245,11 @@ JOSHU_VOICE_MODE=realtime_s2s
 OPENAI_API_KEY=...
 HERMES_API_KEY=...              # must match Joshu/Hermes gateway
 HERMES_API_BASE_URL=http://127.0.0.1:8642
+TWILIO_AUTH_TOKEN=...
+TWILIO_MEDIA_STREAM_SECRET=...  # openssl rand -hex 32
+TWILIO_VOICE_WEBHOOK_URL=https://<tunnel>/joshu/api/twilio/voice/inbound
+TWILIO_MEDIA_STREAM_WSS_URL=wss://<tunnel>/voice-rt/media/<secret>
+TWILIO_THINK_PASSWORD=harbor lantern
 ```
 
 Hermes gateway must be running (`npm run dev:arozos` starts the stack). gbrain should be up for file/journal queries ([`file-brain.md`](../file-brain.md)).
@@ -265,7 +278,7 @@ wss://<tunnel>/voice-rt/media/<TWILIO_MEDIA_STREAM_SECRET>
 
 ### Option B — twilio-local helper (proxy + ngrok)
 
-See [phone-voice-local-test.md](phone-voice-local-test.md#recommended-one-ngrok-scriptstwilio-local-devsh). Proxy on `:8790` forwards `/joshu` and `/voice-rt`.
+`npm run twilio-local:proxy` listens on `:8790` and forwards `/joshu` and `/voice-rt` so one ngrok tunnel covers both. Then `npm run twilio-local:ngrok`, `twilio-local:urls`, and `twilio-local:env` as above. Full checklist: [`twilio-self-host.md` — Local development](twilio-self-host.md#local-development).
 
 ## Realtime tool: `think`
 
@@ -392,7 +405,8 @@ Full write-up: [voice-think-speak.md — OpenAI Platform observability](voice-th
 | Passphrase never unlocks, `heardPreview` is nothing like it | Phrase is hard for phone STT — short words blur into neighbours (heard `swift olive` as `Swallowed all of`) | Pick two clear multi-syllable words in the Telephone app; grep `auth passphrase rejected` for what was actually heard |
 | Caller hears "Unlocked" / "Thank you" but the call stays locked | Model voiced a lock line and paraphrased it | Expected without clips — grep `lock prompt clips missing`, then `node dist/generateLockPromptClipsCli.js` in the voice container |
 | Passphrase sent to Hermes as a task | Unlock forwarded as command | Redact + auth-only unlock path; grep `sanitizeTextForThinkContext` |
-| `restate_after_unlock` loop | Flag not cleared | First clear post-unlock utterance clears; prior task in transcript can skip restate |
+| Correct passphrase → *"Still checking."* forever | Gemini wrapped the passphrase in `think`; unlock path started an empty Hermes job | Defer on unlock-with-no-task (`unlocked_no_request_yet`); grep that reason. Fixed in tree after 0.1.38 — rebuild/redeploy voice-realtime |
+| `restate_after_unlock` loop | Flag not cleared | First **non-empty** (post-redact) post-unlock utterance clears; prior task in transcript can skip restate |
 | Call hangs up at ~90s | Session timer | Say passphrase to disable timers, or raise `TWILIO_PHONE_SESSION_HANGUP_MS` |
 | Hang up after three phrases | Passphrase gate | Expected if none matched; check `auth passphrase rejected` / `hanging up after passphrase failures` |
 | “I've opened the Welcome app” on phone | Model called `open_desktop` (browser-only tool) | PSTN declares `PHONE_TOOL_NAMES` (`think` only); handler denies unsupported tools; grep `unsupported tool on phone` |
@@ -425,4 +439,4 @@ Full write-up: [voice-think-speak.md — OpenAI Platform observability](voice-th
 | [`src/telephoneSettings/`](../../src/telephoneSettings/) | Telephone REST API + resolve/store |
 | [`apps/telephone/`](../../apps/telephone/) | Telephone desktop UI |
 
-See also [telephone-arozos-app.md](../telephone-arozos-app.md), [voice-think-speak.md](voice-think-speak.md), [web-voice.md](web-voice.md), and [phone-voice-local-test.md](phone-voice-local-test.md).
+See also [twilio-self-host.md](twilio-self-host.md), [telephone-arozos-app.md](../telephone-arozos-app.md), [voice-think-speak.md](voice-think-speak.md), and [web-voice.md](web-voice.md).

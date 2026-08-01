@@ -327,48 +327,19 @@ Healthy startup logs should include:
 
 ## Telephony (Twilio PSTN)
 
-> **Status:** Twilio PSTN is implemented for OpenAI Realtime and Gemini Live (`JOSHU_VOICE_PROVIDER=gemini_live`). Expect rough edges (latency, VAD tuning) until exercised on your line.
+Inbound phone calls use **Twilio Programmable Voice** + Media Streams into **voice-realtime** (Gemini Live or OpenAI Realtime), not the jChat browser mic path.
 
-Joshu can expose the **same Hermes Chat voice + completion pipeline** on a real phone number using **Twilio Programmable Voice** with **bidirectional Media Streams** (μ-law 8 kHz WebSocket audio).
+**Self-host setup** (buy a number, Console webhook, `instance.env`, recreate stack): [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md).
 
-Configure Twilio to `POST` the voice webhook to the **exact** URL that Joshu exposes (including `PUBLIC_BASE_PATH`, e.g. `/joshu`). Joshu validates `X-Twilio-Signature` against **`TWILIO_VOICE_WEBHOOK_URL`** (must match the configured webhook character-for-character).
+Runtime / passphrase / lock clips: [`vps-sandbox/voice-realtime.md`](vps-sandbox/voice-realtime.md) · owner UI: [`telephone-arozos-app.md`](telephone-arozos-app.md).
 
-### Environment
+Quick reference — with `JOSHU_VOICE_MODE=realtime_s2s`:
 
-Set in Joshu’s environment (see [`.env.example`](../.env.example)):
-
-| Variable | Purpose |
-| -------- | ------- |
-| `TWILIO_AUTH_TOKEN` | Primary Auth Token for signature validation on `POST /voice/inbound`. |
-| `TWILIO_MEDIA_STREAM_SECRET` | Shared secret for Media Stream auth. Generate with `openssl rand -hex 32` (hex only — avoid base64 `+`/`=`). |
-| `TWILIO_VOICE_WEBHOOK_URL` | Full HTTPS URL for the inbound voice webhook (example: `https://your-host/joshu/api/twilio/voice/inbound`). |
-| `TWILIO_MEDIA_STREAM_WSS_URL` | Optional full `wss://` URL for `<Stream>`. If omitted, derived from `TWILIO_VOICE_WEBHOOK_URL`: `https` → `wss`, `/voice/inbound` → `/media-stream/<secret>` (secret in **path**, not `?token=` — required for ngrok and many proxies). |
-| `TWILIO_PHONE_SYSTEM_PROMPT` | Optional system prompt tuned for spoken replies. |
-| `TWILIO_HERMES_MODEL` | Optional Hermes chat model override (defaults like Hermes Chat). |
-
-When these are unset, Twilio routes stay inactive and a short log explains what is missing.
-
-### Endpoints
-
-| Method | Path | Purpose |
-| ------ | ---- | ------- |
-| `POST` | `/api/twilio/voice/inbound` | Returns TwiML `<Connect><Stream url="wss://…"/></Connect>` after signature verification. |
-| `GET` | `/api/twilio/health` | Confirms Hermes gateway readiness when phone routes are enabled. |
-| WebSocket | `/api/twilio/media-stream` or `/api/twilio/media-stream/<secret>` | Bidirectional μ-law audio; secret in path (preferred) or `?token=` query must match `TWILIO_MEDIA_STREAM_SECRET`. |
-
-### Behaviour
-
-- Per-call Hermes session key: `phone:<CallSid>` (via `X-Hermes-Session-Key` / session id in `HermesApiRunner.streamHermesChat`).
-- STT/TTS: same Hermes subprocess scripts as **`/api/hermes-chat/transcribe`** and **`/api/hermes-chat/tts`**.
-- Outbound TTS is decoded with **`ffmpeg`** to mono PCM 8 kHz, then re-encoded to μ-law for Twilio. **Install `ffmpeg` on the host** for local/dev; the VPS sandbox image already includes it.
-
-### Public URL / TLS
-
-Twilio requires a **public HTTPS** webhook and **`wss:`** media URL. For local development, use a tunnel (e.g. ngrok, Cloudflare Tunnel) whose HTTPS URL matches **`TWILIO_VOICE_WEBHOOK_URL`**.
-
-### Compliance / abuse
-
-Treat production voice like any customer-facing channel: follow carrier rules on robocalling/recording consent, publish applicable notices, and restrict who can reach the number. The Media Stream WebSocket requires **`token`** (secret in URL); rotate **`TWILIO_MEDIA_STREAM_SECRET`** if it leaks.
+| Piece | Value |
+| --- | --- |
+| Voice webhook (POST) | `https://<host>/joshu/api/twilio/voice/inbound` |
+| Media Stream WSS | `wss://<host>/voice-rt/media/<hex-secret>` (secret in **path**) |
+| Required env | `TWILIO_AUTH_TOKEN`, `TWILIO_MEDIA_STREAM_SECRET`, `TWILIO_VOICE_WEBHOOK_URL`, `TWILIO_THINK_PASSWORD` |
 
 ## Composio app connections (Gmail, GitHub, Slack, …)
 

@@ -217,7 +217,15 @@ cd /opt/joshu/deploy
 docker compose --env-file /etc/joshu/instance.env --profile voice-rt up -d --force-recreate voice-realtime
 ```
 
-If you disabled voice or run an older box, see [`deploy/README.md`](../deploy/README.md) for compose profile `voice-rt` and [`voice-realtime.md`](voice-realtime.md) for configuration, WSS URLs, and instant think ack.
+If you disabled voice or run an older box, see [`deploy/README.md`](../deploy/README.md) for compose profile `voice-rt` and [`voice-realtime.md`](vps-sandbox/voice-realtime.md) for configuration, WSS URLs, and instant think ack.
+
+---
+
+## Optional — Twilio phone number (PSTN)
+
+Browser voice does **not** need Twilio. To answer a real phone number on this box, buy a Twilio number and wire webhooks + secrets yourself — step-by-step: [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md).
+
+You will set `TWILIO_AUTH_TOKEN`, `TWILIO_MEDIA_STREAM_SECRET`, `TWILIO_VOICE_WEBHOOK_URL`, `TWILIO_MEDIA_STREAM_WSS_URL`, and `TWILIO_THINK_PASSWORD` in `/etc/joshu/instance.env`, point the number’s **Voice** webhook at `https://<your-host>/joshu/api/twilio/voice/inbound`, then recreate `joshu-stack` + `voice-realtime`.
 
 ---
 

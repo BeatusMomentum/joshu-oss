@@ -548,8 +548,10 @@ export class TwilioRealtimeSession {
     });
     const safeText = this.sanitizeTextForThinkContext(text);
     if (safeText) this.pushTranscript("user", safeText);
-    if (this.requiresRestatedIntentAfterUnlock) {
-      // This is the first post-unlock intent turn; allow think from this point onward.
+    // Only a turn with content beyond the passphrase counts as the restated intent.
+    // The passphrase transcript often arrives just after a think_tool unlock, and it
+    // sanitizes to empty — clearing the guard on it would re-open the empty-job path.
+    if (this.requiresRestatedIntentAfterUnlock && safeText) {
       this.requiresRestatedIntentAfterUnlock = false;
       voiceLog(this.callSid, "auth", "accepted first post-unlock restated intent");
     }
@@ -848,6 +850,28 @@ export class TwilioRealtimeSession {
       }
       if (this.geminiPhone) {
         this.allowGeminiCallerReply("passphrase unlock via think_tool");
+      }
+      // The model frequently wraps the passphrase turn itself in a think call
+      // rather than letting it land as a plain transcript. Unlocking *is* the whole
+      // content of that turn, so there is no task to run: dispatching it starts a
+      // brain job whose request sanitizes down to nothing, and the caller is left
+      // listening to progress ticks ("Still checking.") until they hang up.
+      // Mirror the transcript unlock path — say "Unlocked", then wait for a request.
+      if (!this.utteranceLooksLikeTaskRequest(heardForUnlock.join(" "))) {
+        this.requiresRestatedIntentAfterUnlock = true;
+        voiceLog(this.callSid, "auth", "unlocked via think_tool with no request — awaiting intent");
+        s2s.sendFunctionOutput(
+          call.callId,
+          JSON.stringify({
+            status: "deferred",
+            reason: "unlocked_no_request_yet",
+            message:
+              "Passphrase accepted. Nothing else was asked for, so nothing ran. Wait for the caller to say what they want.",
+          }),
+          { triggerResponse: false },
+        );
+        this.speakLockLine("unlocked");
+        return;
       }
     }
 
