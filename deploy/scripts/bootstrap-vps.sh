@@ -54,23 +54,32 @@ fi
 # Caddy site — render from instance.env (main site + optional Hermes admin vhost)
 bash deploy/scripts/render-caddyfile.sh "${ENV_FILE}"
 
+# Fleet profile starts instance-agent (CP heartbeats). Required when CONTROL_PLANE_URL
+# / INSTANCE_AGENT_TOKEN are set; harmless to include for managed sandboxes.
+PROFILES=""
+if [[ -n "${CONTROL_PLANE_URL:-}" && -n "${INSTANCE_AGENT_TOKEN:-}" ]]; then
+  PROFILES="fleet"
+fi
 case "${JOSHU_VOICE_MODE:-legacy}" in
-  realtime) export COMPOSE_PROFILES=voice ;;
+  realtime) PROFILES="${PROFILES:+$PROFILES,}voice" ;;
   realtime_s2s)
     if [ "${JOSHU_WEB_VOICE_ENABLED:-true}" = "true" ]; then
-      export COMPOSE_PROFILES=voice-rt,voice
+      PROFILES="${PROFILES:+$PROFILES,}voice-rt,voice"
     else
-      export COMPOSE_PROFILES=voice-rt
+      PROFILES="${PROFILES:+$PROFILES,}voice-rt"
     fi
     ;;
   *)
     if [ "${JOSHU_WEB_VOICE_ENABLED:-false}" = "true" ]; then
-      export COMPOSE_PROFILES=voice
-    else
-      unset COMPOSE_PROFILES 2>/dev/null || true
+      PROFILES="${PROFILES:+$PROFILES,}voice"
     fi
     ;;
 esac
+if [[ -n "${PROFILES}" ]]; then
+  export COMPOSE_PROFILES="${PROFILES}"
+else
+  unset COMPOSE_PROFILES 2>/dev/null || true
+fi
 
 # Host compose bind-mounts ../dist over the image; git clone leaves dist/ empty.
 if [[ ! -f "${INSTALL_DIR}/dist/server.js" ]]; then
