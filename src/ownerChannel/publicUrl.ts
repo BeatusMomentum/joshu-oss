@@ -1,9 +1,13 @@
-/** Public Joshu API base for owner approval links (Slack URL buttons). */
+/**
+ * Public Joshu API base for owner approval links, Share Chat, Teams/Slack bots, etc.
+ *
+ * Do **not** fall back to HERMES_DASHBOARD_PUBLIC_URL — that host only serves Hermes
+ * Admin (no `/joshu` proxy). On VPS, CUSTOMER_DOMAIN + PUBLIC_BASE_PATH is correct.
+ */
 export function resolveJoshuPublicApiBase(): string {
   const explicit =
     process.env.JOSHU_OWNER_CHANNEL_PUBLIC_URL?.trim() ||
-    process.env.JOSHU_PUBLIC_URL?.trim() ||
-    process.env.HERMES_DASHBOARD_PUBLIC_URL?.trim();
+    process.env.JOSHU_PUBLIC_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
 
   const domain = process.env.CUSTOMER_DOMAIN?.trim();
