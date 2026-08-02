@@ -109,7 +109,7 @@ Revoked or missing shares return **404** for both web and Slack answers. Explici
 2. Query File Brain (`gbrain` MCP `/query`) for each variant.
 3. Keep only hits whose slug/path falls under the shared root (slug matching normalizes spaces↔hyphens and strips `.md`).
 4. Always pack shared-disk windows for **file and folder** shares (keyword neighborhoods + document head), then merge with gbrain hits and keep the top snippets by score. Folder shares previously skipped disk packing when gbrain already returned hits, which could miss exact phrases hybrid search ranked below other chunks.
-5. RAG answerer uses the **same OpenRouter model as Hermes** (`JOSHU_HERMES_MODEL` / `deepseek/deepseek-v4-flash` by default) to reassemble snippets into an answer. Answers are rendered as **markdown** in the public UI (headings, lists, code, tables — sanitized/escape-first renderer, no external libs).
+5. RAG answerer uses the **same OpenRouter model as Hermes** (`JOSHU_HERMES_MODEL` / `deepseek/deepseek-v4-flash-0731` by default) to reassemble snippets into an answer. Answers are rendered as **markdown** in the public UI (headings, lists, code, tables — sanitized/escape-first renderer, no external libs).
 
 ## Observability (Langfuse)
 
@@ -234,7 +234,7 @@ Fetch a starter manifest: `GET .../slack/manifest`.
 | Variable | Role |
 |----------|------|
 | `JOSHU_SHARE_CHAT_API_KEY` / `OPENROUTER_API_KEY` | LLM for answers (same OpenRouter key Hermes uses) |
-| `JOSHU_SHARE_CHAT_MODEL` / `JOSHU_HERMES_MODEL` | Model (defaults to Hermes box model / `deepseek/deepseek-v4-flash`) |
+| `JOSHU_SHARE_CHAT_MODEL` / `JOSHU_HERMES_MODEL` | Model (defaults to Hermes box model / `deepseek/deepseek-v4-flash-0731`) |
 | `JOSHU_SHARE_CHAT_ADMIN_KEY` | Protect Slack configure (falls back to `JOSHU_READ_API_KEY`) |
 | `AROZ_DATA` | Locate `system/ao.db` + shared real paths |
 | `GBRAIN_MCP_HTTP_URL` | File Brain inspect (default `http://127.0.0.1:8794`) |

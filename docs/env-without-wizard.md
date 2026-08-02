@@ -50,7 +50,7 @@ JOSHU_OWNER_EMAIL=you@example.com
 # --- LLM (jChat + Hindsight) ---
 OPENROUTER_API_KEY=sk-or-v1-...
 JOSHU_HERMES_PROVIDER=openrouter
-JOSHU_HERMES_MODEL=deepseek/deepseek-v4-flash
+JOSHU_HERMES_MODEL=deepseek/deepseek-v4-flash-0731
 HINDSIGHT_API_LLM_API_KEY=          # optional; defaults from OPENROUTER_API_KEY when saved via Welcome API
 
 # --- File brain + voice (Gemini) — required when voice image is enabled ---
@@ -175,7 +175,7 @@ Copy [`.env.example`](../.env.example) to `.env` in the repo root:
 HERMES_BIN=~/hermes-agent/venv/bin/hermes
 OPENROUTER_API_KEY=sk-or-...
 JOSHU_HERMES_PROVIDER=openrouter
-JOSHU_HERMES_MODEL=deepseek/deepseek-v4-flash
+JOSHU_HERMES_MODEL=deepseek/deepseek-v4-flash-0731
 GEMINI_API_KEY=AIza...
 ```
 

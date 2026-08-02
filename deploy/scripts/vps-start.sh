@@ -109,7 +109,7 @@ fix_hindsight_secrets_permissions
 ensure_hermes_runtime_config() {
   local config="${HERMES_HOME}/config.yaml"
   local dotenv="${HERMES_HOME}/.env"
-  local model="${JOSHU_HERMES_MODEL:-deepseek/deepseek-v4-flash}"
+  local model="${JOSHU_HERMES_MODEL:-deepseek/deepseek-v4-flash-0731}"
   local provider="${JOSHU_HERMES_PROVIDER:-openrouter}"
   local toolsets="${JOSHU_HERMES_TOOLSETS:-[\"mcp-gbrain\", \"mcp-joshu-connectors\", \"kanban\", \"hermes-cli\", \"browser\"]}"
 
@@ -171,6 +171,18 @@ EOF
     echo "[vps-start] WARN: OPENROUTER_API_KEY/HERMES_API_KEY missing after loading instance.env" >&2
   fi
 
+  # Hermes only discovers user plugins under $HERMES_HOME/plugins (persistent volume).
+  # Image / compose bind leave joshu-langfuse-relay at /opt/joshu/.hermes/plugins/ — copy in
+  # before `plugins enable` or enable fails with "not installed or bundled" (Finn-class gap).
+  local relay_src="${APP_DIR}/.hermes/plugins/joshu-langfuse-relay"
+  local relay_dst="${HERMES_HOME}/plugins/joshu-langfuse-relay"
+  if [[ -f "${relay_src}/plugin.yaml" ]]; then
+    mkdir -p "${HERMES_HOME}/plugins"
+    rm -rf "${relay_dst}"
+    cp -a "${relay_src}" "${relay_dst}"
+    echo "[vps-start] installed Hermes plugin joshu-langfuse-relay → ${relay_dst}"
+  fi
+
   # Enable Langfuse (and other) plugins before gateway start — gateway only reads plugins.enabled at boot.
   if [[ -n "${JOSHU_HERMES_PLUGIN_NAMES:-}" && -x "${HERMES_BIN:-}" ]]; then
     local p
@@ -178,8 +190,14 @@ EOF
     for p in "${_joshu_plugins[@]}"; do
       p="${p// /}"
       [[ -n "${p}" ]] || continue
+      # Relay mode must not keep stock observability/langfuse (no keys on box).
+      if [[ "${p}" == "joshu-langfuse-relay" ]]; then
+        "${HERMES_BIN}" plugins disable observability/langfuse 2>/dev/null || true
+      fi
       if "${HERMES_BIN}" plugins enable "${p}" 2>/dev/null; then
         echo "[vps-start] Hermes plugin enabled: ${p}"
+      else
+        echo "[vps-start] WARN: Hermes plugin enable failed: ${p}" >&2
       fi
     done
   fi

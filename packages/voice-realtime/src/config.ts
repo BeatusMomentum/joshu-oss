@@ -77,7 +77,7 @@ export const JOSHU_IDENTITY = resolvedIdentity;
 export const HERMES_API_BASE_URL = envTrim("HERMES_API_BASE_URL", "http://127.0.0.1:8642");
 export const HERMES_API_KEY = envTrim("HERMES_API_KEY") || envTrim("API_SERVER_KEY");
 /** Match JOSHU_OPENROUTER_DEFAULT_MODEL in src/joshuOpenRouterDefaults.ts */
-export const HERMES_MODEL = envTrim("JOSHU_HERMES_MODEL", "deepseek/deepseek-v4-flash");
+export const HERMES_MODEL = envTrim("JOSHU_HERMES_MODEL", "deepseek/deepseek-v4-flash-0731");
 
 export const MEDIA_STREAM_SECRET =
   envTrim("TWILIO_MEDIA_STREAM_SECRET") ||
