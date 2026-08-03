@@ -134,12 +134,37 @@ async function postJson(path: string, payload: unknown): Promise<Response> {
   });
 }
 
+async function resolvePublicVpsIpv4(): Promise<string | undefined> {
+  const fromEnv = env("VPS_IPV4");
+  if (fromEnv) return fromEnv;
+
+  // DigitalOcean droplet metadata (link-local) — cloud-init cannot know the IP
+  // before create, so instance.env often omits VPS_IPV4 on first boot.
+  try {
+    const res = await fetch(
+      "http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address",
+      { signal: AbortSignal.timeout(2000) },
+    );
+    if (res.ok) {
+      const ip = (await res.text()).trim();
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+        process.env.VPS_IPV4 = ip;
+        console.info(`[instance-agent] resolved VPS_IPV4 from DO metadata: ${ip}`);
+        return ip;
+      }
+    }
+  } catch {
+    // Non-DO or metadata disabled.
+  }
+  return undefined;
+}
+
 async function registerOnce(releaseVersion: string): Promise<void> {
   const res = await postJson("/api/instances/register", {
     instanceId: INSTANCE_ID,
     hostname: HOSTNAME,
     releaseVersion,
-    vpsIpv4: env("VPS_IPV4"),
+    vpsIpv4: await resolvePublicVpsIpv4(),
   });
   if (!res.ok) {
     console.warn(`[instance-agent] register failed: ${res.status} ${await res.text()}`);
