@@ -3,9 +3,6 @@
 # Build: npm run vps:predeploy && npm run vps:build-image (or JOSHU_IMAGE_PUSH=1 JOSHU_IMAGE_TAG=0.1.4 …)
 
 ARG CAMOFOX_BASE=ghcr.io/jo-inc/camofox-browser@sha256:3ab61b4742105922aab6f8c99460f55563b6f93e906975383ddce16ec8917f3f
-# Hermes web (v0.20+) requires Node >=22.22; Camofox base still ships Node 20 in /usr/local.
-ARG NODE_IMAGE=node:22-bookworm-slim
-FROM ${NODE_IMAGE} AS node22
 
 FROM ${CAMOFOX_BASE} AS builder
 
@@ -26,17 +23,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash build-essential ca-certificates curl git postgresql-server-dev-${POSTGRES_VERSION} python3-venv rsync \
     && rm -rf /var/lib/apt/lists/*
 
-# Replace Camofox Node 20 with official Node 22 (Hermes web + Camofox engines >=22).
-COPY --from=node22 /usr/local/bin/node /usr/local/bin/node
-COPY --from=node22 /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+# Hermes web (v0.20+) requires Node >=22.22. Install via NodeSource — copying node_modules
+# from node:22-bookworm-slim breaks npm (minipass-fetch "Class extends value undefined").
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx \
     && node -v | grep -E '^v22\.' \
-    && npm -v \
-    # /app natives ship for the base image's Node ABI; rebuild after overlay or
-    # Camofox dies with "Module did not self-register" (jWeb browserConnected:false).
-    && cd /app && npm rebuild better-sqlite3 --foreground-scripts \
-    && node --input-type=module -e 'import Database from "better-sqlite3"; const db=new Database(":memory:"); db.exec("select 1"); db.close(); console.log("better-sqlite3 ok", process.version)'
+    && npm -v
 
 # Go for ArozOS build
 RUN rm -rf /usr/local/go \
@@ -53,6 +46,7 @@ RUN git init "${HERMES_DIR}" \
     && venv/bin/pip install --upgrade pip setuptools wheel \
     && venv/bin/pip install --no-cache-dir -e '.[cli,pty,mcp,acp,google,bedrock,web,youtube,voice,messaging]' 'aiohttp>=3.13.3,<4' \
     && venv/bin/pip install --no-cache-dir 'hindsight-api-slim[embedded-db]==0.7.2' 'hindsight-client==0.7.2' langfuse \
+    && venv/bin/pip install --no-cache-dir 'cryptography==48.0.1' \
     && cd web \
     && npm install --include=dev \
     && npm run build \
@@ -181,11 +175,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /root/.local/share/uv/python/cpython-3.12-*/bin/python3.12 /opt/joshu/.local/python312/bin/python3.12 \
     && /opt/joshu/.local/python312/bin/python3.12 --version
 
-# Same Node 22 overlay as builder — dashboard first-boot rebuild + runtime npm tools.
-COPY --from=node22 /usr/local/bin/node /usr/local/bin/node
-COPY --from=node22 /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+# Node 22 for Hermes dashboard rebuild + Camofox native modules (see builder stage note).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx \
     && node -v | grep -E '^v22\.' \
     && npm -v \
     && apt-get update \

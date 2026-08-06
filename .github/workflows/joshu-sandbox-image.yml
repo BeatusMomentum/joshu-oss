@@ -40,6 +40,7 @@ jobs:
         run: |
           test -f .docker-staging/joshu-design/arozos/web-overlays/aroz-paper-shell.css \
             || (echo "design pack staging failed — missing aroz-paper-shell.css" >&2; exit 1)
+      - run: bash scripts/sync-last30days-skill.sh
       - run: npm run build:deploy
       - run: npm run vps:sync-hermes-pin
       - run: npm run vps:sync-camofox-pin
