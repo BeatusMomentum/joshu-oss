@@ -25,22 +25,22 @@ npm run vps:build-image
 JOSHU_IMAGE_TAG=0.1.14 JOSHU_IMAGE_REPO=ghcr.io/YOUR_ORG/joshu-sandbox JOSHU_IMAGE_PUSH=1 npm run vps:build-image
 ```
 
-Pushes **`ghcr.io/YOUR_ORG/joshu-oss:<tag>`** and **`ghcr.io/YOUR_ORG/joshu-oss-voice-realtime:<tag>`** (override with `JOSHU_VOICE_IMAGE_REPO` / `JOSHU_VOICE_IMAGE_REF`).
+Pushes **`ghcr.io/YOUR_ORG/joshu-sandbox:<tag>`** and **`ghcr.io/YOUR_ORG/joshu-voice-realtime:<tag>`** (override with `JOSHU_VOICE_IMAGE_REPO` / `JOSHU_VOICE_IMAGE_REF`).
 
-Current stable pin: [`deploy/RELEASE.json`](RELEASE.json) (**`0.1.34`**).
+Current stable pin: [`deploy/RELEASE.json`](RELEASE.json) (**`0.1.30`**).
 
 After `npm run hermes:update`, `npm run vps:sync-hermes-pin` runs automatically (also invoked by `vps:build-image`).
 After bumping `camofoxBase`, run `npm run vps:sync-camofox-pin` before rebuild.
 
-Image tags and upstream pins (`hermesRef`, `gbrainRef`, `camofoxBase`) live in [`deploy/RELEASE.json`](RELEASE.json).
+Image tags and upstream pins (`hermesRef`, `gbrainRef`, `camofoxBase`) live in [`deploy/RELEASE.json`](RELEASE.json). See [runtime-topology — Image build](../docs/vps-sandbox/runtime-topology.md#image-build) for how they flow into the Docker image.
 
 **Hermes config:** The image does not include your laptop `~/.hermes/config.yaml`. Product
 settings come from `instance.env`, `integrations/hermes/skills-enabled.yaml`, and
 Joshu startup (`src/hermesApi.ts`). Details:
 [hermes-integration.md](../docs/hermes-integration.md) and [local-installation.md](../docs/local-installation.md).
 
-CI: [`.github/workflows/joshu-oss-image.yml`](../.github/workflows/joshu-oss-image.yml)
-— builds **joshu-oss** and **joshu-oss-voice-realtime**; reads `hermesRef`, `camofoxBase`, and `gbrainRef` from `deploy/RELEASE.json`.
+CI: [`.github/workflows/joshu-sandbox-image.yml`](../.github/workflows/joshu-sandbox-image.yml)
+— reads `hermesRef`, `camofoxBase`, and `gbrainRef` from `deploy/RELEASE.json` and passes them to `docker build`.
 
 ## Configure instance
 
@@ -64,21 +64,6 @@ Required runtime secrets:
   that directory is mounted read-only into `joshu-stack`.
 
 **Runtime npm deps:** Container `node_modules` come from [`deploy/runtime/package.json`](runtime/package.json) at image build (not from host git). Adding deps there (e.g. `@langfuse/tracing` for Joshu deterministic Langfuse) requires a **new image** — rebuild, push a new tag, pull on the host, then sync `dist/`. Dist-only updates cannot change `node_modules` inside the image.
-
-**Runtime workspace packages:** When the Joshu server imports a monorepo package at runtime, it must be listed in `deploy/runtime/package.json`, copied in `deploy/Dockerfile` (`packages/<name>/`), and validated after `npm ci`. Today: `@joshu/app-sdk`, `@joshu/box-state`, `@joshu/email-signature`. After changing any of these, regenerate the lockfile:
-
-```bash
-npm run build -w @joshu/app-sdk -w @joshu/box-state -w @joshu/email-signature
-mkdir -p deploy/runtime/packages/{app-sdk,box-state,email-signature}
-for pkg in app-sdk box-state email-signature; do
-  cp "packages/$pkg/package.json" "deploy/runtime/packages/$pkg/"
-  rsync -a "packages/$pkg/dist/" "deploy/runtime/packages/$pkg/dist/"
-done
-(cd deploy/runtime && npm install --package-lock-only --no-audit --no-fund)
-rm -rf deploy/runtime/packages
-```
-
-Compose bind-mounts `packages/*/dist` for hotfix lanes; `vps-start.sh` copies bind-mounted packages into `node_modules/@joshu/` when the image is older than the host checkout.
 
 ## Run
 
@@ -150,7 +135,6 @@ Cloud-init (control-plane provision) runs `bootstrap-vps.sh`, which clones the r
 
 | Host path | Container path | Lane |
 | --- | --- | --- |
-| `packages/app-sdk/dist/`, `packages/box-state/dist/`, `packages/email-signature/dist/` | `/opt/joshu/packages/*/dist/` | B — workspace package hotfix |
 | `dist/` | `/opt/joshu/dist/` | B — API hotfix / `syncDistFromImage` |
 | `integrations/hermes/skills/` | `/opt/joshu/integrations/hermes/skills/` | A — factory skills source for bootstrap |
 | `integrations/hermes/skills-enabled.yaml` | same | A — Hermes allowlist / bundled denylist |
@@ -164,25 +148,25 @@ Cloud-init (control-plane provision) runs `bootstrap-vps.sh`, which clones the r
 | --- | --- |
 | Skills, MCP scripts, `vps-start.sh`, templates (bind-mounted paths) | `git pull` on host → recreate `joshu-stack` |
 | Compiled Joshu API (`src/` → `dist/`) | Sync host `dist/` from image (below) → recreate |
-| `deploy/Dockerfile`, Hermes pin, `deploy/runtime/package.json` | Bump pins in `instance.env` → **`docker pull`** new tags → dist sync → recreate |
+| `deploy/Dockerfile`, Hermes pin, `deploy/runtime/package.json` | New image tag → pull → dist sync → recreate |
+
+Fleet boxes with the optional instance-agent may automate dist sync — see [instance-agent-protocol.md](../docs/vps-sandbox/instance-agent-protocol.md).
 
 Quick dist recovery after a release image pull:
 
 ```bash
-set -a && source /etc/joshu/instance.env && set +a
-docker pull "$JOSHU_IMAGE_REF"
+JOSHU_IMAGE_REF=ghcr.io/db-aeon/joshu-sandbox:0.1.17 \
+JOSHU_RELEASE_VERSION=0.1.17 \
 bash /opt/joshu/scripts/sync-dist-from-image.sh
 cd /opt/joshu/deploy && docker compose -f docker-compose.yml --env-file /etc/joshu/instance.env up -d --force-recreate joshu-stack
 curl -fsS http://127.0.0.1:8788/joshu/api/instance/health | jq '.components.dist'
 ```
 
-Manual bootstrap on an empty VPS (pulls `JOSHU_IMAGE_REF` by default; set `JOSHU_BUILD_IMAGE=1` to build locally):
+Manual bootstrap on an empty VPS:
 
 ```bash
 sudo bash deploy/scripts/bootstrap-vps.sh
 ```
-
-See [vps-quickstart.md](../docs/vps-quickstart.md) for a full Ubuntu VPS walkthrough.
 
 ## Smoke checks
 
@@ -209,3 +193,7 @@ Expect **200** and HTML (not `Invalid Host header`). Caddy rewrites upstream `Ho
 ## Architecture docs
 
 - [docs/self-host.md](../docs/self-host.md) — standalone bootstrap
+- [docs/vps-sandbox/README.md](../docs/vps-sandbox/README.md) — VPS / Docker index
+- [docs/vps-sandbox/runtime-topology.md](../docs/vps-sandbox/runtime-topology.md) — process layout, paths, boot order
+- [docs/vps-sandbox/instance-agent-protocol.md](../docs/vps-sandbox/instance-agent-protocol.md) — optional fleet sidecar (heartbeats, release updates)
+- [docs/vps-sandbox/control-plane.md](../docs/vps-sandbox/control-plane.md) — proprietary managed hosting (not in this repo)

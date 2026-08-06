@@ -184,9 +184,9 @@ Client behavior (`apps/hermes-chat/src/main.tsx`, `@joshu/voice-client`):
 
 - Connects when `/api/voice/status` reports `available: true`
 - `think_job_start` clears the assistant bubble before Hermes streams; Realtime transcript is never shown in jChat
-- **Mic** (in-window toolbar and taskbar tray) disabled when voice-realtime is unavailable
+- **Mic** (in-window toolbar and taskbar tray) opens a **Realtime S2S** session via `voice-realtime`; spoken replies come from the provider, not a separate typed-chat TTS path
 - Taskbar mic toggles the same voice session; audio level is mirrored to the tray VU meter via `jchat:tray`
-- Typed-chat **Speech** toggle still uses Hermes TTS via `/api/hermes-chat/tts` (separate from voice mode)
+- Typed chat is **text-only**; use **Mic** for spoken interaction
 
 ## Companion persona (portrait + avatar)
 
@@ -200,19 +200,6 @@ jChat loads companion identity from `GET /joshu/api/instance/identity` ([`useIde
 | `voiceId` | Gemini Live voice when `JOSHU_VOICE_PROVIDER=gemini_live` |
 
 The taskbar tray uses the same `avatarUrl` → `imageUrl` precedence (see **ArozOS taskbar tray** above). Email signatures use **`imageUrl` only** (full portrait) — see [self-host.md#identity-without-control-plane](self-host.md#identity-without-control-plane).
-
-## Typed-chat TTS (Speech toggle)
-
-When Voice mode is off, jChat can read assistant replies aloud via Hermes TTS:
-
-| Method | Path | Purpose |
-| ------ | ---- | ------- |
-| `POST` | `/api/hermes-chat/tts` | JSON `{ text }` → audio stream |
-
-UI:
-
-- **Mic** (chat toolbar or taskbar tray) — Enables Realtime S2S capture; segments end on silence thresholds from Hermes **`voice`** config (defaults can be fetched from **`voice-settings`**).
-- **Speech** — After each completed assistant bubble, converts visible assistant **markdown** to plain text → **`POST …/tts`**. Playback pauses mic capture briefly to reduce echo.
 
 ## Streaming
 
@@ -285,23 +272,6 @@ tsc + Vite** build (better when the host has no toolchain or CI builds the
 image).
 
 ## Troubleshooting
-
-### Voice: TTS returns 400 Bad Request
-
-Joshu **`POST /api/hermes-chat/tts`** responds **400** when **`JSON.text`** is
-missing or empty after normalization. Check Joshu logs for a line beginning
-with **`[joshu] tts:`** — it logs why the body was rejected.
-
-Common causes:
-
-- Assistant reply is **markdown-only** (for example fenced code fills the bubble
-  such that plaintext for TTS is empty after stripping).
-- Stale bundles: rebuild **`apps/hermes-chat`** and **`src/server`** and redeploy
-  (prefer **`npm run vps:build-image`** after **`npm run build:deploy`** so
-  `dist/` matches your tree).
-
-Hermes subprocess failures (misconfigured TTS, network, etc.) show as **502** with
-JSON error text, not **400**.
 
 ### App Does Not Appear On The Desktop
 

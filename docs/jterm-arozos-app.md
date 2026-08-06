@@ -55,7 +55,7 @@ bash scripts/hotpatch-jterm.sh root@<customer-domain-or-ip>
 # bash scripts/hotpatch-jterm.sh root@box.example.com
 ```
 
-That builds the UI, copies `arozos/subservice/jterm` into the ArozOS volume + template, installs the desktop shortcut, and recreates `joshu-stack`. After UI-only copies, **hard-refresh** the desktop (Cmd+Shift+R) and open a new jTerm window.
+That builds the UI, recreates `joshu-stack`, then copies `arozos/subservice/jterm` into the ArozOS volume + template (post-boot, clearing stale Vite hashed assets), and installs the desktop shortcut. **Hard-refresh** the desktop (Cmd+Shift+R) and open a **new** jTerm window.
 
 For a normal image release, `build:deploy` + Dockerfile bake jTerm into `/opt/arozos-template/subservice/jterm`.
 
@@ -72,7 +72,7 @@ For a normal image release, `build:deploy` + Dockerfile bake jTerm into `/opt/ar
 
 ## TUI notes (Hermes CLI)
 
-Hermes (and other full-screen CLIs) clear/redraw the alternate screen — that is expected. jTerm only notifies the PTY of **real** size changes (debounced `ResizeObserver`) so float-window chrome does not spam `SIGWINCH` and force constant redraws.
+Hermes (and other full-screen CLIs) clear/redraw the alternate screen — that is expected. jTerm only notifies the PTY of **real** size changes (debounced `ResizeObserver`, ≥2px host delta) so float-window chrome does not spam `SIGWINCH` and force constant redraws. The viewport always reserves a vertical scrollbar gutter (`overflow-y: scroll` + `scrollbar-gutter: stable`) so FitAddon does not blink scrollbars when the measured area toggles by one gutter width.
 
 ## Security notes
 

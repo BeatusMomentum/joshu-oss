@@ -81,12 +81,12 @@ Default **TTS** is **Edge** (`tts.provider: edge`) — no API key; requires netw
 
 ### Hermes Chat (browser voice)
 
-The ArozOS **Hermes Chat** app can use the same Hermes STT/TTS stack as the CLI (not browser `speechSynthesis`):
+The ArozOS **jChat** app uses **Realtime S2S** (`voice-realtime` + `@joshu/voice-client`) for spoken interaction:
 
-- Turn **Mic** on for a hot microphone: the browser segments audio with VAD aligned to Hermes **`voice_mode.AudioRecorder`**, POSTs mono WAV to Joshu **`/api/hermes-chat/transcribe`**, and **auto-sends** each non-empty transcript into the chat stream.
-- Turn **Speech** on so assistant replies are spoken via **`POST /api/hermes-chat/tts`** (Hermes `text_to_speech_tool`); the mic is paused during playback to reduce echo.
+- Turn **Mic** on for a live voice session — the provider speaks replies directly (Gemini Live / OpenAI Realtime).
+- Typed chat is **text-only**; there is no separate read-aloud TTS path on assistant bubbles.
 
-Joshu runs Hermes Python in a subprocess (`HERMES_BIN`, `[voice]` extras, `HERMES_HOME` / `config.yaml` for STT/TTS). See [`docs/hermes-chat-arozos-app.md`](hermes-chat-arozos-app.md) for chat API paths; [`docs/connectors-arozos-app.md`](connectors-arozos-app.md) for **Connectors** (Composio OAuth, multi-Gmail); [`docs/jmail-arozos-app.md`](jmail-arozos-app.md) for **jMail**.
+Joshu proxies **`/api/voice/*`** and Hermes **`think`** for deep work during voice turns. See [`docs/hermes-chat-arozos-app.md`](hermes-chat-arozos-app.md) and [`docs/vps-sandbox/web-voice.md`](vps-sandbox/web-voice.md).
 
 **Broader local venv** (optional): set **`HERMES_LOCAL_EXTRAS`** when running the update script, e.g. `all,dev` for full upstream dev — default remains VPS parity.
 

@@ -1,5 +1,7 @@
 # HITL Camofox Notes
 
+Fleet topology: [`vps-sandbox/runtime-topology.md`](vps-sandbox/runtime-topology.md).
+
 Working notes for the jWeb (human-in-the-loop) browser stack: Joshu, Hermes,
 Camofox, noVNC, and ArozOS subservices.
 

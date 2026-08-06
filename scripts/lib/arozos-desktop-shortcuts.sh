@@ -14,6 +14,7 @@ FILE_BRAIN_SHORTCUT_CONTENT=$'module\nFile Brain\nFile Brain\nimg/joshu/file-man
 JMOVIE_SHORTCUT_CONTENT=$'module\njMovie\njMovie\nimg/joshu/movie.png\n'
 JMAIL_SHORTCUT_CONTENT=$'module\njMail\njMail\nimg/joshu/mail.png\n'
 SCHEDULES_SHORTCUT_CONTENT=$'module\nSchedules\nSchedules\nimg/joshu/schedules.png\n'
+LAST30DAYS_SHORTCUT_CONTENT=$'module\nlast30days\nlast30days\nimg/joshu/hindsight.png\n'
 WELCOME_SHORTCUT_CONTENT=$'module\nWelcome\nWelcome\nimg/joshu/chat.png\n'
 CONNECTORS_SHORTCUT_CONTENT=$'module\nConnectors\nConnectors\nimg/joshu/connectors.png\n'
 SAFETY_SHORTCUT_CONTENT=$'module\nSafety\nSafety\nimg/joshu/system-setting.png\n'
@@ -56,6 +57,7 @@ JOSHU_AROZ_SUBSERVICE_IDS=(
   hindsight-viewer
   file-brain-viewer
   schedules
+  last30days
   jmovie
   jmail
   connectors
@@ -170,6 +172,10 @@ install_schedules_shortcuts() {
   _write_desktop_shortcut "Schedules.shortcut" "${SCHEDULES_SHORTCUT_CONTENT}"
 }
 
+install_last30days_shortcuts() {
+  _write_desktop_shortcut "last30days.shortcut" "${LAST30DAYS_SHORTCUT_CONTENT}"
+}
+
 install_welcome_shortcuts() {
   _write_desktop_shortcut "Welcome.shortcut" "${WELCOME_SHORTCUT_CONTENT}"
 }
@@ -202,6 +208,7 @@ install_all_joshu_desktop_shortcuts() {
   install_jmovie_shortcuts
   install_jmail_shortcuts
   install_schedules_shortcuts
+  install_last30days_shortcuts
   install_connectors_shortcuts
   install_safety_shortcuts
   install_welcome_shortcuts

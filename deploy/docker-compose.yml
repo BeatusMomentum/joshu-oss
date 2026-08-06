@@ -38,6 +38,19 @@ services:
       # jterm: Hermes must not cat instance.env / GHCR secrets (until baked in image).
       - ../scripts/patch-hermes-terminal-secrets-guard.mjs:/opt/joshu/scripts/patch-hermes-terminal-secrets-guard.mjs:ro
       - ../scripts/apply-hermes-hitl-patch.sh:/opt/joshu/scripts/apply-hermes-hitl-patch.sh:ro
+      # Hermes v0.20+ patch applicators (re-applied on boot; bind so Patrick can iterate without image rebuild).
+      - ../scripts/apply-hermes-langfuse-patches.sh:/opt/joshu/scripts/apply-hermes-langfuse-patches.sh:ro
+      - ../scripts/apply-hermes-content-filter-patch.sh:/opt/joshu/scripts/apply-hermes-content-filter-patch.sh:ro
+      - ../scripts/apply-hermes-read-file-utf8-patch.sh:/opt/joshu/scripts/apply-hermes-read-file-utf8-patch.sh:ro
+      - ../scripts/apply-hermes-kanban-ws-base-path-patch.sh:/opt/joshu/scripts/apply-hermes-kanban-ws-base-path-patch.sh:ro
+      - ../scripts/apply-hermes-invoke-tool-post-hook-patch.sh:/opt/joshu/scripts/apply-hermes-invoke-tool-post-hook-patch.sh:ro
+      - ../scripts/patch-hermes-langfuse-openrouter.py:/opt/joshu/scripts/patch-hermes-langfuse-openrouter.py:ro
+      - ../scripts/patch-hermes-content-filter-v020.py:/opt/joshu/scripts/patch-hermes-content-filter-v020.py:ro
+      - ../scripts/patch-hermes-read-file-utf8.py:/opt/joshu/scripts/patch-hermes-read-file-utf8.py:ro
+      - ../scripts/patch-hermes-camofox-tab-resync.mjs:/opt/joshu/scripts/patch-hermes-camofox-tab-resync.mjs:ro
+      - ../scripts/patch-hermes-camofox-ensure-tab.mjs:/opt/joshu/scripts/patch-hermes-camofox-ensure-tab.mjs:ro
+      - ../scripts/patch-hermes-camofox-action-guard.mjs:/opt/joshu/scripts/patch-hermes-camofox-action-guard.mjs:ro
+      - ../scripts/patch-hermes-terminal-mail-guard.mjs:/opt/joshu/scripts/patch-hermes-terminal-mail-guard.mjs:ro
       - ../scripts/lib:/opt/joshu/scripts/lib:ro
       - ../scripts/bootstrap-joshu-files.sh:/opt/joshu/scripts/bootstrap-joshu-files.sh:ro
       - ../scripts/bootstrap-executive-assistant.sh:/opt/joshu/scripts/bootstrap-executive-assistant.sh:ro
@@ -49,6 +62,7 @@ services:
       - ../packages/email-signature/dist:/opt/joshu/packages/email-signature/dist:ro
       - ../integrations/hermes/skills-enabled.yaml:/opt/joshu/integrations/hermes/skills-enabled.yaml:ro
       - ../integrations/hermes/skills:/opt/joshu/integrations/hermes/skills:ro
+      - ../integrations/last30days-skill:/opt/joshu/integrations/last30days-skill:ro
       - ../factory/manifest.yaml:/opt/joshu/factory/manifest.yaml:ro
       - ../arozos/system-setting:/opt/joshu/arozos/system-setting:ro
       - ../arozos/locale:/opt/joshu/arozos/locale:ro

@@ -6,6 +6,7 @@
 
 | Piece | Doc / path |
 |-------|------------|
+| **Architecture intro** (GUI + voice pathways) | [`joshu-app-architecture-intro.md`](joshu-app-architecture-intro.md) |
 | Platform data client | [`@joshu/platform-data`](platform-data.md) — `apps/jmail/src/joshuData.ts` |
 | Manifest v2 | `arozos/subservice/jmail/joshu.app.json` |
 | Architecture overview | [`platform-architecture.md`](platform-architecture.md) |

@@ -139,9 +139,9 @@ EOF
     echo "[vps-start] updated Hermes model in ${config} (${provider} / ${model})"
   fi
 
-  if [[ -n "${OPENROUTER_API_KEY:-}" || -n "${ANTHROPIC_API_KEY:-}" || -n "${HERMES_API_KEY:-}" || -n "${HERMES_LANGFUSE_PUBLIC_KEY:-}" ]]; then
+  if [[ -n "${OPENROUTER_API_KEY:-}" || -n "${ANTHROPIC_API_KEY:-}" || -n "${HERMES_API_KEY:-}" || -n "${HERMES_LANGFUSE_PUBLIC_KEY:-}" || -n "${EXA_API_KEY:-}" ]]; then
     local tmp="${HERMES_HOME}/.env.sync"
-    grep -v -E '^(OPENROUTER_API_KEY|ANTHROPIC_API_KEY|HERMES_API_KEY|API_SERVER_KEY|HERMES_LANGFUSE_|TELEGRAM_)=' "${dotenv}" 2>/dev/null >"${tmp}" || true
+    grep -v -E '^(OPENROUTER_API_KEY|ANTHROPIC_API_KEY|HERMES_API_KEY|API_SERVER_KEY|EXA_API_KEY|HERMES_LANGFUSE_|TELEGRAM_)=' "${dotenv}" 2>/dev/null >"${tmp}" || true
     {
       cat "${tmp}" 2>/dev/null || true
       # Plain KEY=value lines (no bash %q quotes — Hermes/Python dotenv treats those as part of the secret).
@@ -155,6 +155,7 @@ EOF
       [[ -n "${HERMES_LANGFUSE_ENV:-}" ]] && echo "HERMES_LANGFUSE_ENV=${HERMES_LANGFUSE_ENV}"
       [[ -n "${HERMES_LANGFUSE_USER_ID:-}" ]] && echo "HERMES_LANGFUSE_USER_ID=${HERMES_LANGFUSE_USER_ID}"
       [[ -n "${HERMES_LANGFUSE_RELEASE:-}" ]] && echo "HERMES_LANGFUSE_RELEASE=${HERMES_LANGFUSE_RELEASE}"
+      [[ -n "${EXA_API_KEY:-}" ]] && echo "EXA_API_KEY=${EXA_API_KEY}"
       [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]] && echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
       [[ -n "${TELEGRAM_ALLOWED_USERS:-}" ]] && echo "TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}"
       [[ -n "${TELEGRAM_GROUP_ALLOWED_USERS:-}" ]] && echo "TELEGRAM_GROUP_ALLOWED_USERS=${TELEGRAM_GROUP_ALLOWED_USERS}"
@@ -200,6 +201,15 @@ EOF
         echo "[vps-start] WARN: Hermes plugin enable failed: ${p}" >&2
       fi
     done
+  fi
+
+  # Exa web_search / web_extract backend (plugins/web/exa — manifest name web-exa).
+  if [[ -n "${EXA_API_KEY:-}" && -x "${HERMES_BIN:-}" ]]; then
+    if "${HERMES_BIN}" plugins enable web-exa 2>/dev/null; then
+      echo "[vps-start] Hermes plugin enabled: web-exa (EXA_API_KEY present)"
+    else
+      echo "[vps-start] WARN: Hermes web-exa plugin enable failed" >&2
+    fi
   fi
 }
 
@@ -248,6 +258,13 @@ apply_hermes_content_filter_patch() {
   HERMES_DIR="${HERMES_DIR}" bash "${script}" || echo "[vps-start] WARN: content filter patch failed" >&2
 }
 
+# head -c sample + errors=replace → trailing U+FFFD was false-binary on UTF-8 .md.
+apply_hermes_read_file_utf8_patch() {
+  local script="${APP_DIR}/scripts/apply-hermes-read-file-utf8-patch.sh"
+  [[ -f "${script}" ]] || return 0
+  HERMES_DIR="${HERMES_DIR}" bash "${script}" || echo "[vps-start] WARN: read_file UTF-8 patch failed" >&2
+}
+
 # Block Hermes terminal from reading instance.env / secrets (jterm zero-shared-keys).
 # Bind-mounted from host until baked into the next sandbox image.
 apply_hermes_terminal_secrets_guard() {
@@ -267,6 +284,7 @@ bootstrap_hermes_learning_skills() {
 apply_hermes_langfuse_patches
 apply_hermes_kanban_ws_patch
 apply_hermes_content_filter_patch
+apply_hermes_read_file_utf8_patch
 apply_hermes_terminal_secrets_guard
 bootstrap_hermes_learning_skills
 ensure_hermes_runtime_config
@@ -578,10 +596,17 @@ warm_camofox_browser() {
   ensure_camoufox_browser_cache || return 1
   local user="${CAMOFOX_USER_ID}"
   local sk="${CAMOFOX_SESSION_KEY}"
+  # Camofox rejects about:* schemes on POST /tabs when url is set; omit url for blank start.
+  local payload
+  if [[ -z "${CAMOFOX_START_URL}" || "${CAMOFOX_START_URL}" == "about:blank" || "${CAMOFOX_START_URL}" == "about:home" ]]; then
+    payload="{\"userId\":\"${user}\",\"sessionKey\":\"${sk}\"}"
+  else
+    payload="{\"userId\":\"${user}\",\"sessionKey\":\"${sk}\",\"url\":\"${CAMOFOX_START_URL}\"}"
+  fi
   echo "[vps-start] warming Camofox browser (${user})"
   if curl -fsS -m 120 -X POST "${CAMOFOX_URL}/tabs" \
     -H "Content-Type: application/json" \
-    -d "{\"userId\":\"${user}\",\"sessionKey\":\"${sk}\",\"url\":\"${CAMOFOX_START_URL}\"}" >/dev/null 2>&1; then
+    -d "${payload}" >/dev/null 2>&1; then
     echo "[vps-start] Camofox browser tab ready"
     return 0
   fi
@@ -672,7 +697,72 @@ PY
   fi
 }
 
+# Node 22 overlay leaves Camofox's better-sqlite3 on the base image Node ABI
+# until the next sandbox image cut. Recreate wipes earlier live rebuilds —
+# repair at boot so jWeb (browserConnected) works.
+#
+# Probe must OPEN a DB — `require()` / bare import can succeed while the
+# native addon later fails with "Module did not self-register" (ABI mismatch).
+camofox_better_sqlite3_ok() {
+  local app_dir="${1:-${CAMOFOX_APP_DIR:-/app}}"
+  (
+    cd "${app_dir}" && node --input-type=module -e '
+      import Database from "better-sqlite3";
+      const db = new Database(":memory:");
+      db.exec("select 1");
+      db.close();
+    '
+  ) >/dev/null 2>&1
+}
+
+ensure_camofox_better_sqlite3() {
+  local app_dir="${CAMOFOX_APP_DIR:-/app}"
+  [[ -d "${app_dir}/node_modules/better-sqlite3" ]] || return 0
+  if camofox_better_sqlite3_ok "${app_dir}"; then
+    echo "[vps-start] Camofox better-sqlite3 ok ($(node -v))"
+    return 0
+  fi
+  echo "[vps-start] repairing Camofox better-sqlite3 for $(node -v)…" >&2
+  (
+    set -euo pipefail
+    cd "${app_dir}"
+    # Prefer npm rebuild at package root (matches Dockerfile). Fall back to
+    # prebuild-install, then compile from source when build tools are available.
+    if npm rebuild better-sqlite3 --foreground-scripts >/tmp/camofox-bs3-rebuild.log 2>&1 \
+      && camofox_better_sqlite3_ok "${app_dir}"; then
+      :
+    elif (
+      cd "${app_dir}/node_modules/better-sqlite3" \
+        && npx --yes prebuild-install -r node >/tmp/camofox-bs3-prebuild.log 2>&1
+    ) && camofox_better_sqlite3_ok "${app_dir}"; then
+      :
+    elif command -v apt-get >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq
+      apt-get install -y --no-install-recommends python3 make g++
+      npm rebuild better-sqlite3 --build-from-source --foreground-scripts \
+        >/tmp/camofox-bs3-rebuild.log 2>&1
+      camofox_better_sqlite3_ok "${app_dir}"
+    else
+      return 1
+    fi
+    node --input-type=module -e '
+      import Database from "better-sqlite3";
+      const db = new Database(":memory:");
+      db.exec("select 1");
+      db.close();
+      console.log("[vps-start] better-sqlite3 ok", process.version);
+    '
+  ) || {
+    echo "[vps-start] WARN: better-sqlite3 repair failed; jWeb/browserConnected will stay false until fixed" >&2
+    tail -40 /tmp/camofox-bs3-rebuild.log 2>/dev/null || true
+    tail -20 /tmp/camofox-bs3-prebuild.log 2>/dev/null || true
+    return 1
+  }
+}
+
 echo "[vps-start] Camofox ${CAMOFOX_URL}"
+ensure_camofox_better_sqlite3 || true
 repair_camfox_server_js
 ensure_camofox_vnc
 ( cd "${CAMOFOX_APP_DIR}" && node --max-old-space-size="${MAX_OLD_SPACE_SIZE}" server.js ) &

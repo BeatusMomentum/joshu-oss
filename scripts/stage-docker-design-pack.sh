@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Stage joshu-design into .docker-staging/joshu-design for fleet image builds.
 # OSS builds leave an empty marker — Dockerfile falls back to vanilla shell theme.
+#
+# Fleet (joshu-sandbox) builds MUST stage a real pack. Silent vanilla is a bug —
+# Yara 0.1.30 shipped without /opt/joshu-design and came up on vanilla shell.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,13 +44,27 @@ should_stage_branding() {
   if [[ -d "${ROOT_DIR}/joshu-design/arozos/web-overlays" ]]; then
     return 0
   fi
+  # Private fleet monorepo (db-aeon/joshu) always expects branding unless skipped.
+  if [[ -f "${ROOT_DIR}/proprietary/README.md" ]]; then
+    return 0
+  fi
   return 1
 }
 
 rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
 
-if should_stage_branding && pack="$(resolve_design_pack)"; then
+if should_stage_branding; then
+  if ! pack="$(resolve_design_pack)"; then
+    echo "[stage-docker-design-pack] ERROR: fleet/branded image requires joshu-design" >&2
+    echo "  Clone https://github.com/db-aeon/joshu-design next to this repo, or set JOSHU_DESIGN_PACK." >&2
+    echo "  For an intentional vanilla image: JOSHU_DESIGN_PACK_SKIP=1" >&2
+    exit 1
+  fi
+  if [[ ! -f "${pack}/arozos/web-overlays/aroz-paper-shell.css" ]]; then
+    echo "[stage-docker-design-pack] ERROR: ${pack} missing arozos/web-overlays/aroz-paper-shell.css" >&2
+    exit 1
+  fi
   rsync -a --exclude .git "${pack}/" "${STAGING}/"
   # Icon / desktop glyph assets live in the fleet repo (not always in joshu-design).
   for sub in icons desktop-icons; do
@@ -61,6 +78,8 @@ if should_stage_branding && pack="$(resolve_design_pack)"; then
     && -f "${ROOT_DIR}/arozos/web-overlays/init-black.jpg" ]]; then
     cp "${ROOT_DIR}/arozos/web-overlays/init-black.jpg" "${STAGING}/arozos/web-overlays/"
   fi
+  # Never leave a stale OSS marker in a branded stage.
+  rm -f "${STAGING}/.no-design-pack"
   echo "[stage-docker-design-pack] staged branded pack from ${pack}"
 else
   touch "${STAGING}/.no-design-pack"

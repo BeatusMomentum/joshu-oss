@@ -84,6 +84,7 @@ function buildMailIngressTaskBody(
     "kind: mail_ingress",
     `board: ${EA_MAIL_INGRESS_BOARD}`,
     `Use ${EA_PLAYBOOK_SKILL} skill — MAIL INGRESS mode.`,
+    "REQUIRED FIRST: skill_view('ea-playbook') then follow MAIL INGRESS short-circuit (do not explore).",
     `message_id: ${input.messageId}`,
     `provider: ${input.provider}`,
     `thread_id: ${input.threadId}`,
@@ -97,6 +98,8 @@ function buildMailIngressTaskBody(
     `scheduling_eligible: ${schedulingEligible}`,
     `allowed_actions: ${allowedActions}`,
     `authorization_reason: ${JSON.stringify(auth.reason)}`,
+    "Order: (1) skill_view ea-playbook (2) read_file source_path (3) file Projects/<slug>/ (4) mail_list_track_tasks(projectSlug=…) then handoff|create (5) schedule only if allowed_actions includes schedule (6) Triage stub state:done → _done/ (7) kanban_complete.",
+    "MCP args: projectSlug = folder slug (not board id, not nested tool_call). Stub = Triage/gmail-<account_key>-<thread_id>.stub.md (or <provider>-<thread_id>.stub.md).",
     "Job: FILE this email — match or create Projects/<slug>/ and project track.",
     "Standalone scheduling with no project → Projects/other/.",
     ...(auth.agent_authorized

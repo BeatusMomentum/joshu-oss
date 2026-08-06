@@ -1,6 +1,14 @@
 # Kanban SQLite direct insert reference
 
-Use when `hermes` CLI is not on PATH and `kanban_*` tools are not in the active toolset.
+**Last resort only** — when `kanban_*` tools, Joshu bridge MCP, and `hermes kanban` CLI are all unavailable.
+
+**Never use on Joshu owner paths** when any of these apply:
+
+- **`ea-scheduling`** / `ea-sched-*` boards (meeting mail) — use `scheduling_list_meeting_tasks` + `kanban_complete` with explicit `task_id`, or `scheduling_*` MCP from workers
+- **jChat / voice / api_server** — native `kanban_*` is enabled via `platform_toolsets.api_server`; use those tools first
+- **Owner “mark done” / status in chat** — `kanban_list` + `kanban_complete(task_id=…)`, not SQLite or `execute_code`
+
+Use when `hermes` CLI is not on PATH and `kanban_*` tools are not in the active toolset **and** you are on a worker-only path with no connectors MCP.
 
 ## Database location
 

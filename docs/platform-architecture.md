@@ -2,6 +2,8 @@
 
 Single entry point for how Joshu apps, agents, and shared data fit together.
 
+**New here?** Start with the narrative guide: [**Joshu app architecture — gentle introduction**](joshu-app-architecture-intro.md) (skills → GUI + voice pathways, diagrams). This page is the compact reference.
+
 **Status:** Phases 1–4 shipped in the box stack (June 2026). New apps should follow this model; legacy REST/MCP routes remain under the hood.
 
 ## Three layers
@@ -181,7 +183,7 @@ Hermes app_gui_action → POST /app-gui-actions/enqueue
 | [`src/agUiApi.ts`](../src/agUiApi.ts) | SSE adapter |
 | [`packages/app-agent/`](../packages/app-agent/) | Browser handlers + chat panel |
 
-Voice uses a separate Realtime wire.
+Voice uses a separate Realtime wire — see [`vps-sandbox/web-voice.md`](vps-sandbox/web-voice.md).
 
 ## Memory recall (apps)
 
@@ -220,6 +222,7 @@ Public docs: run [`scripts/prepare-oss-snapshot.sh`](../scripts/prepare-oss-snap
 
 ## Related
 
+- [`joshu-app-architecture-intro.md`](joshu-app-architecture-intro.md) — gentle intro for app developers (GUI + voice)
 - [`platform-data.md`](platform-data.md) — SDK reference
 - [`app-agent.md`](app-agent.md) — CopilotKit app chat SDK
 - [`app-sdk.md`](app-sdk.md) — manifest v2, sideload, build pipeline

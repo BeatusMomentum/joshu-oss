@@ -1,0 +1,286 @@
+# Hetzner Ubuntu quickstart (self-host)
+
+Step-by-step: create a Hetzner VPS, download Joshu from GitHub, set your hostname, run the installer, open the desktop. **API keys** (OpenRouter) are added in the **Welcome** app after first login — not on the command line.
+
+No proprietary control plane — this is **standalone self-host** only. Control-plane managed boxes skip Welcome's Connect AI step (keys are provisioned automatically).
+
+**You need before you start:**
+
+- A [Hetzner Cloud](https://console.hetzner.cloud/) account
+- A domain you control (for HTTPS), e.g. `mybox.example.com`
+
+**Example values used below** (replace with yours):
+
+| What | Example |
+| --- | --- |
+| VPS public IP | `203.0.113.50` |
+| Hostname | `mybox.example.com` |
+| Release image | `ghcr.io/db-aeon/joshu-oss:0.1.29` (see [`deploy/RELEASE.json`](../../deploy/RELEASE.json)) |
+
+---
+
+## Step 1 — Create the Hetzner server
+
+1. Open [Hetzner Cloud Console](https://console.hetzner.cloud/) → your project → **Add server**.
+2. **Image:** Ubuntu **24.04**
+3. **Type:** **CPX31** (8 GB RAM) or larger
+4. **Location:** pick a region close to you (`ash` US, `nbg1` / `fsn1` EU)
+5. **SSH key:** add your public key (so you can `ssh root@…`)
+6. **Firewall (recommended):** allow inbound **22**, **80**, **443**
+7. Click **Create & buy now**
+8. Copy the server **IPv4** address from the dashboard.
+
+---
+
+## Step 2 — Point DNS at the server
+
+The desktop and Joshu API use your main hostname. **Hermes Admin** (cron, skills, Kanban) uses a separate subdomain on the same VPS IP.
+
+| Type | Name / host | Points to | Serves |
+| --- | --- | --- | --- |
+| A | `mybox` | `203.0.113.50` | `https://mybox.example.com/` (ArozOS desktop) |
+| A | `hermes-admin.mybox` | `203.0.113.50` | `https://hermes-admin.mybox.example.com/` (Hermes Admin) |
+
+If `CUSTOMER_DOMAIN` is itself a subdomain (e.g. `community.project-aeon.com`), the Hermes record is **`hermes-admin.community`** → same IP (full name `hermes-admin.community.project-aeon.com`).
+
+Wait until both resolve:
+
+```bash
+dig +short mybox.example.com A
+dig +short hermes-admin.mybox.example.com A
+```
+
+Both should return your VPS IPv4 before bootstrap finishes TLS.
+
+---
+
+## Step 3 — Log in to the VPS
+
+```bash
+ssh root@203.0.113.50
+```
+
+All remaining steps run on the server as `root`.
+
+---
+
+## Step 4 — Install `git` and clone Joshu
+
+```bash
+apt-get update && apt-get install -y git
+
+git clone --depth 1 --branch main \
+  https://github.com/db-aeon/joshu-oss.git \
+  /opt/joshu
+```
+
+---
+
+## Step 5 — Set your hostname (minimal `instance.env`)
+
+Bootstrap needs your public hostname and image pin. Internal secrets (Hermes gateway keys, admin password) are **generated automatically**.
+
+```bash
+mkdir -p /etc/joshu/secrets
+chmod 700 /etc/joshu /etc/joshu/secrets
+cp /opt/joshu/deploy/.env.vps.example /etc/joshu/instance.env
+chmod 600 /etc/joshu/instance.env
+nano /etc/joshu/instance.env
+```
+
+Set **only** these (search with **Ctrl+W** in `nano`):
+
+```dotenv
+CUSTOMER_DOMAIN=mybox.example.com
+VPS_IPV4=203.0.113.50
+ACME_EMAIL=you@example.com
+
+JOSHU_RELEASE_VERSION=0.1.29
+JOSHU_IMAGE_REF=ghcr.io/db-aeon/joshu-oss:0.1.29
+```
+
+Save: **Ctrl+O** Enter, **Ctrl+X**.
+
+You do **not** need to set `OPENROUTER_API_KEY`, `HERMES_API_KEY`, or `API_SERVER_KEY` here — bootstrap generates gateway secrets; Welcome collects OpenRouter after login.
+
+---
+
+## Step 6 — Run bootstrap
+
+```bash
+cd /opt/joshu
+ENV_FILE=/etc/joshu/instance.env bash deploy/scripts/bootstrap-vps.sh
+```
+
+Bootstrap will:
+
+1. Install Docker
+2. Generate `HERMES_API_KEY`, `API_SERVER_KEY`, and `JOSHU_HERMES_DASHBOARD_PASSWORD` if missing
+3. Pull the Joshu image and start the stack
+
+First run takes **10–20 minutes**.
+
+Optional — view Hermes admin password (auto-generated):
+
+```bash
+grep JOSHU_HERMES_DASHBOARD_PASSWORD /etc/joshu/instance.env
+```
+
+---
+
+## Step 7 — Open the desktop
+
+In a browser: `https://mybox.example.com/`
+
+Log in to ArozOS. **Welcome** opens automatically and asks for your **OpenRouter** API key (Connect AI step). Paste a key from [openrouter.ai/keys](https://openrouter.ai/keys) to enable jChat. On the same step you can optionally add a [Gemini API key](https://aistudio.google.com/apikey) for the microphone in jChat (voice uses Gemini Live, not OpenAI).
+
+You can skip Connect AI and add keys later by reopening **Welcome** from the desktop (Review step shows Gemini if you skipped voice).
+
+Health check (laptop):
+
+```bash
+curl -fsS https://mybox.example.com/joshu/api/instance/health
+```
+
+---
+
+## Hermes Admin (desktop shortcut)
+
+On a VPS, Hermes Admin is **not** at `/joshu/hermes-admin/` (that path is for **local dev** only). Bootstrap enables **direct mode** by default: Caddy serves the dashboard on its own hostname at site root.
+
+| | |
+| --- | --- |
+| **URL** | `https://hermes-admin.mybox.example.com/` |
+| **Open from** | Desktop **Hermes Admin** shortcut (url shortcut → full HTTPS URL) |
+| **Login** | User `admin` (or `JOSHU_HERMES_DASHBOARD_USER`) + password from `instance.env` |
+| **Requires** | DNS **A** record from [Step 2](#step-2--point-dns-at-the-server) |
+
+View the auto-generated dashboard password:
+
+```bash
+grep JOSHU_HERMES_DASHBOARD_PASSWORD /etc/joshu/instance.env
+```
+
+Confirm the stack sees the dashboard:
+
+```bash
+curl -fsS https://mybox.example.com/joshu/api/hermes-dashboard/status
+# expect: "directExposure":true, "publicUrl":"https://hermes-admin.mybox.example.com"
+```
+
+**Wrong URL symptom:** `Cannot GET /joshu/hermes-admin/` — you opened the local-dev path on a VPS. Use the `hermes-admin.*` subdomain instead.
+
+**Alternative (no extra DNS):** set `JOSHU_HERMES_DASHBOARD_DIRECT=false` in `/etc/joshu/instance.env`, re-render Caddy (`bash deploy/scripts/render-caddyfile.sh /etc/joshu/instance.env`), and restart the stack. Joshu then proxies `https://mybox.example.com/joshu/hermes-admin/`. Direct subdomain mode is recommended for production parity.
+
+`JOSHU_HERMES_DASHBOARD_PASSWORD` is **not** your ArozOS desktop login — only Hermes Admin / gateway dashboard access.
+
+---
+
+## Optional — voice in jChat
+
+Voice is **on by default** for OSS self-host when `JOSHU_VOICE_IMAGE_REF` is set in `deploy/.env.vps.example` (bootstrap enables `voice-rt` automatically). You only need a **Gemini API key** — add it in **Welcome → Connect AI** (optional field) or on the **Review** step if you skipped it earlier. No manual `instance.env` edits required.
+
+If you disabled voice or run an older box, see [`deploy/README.md`](../../deploy/README.md) for compose profile `voice-rt`.
+
+---
+
+## Optional — Twilio phone number (PSTN)
+
+Browser voice does **not** need Twilio. To answer a real phone number on this box, buy a Twilio number and wire webhooks + secrets yourself — step-by-step: [`twilio-self-host.md`](twilio-self-host.md).
+
+---
+
+## Forgot ArozOS password (self-host)
+
+Joshu does **not** send email reset links. The **Forgot password?** link on the login page (`/reset.html`) expects an **administrator** to generate a **temporary password** first (System Settings → Users → edit user → **Reset password**), then you complete the flow in the browser.
+
+On a **solo** self-host box you are usually both admin and user. If you are locked out but still have **SSH as root**:
+
+### Option A — SSH reset (recommended when locked out)
+
+```bash
+ssh root@203.0.113.50
+cd /opt/joshu
+
+# List ArozOS usernames (folder names under the data volume)
+docker volume inspect deploy_joshu_arozos --format '{{ .Mountpoint }}'
+ls "$(docker volume inspect deploy_joshu_arozos --format '{{ .Mountpoint }}')/files/users/"
+
+# Set a new login password (stops joshu-stack briefly, updates system/ao.db)
+bash scripts/arozos-reset-password.sh YOUR_USERNAME 'your-new-strong-password'
+```
+
+First run pulls a small `golang:1.23-alpine` image and compiles the helper (~1–2 minutes). Later runs are faster.
+
+Log in at `https://mybox.example.com/` with the new password.
+
+### Option B — Browser reset (when another admin exists)
+
+1. Admin: **System Settings → Users →** edit user → **Reset password** (copies a temporary password).
+2. User: open `/reset.html` or the link with `acc` and `rkey` query params, enter username + temporary password, choose a new password.
+
+### Not the same as Hermes admin
+
+`JOSHU_HERMES_DASHBOARD_PASSWORD` in `/etc/joshu/instance.env` is only for [Hermes Admin](#hermes-admin-desktop-shortcut) — not your ArozOS desktop login.
+
+---
+
+## Common problems
+
+| Problem | What to check |
+| --- | --- |
+| `docker pull` → `registry: denied` | Image tag not published yet, or GHCR package still private. Confirm tag in [`deploy/RELEASE.json`](../../deploy/RELEASE.json). After a release build, `docker pull` should work without login. If building from source instead: run `bash scripts/ensure-vendor-for-build.sh` first (OSS clone has no `vendor/`). |
+| Certificate error in browser | DNS not pointing at VPS yet |
+| Health `curl` fails | Ports 80/443 open; wait a few minutes after bootstrap |
+| Chat empty / 401 | Add OpenRouter in **Welcome → Connect AI**, or check gateway keys in `instance.env` |
+| Desktop icons broken (placeholder images) | `img/joshu/*.png` missing from ArozOS `web/` — re-run theme apply + icon copy (image **0.1.30+** or host `git pull` + restart). See below. |
+| Desktop has icons but no window chrome | `aroz-vanilla-shell.css` not applied — same fix; hard-refresh after restart |
+| Site works then **502** / box “down” for minutes | Usually **not** Hetzner sleep — `joshu-stack` crash loop (failed healthcheck). Check `docker compose logs joshu-stack` and restart count. Common on **0.1.29** without host `git pull`: missing `packages/email-signature/dist` bind mount + broken Camofox `server.js`. Fix below. |
+| Locked out of ArozOS login | No email reset — use SSH script or admin temporary password. See [Forgot ArozOS password](#forgot-arozos-password-self-host). |
+| Hermes Admin **Cannot GET /joshu/hermes-admin/** | VPS uses **direct mode** — open `https://hermes-admin.mybox.example.com/` (not `/joshu/`). Add DNS **A** record ([Step 2](#step-2--point-dns-at-the-server)). See [Hermes Admin](#hermes-admin-desktop-shortcut). |
+| `git clone` fails | Outbound HTTPS from VPS |
+
+### Stack crash loop (502 / intermittent outage)
+
+Hetzner VPS instances do **not** sleep like a laptop. Intermittent **502** from Caddy almost always means `joshu-stack` is restarting (`docker inspect deploy-joshu-stack-1 --format '{{.RestartCount}}'`).
+
+After `git pull` on `/opt/joshu` (needs **main** with email-signature mount fix + vanilla theme):
+
+```bash
+cd /opt/joshu
+git pull origin main
+source /etc/joshu/instance.env
+bash scripts/sync-dist-from-image.sh
+cd deploy
+docker compose -f docker-compose.yml --env-file /etc/joshu/instance.env up -d --force-recreate joshu-stack
+```
+
+Wait for health: `curl -fsS http://127.0.0.1:8788/joshu/api/instance/health | head -c 200`
+
+Use **CPX31 (8 GB RAM)** or larger — CX/2 GB hosts OOM under Postgres + Hermes + Camofox.
+
+### Desktop icons or missing chrome
+
+On older images, vanilla theme did not copy module icons into `web/img/joshu/`. After `git pull` on `/opt/joshu`:
+
+```bash
+cd /opt/joshu/deploy
+docker compose -f docker-compose.yml --env-file /etc/joshu/instance.env exec joshu-stack bash -c '
+  python3 /opt/joshu/scripts/apply_arozos_joshu_theme.py /var/lib/arozos/web/
+  mkdir -p /var/lib/arozos/web/img/joshu
+  cp -a /opt/joshu/arozos/icons/*.png /var/lib/arozos/web/img/joshu/ 2>/dev/null || true
+'
+docker compose -f docker-compose.yml --env-file /etc/joshu/instance.env restart joshu-stack
+```
+
+Hard-refresh the browser (Cmd+Shift+R). Confirm: `curl -fsSI https://YOUR_DOMAIN/img/joshu/chat.png` and `curl -fsSI https://YOUR_DOMAIN/aroz-vanilla-shell.css` return `200`.
+
+---
+
+## Next steps
+
+- [welcome-onboarding.md](../welcome-onboarding.md) — Welcome wizard + Connect AI
+- [connectors.md](../connectors.md) — mail and calendar
+- [self-host.md](../self-host.md) · [deploy/README.md](../../deploy/README.md)
+
+Managed hosting (control plane) — [control-plane.md](control-plane.md).

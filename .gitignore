@@ -1,3 +1,4 @@
+.joshu/last30days/
 node_modules/
 dist/
 .next/
@@ -28,11 +29,15 @@ deploy/Caddyfile
 # Connectors SPA is built to dist/ and rsynced into the live ArozOS template — do not
 # commit hashed app bundles dropped into the repo tree by local builds.
 arozos/subservice/connectors/app/
+arozos/subservice/last30days/app/
 arozos/web-overlays-vanilla/subservice/
 
 # Local vendor checkouts only (gitlinks were removed from the OSS tree; keep clones private).
 vendor/arozos/
 vendor/excalidraw/
+
+# last30days Python engine snapshot — pin in integrations/last30days-skill.pin; sync via scripts/sync-last30days-skill.sh
+integrations/last30days-skill/
 
 # Fleet SOP must not live in the AGPL tree (canonical under joshu/docs/Joshu-SOP/).
 docs/Joshu-SOP/

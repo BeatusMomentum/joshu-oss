@@ -1,0 +1,99 @@
+name: joshu-sandbox-image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+      - run: bash proprietary/scripts/stage-fleet-docker-patches.sh
+      - name: Checkout joshu-design (fleet branding)
+        uses: actions/checkout@v4
+        with:
+          repository: db-aeon/joshu-design
+          path: joshu-design
+          # Required: fine-grained PAT with Contents:Read on db-aeon/joshu-design.
+          # Default GITHUB_TOKEN cannot read private sibling repos.
+          token: ${{ secrets.JOSHU_DESIGN_CHECKOUT_TOKEN }}
+      - name: Stage design pack for image build
+        run: bash scripts/stage-docker-design-pack.sh
+        env:
+          JOSHU_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/joshu-sandbox
+      - name: Verify paper-shell staged
+        run: |
+          test -f .docker-staging/joshu-design/arozos/web-overlays/aroz-paper-shell.css \
+            || (echo "design pack staging failed — missing aroz-paper-shell.css" >&2; exit 1)
+      - run: npm run build:deploy
+      - run: npm run vps:sync-hermes-pin
+      - run: npm run vps:sync-camofox-pin
+
+      - name: Resolve Hermes pin from deploy/RELEASE.json
+        id: hermes
+        run: echo "ref=$(node scripts/sync-vps-hermes-pin.mjs --print)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Camofox pin from deploy/RELEASE.json
+        id: camofox
+        run: echo "ref=$(node scripts/sync-vps-camofox-pin.mjs --print)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve gbrain pin from deploy/RELEASE.json
+        id: gbrain
+        run: echo "ref=$(node -e \"console.log(JSON.parse(require('fs').readFileSync('deploy/RELEASE.json','utf8')).gbrainRef)\")" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image tags
+        id: image
+        run: |
+          ref="${GITHUB_REF_NAME}"
+          bare="${ref#v}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "bare=${bare}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push sandbox
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          build-args: |
+            HERMES_AGENT_REF=${{ steps.hermes.outputs.ref }}
+            CAMOFOX_BASE=${{ steps.camofox.outputs.ref }}
+            GBRAIN_REF=${{ steps.gbrain.outputs.ref }}
+            JOSHU_REQUIRE_DESIGN_PACK=1
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/joshu-sandbox:${{ steps.image.outputs.ref }}
+            ghcr.io/${{ github.repository_owner }}/joshu-sandbox:${{ steps.image.outputs.bare }}
+            ghcr.io/${{ github.repository_owner }}/joshu-sandbox:latest
+
+      - name: Build and push voice-realtime
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.voice-realtime
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/joshu-voice-realtime:${{ steps.image.outputs.ref }}
+            ghcr.io/${{ github.repository_owner }}/joshu-voice-realtime:${{ steps.image.outputs.bare }}
+            ghcr.io/${{ github.repository_owner }}/joshu-voice-realtime:latest

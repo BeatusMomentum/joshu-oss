@@ -41,6 +41,13 @@ SANDBOX_BUILD_ARGS=(
   -t "${IMAGE_REF}"
 )
 
+# Fleet joshu-sandbox builds must bake paper-shell (see stage-docker-design-pack.sh).
+if [[ "${IMAGE_REPO}" == *joshu-sandbox* || "${IMAGE_REF}" == *joshu-sandbox* || -f "${ROOT_DIR}/proprietary/README.md" ]]; then
+  if [[ ! "${JOSHU_DESIGN_PACK_SKIP:-}" =~ ^(1|true|yes)$ ]]; then
+    SANDBOX_BUILD_ARGS+=(--build-arg "JOSHU_REQUIRE_DESIGN_PACK=1")
+  fi
+fi
+
 VOICE_BUILD_ARGS=(
   --platform linux/amd64
   -f deploy/Dockerfile.voice-realtime

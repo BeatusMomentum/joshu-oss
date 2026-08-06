@@ -1,0 +1,105 @@
+--- a/plugins/observability/langfuse/__init__.py
++++ b/plugins/observability/langfuse/__init__.py
+@@ -27,6 +27,7 @@
+ import logging
+ import os
+ import re
++import uuid
+ import threading
+ import time
+ from dataclasses import dataclass, field
+@@ -637,7 +638,9 @@
+ 
+ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
+                       api_mode: str, messages: Any, client: Langfuse) -> TraceState:
+-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
++    # One Langfuse trace per Hermes turn. session_id still groups turns in the UI;
++    # a deterministic seed reused the same trace_id across turns in one chat.
++    trace_id = client.create_trace_id(seed=str(uuid.uuid4()))
+     trace_input = _extract_last_user_message(messages)
+     metadata = {
+         "source": "hermes",
+@@ -657,50 +660,42 @@
+     if langfuse_user_id:
+         trace_ctx["user_id"] = langfuse_user_id
+         metadata["box_slug"] = langfuse_user_id
+-    if propagate_attributes is not None:
+-        try:
+-            propagate_kwargs: Dict[str, Any] = {
+-                "session_id": session_id or task_key,
+-                "trace_name": "Hermes turn",
+-                "tags": ["hermes", "langfuse"],
+-            }
++    # Avoid wrapping only root creation in propagate_attributes — that context exits
++    # before tool/generation children are recorded and can leave orphan observations
++    # that crash the Langfuse trace graph UI on long multi-tool turns.
++    root_ctx = client.start_as_current_observation(
++        trace_context=trace_ctx,
++        name="Hermes turn",
++        as_type="chain",
++        input=trace_input,
++        metadata=metadata,
++        end_on_exit=False,
++    )
++    root_span = root_ctx.__enter__()
++
++    try:
++        root_span.set_trace_io(input=trace_input)
++    except Exception:
++        pass
++
++    # Langfuse Users view reads trace userId from OTEL attributes on the root span.
++    # propagate_attributes() only works for children created inside its context; our
++    # hook-based tool/generation children are not, so set attributes directly.
++    try:
++        from langfuse._client.attributes import LangfuseOtelSpanAttributes
++
++        otel_span = getattr(root_span, "_otel_span", None)
++        if otel_span is not None and otel_span.is_recording():
++            otel_span.set_attribute(LangfuseOtelSpanAttributes.TRACE_TAGS, ["hermes", "langfuse"])
++            if session_id:
++                otel_span.set_attribute(LangfuseOtelSpanAttributes.TRACE_SESSION_ID, session_id)
+             if langfuse_user_id:
+-                propagate_kwargs["user_id"] = langfuse_user_id
+-            with propagate_attributes(
+-                **propagate_kwargs,
+-            ):
+-                root_ctx = client.start_as_current_observation(
+-                    trace_context=trace_ctx,
+-                    name="Hermes turn",
+-                    as_type="chain",
+-                    input=trace_input,
+-                    metadata=metadata,
+-                    end_on_exit=False,
+-                )
+-                root_span = root_ctx.__enter__()
+-        except Exception:
+-            root_ctx = client.start_as_current_observation(
+-                trace_context=trace_ctx,
+-                name="Hermes turn",
+-                as_type="chain",
+-                input=trace_input,
+-                metadata=metadata,
+-                end_on_exit=False,
+-            )
+-            root_span = root_ctx.__enter__()
+-    else:
+-        root_ctx = client.start_as_current_observation(
+-            trace_context=trace_ctx,
+-            name="Hermes turn",
+-            as_type="chain",
+-            input=trace_input,
+-            metadata=metadata,
+-            end_on_exit=False,
+-        )
+-        root_span = root_ctx.__enter__()
++                otel_span.set_attribute(LangfuseOtelSpanAttributes.TRACE_USER_ID, langfuse_user_id)
++    except Exception:
++        pass
+ 
+     try:
+-        root_span.set_trace_io(input=trace_input)
++        client.flush()
+     except Exception:
+         pass
+ 

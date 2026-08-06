@@ -56,6 +56,10 @@ const JOSHU_SYNC_IDENTITY_URL = env(
   "JOSHU_SYNC_IDENTITY_URL",
   "http://127.0.0.1:8788/joshu/api/instance/sync-companion-identity",
 );
+const JOSHU_SEND_OWNER_EMAIL_URL = env(
+  "JOSHU_SEND_OWNER_EMAIL_URL",
+  "http://127.0.0.1:8788/joshu/api/instance/send-owner-email",
+);
 
 function authHeader(): string {
   return `Bearer ${INSTANCE_ID}.${AGENT_TOKEN}`;
@@ -181,11 +185,17 @@ interface Command {
   payload: Record<string, unknown>;
 }
 
-async function ackCommand(commandId: string, status: "succeeded" | "failed", error?: string): Promise<void> {
+async function ackCommand(
+  commandId: string,
+  status: "succeeded" | "failed",
+  error?: string,
+  result?: Record<string, unknown>,
+): Promise<void> {
   await postJson(`/api/instances/commands/${commandId}/ack`, {
     instanceId: INSTANCE_ID,
     status,
     error,
+    ...(result ? { result } : {}),
   });
 }
 
@@ -626,6 +636,62 @@ async function applyCompanionIdentitySync(payload: Record<string, unknown>): Pro
   }
 }
 
+/** Deliver a CP-authored owner email via the box Nylas agent mailbox (action-guard bypass). */
+async function applySendOwnerEmail(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const to = typeof payload.to === "string" ? payload.to.trim() : "";
+  const subject = typeof payload.subject === "string" ? payload.subject.trim() : "";
+  const bodyPlain = typeof payload.bodyPlain === "string" ? payload.bodyPlain.trim() : "";
+  if (!to || !subject || !bodyPlain) {
+    throw new Error("send_owner_email requires to, subject, and bodyPlain");
+  }
+
+  const sendId = typeof payload.sendId === "string" ? payload.sendId.trim() : undefined;
+  const flowKey = typeof payload.flowKey === "string" ? payload.flowKey.trim() : undefined;
+
+  const res = await fetch(JOSHU_SEND_OWNER_EMAIL_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      to,
+      subject,
+      body: bodyPlain,
+      ...(sendId ? { sendId } : {}),
+      ...(flowKey ? { flowKey } : {}),
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  const text = await res.text().catch(() => "");
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  } catch {
+    parsed = {};
+  }
+  if (!res.ok) {
+    const errMsg =
+      typeof parsed.error === "string" ? parsed.error : text.slice(0, 300) || `HTTP ${res.status}`;
+    throw new Error(`send-owner-email failed: ${errMsg}`);
+  }
+
+  const messageId = typeof parsed.messageId === "string" ? parsed.messageId : undefined;
+  const from = typeof parsed.from === "string" ? parsed.from : undefined;
+  // Names only — live values (e.g. the unlock passphrase) stay on the box.
+  const placeholders = Array.isArray(parsed.placeholders)
+    ? parsed.placeholders.filter((p): p is string => typeof p === "string")
+    : undefined;
+  console.info(
+    `[instance-agent] owner email sent` +
+      (from ? ` from=${from}` : "") +
+      (placeholders?.length ? ` filled=${placeholders.join(",")}` : "") +
+      (messageId ? ` messageId=${messageId}` : ""),
+  );
+  return {
+    ...(messageId ? { messageId } : {}),
+    ...(from ? { from } : {}),
+    ...(placeholders?.length ? { placeholders } : {}),
+  };
+}
+
 async function applyReleaseEnvUpdates(envUpdates: Record<string, string>): Promise<void> {
   if (Object.keys(envUpdates).length === 0) return;
   await updateEnvFile(envUpdates);
@@ -722,7 +788,7 @@ async function applyReleaseUpdate(payload: Record<string, unknown>): Promise<voi
   }
 }
 
-async function executeCommand(cmd: Command): Promise<void> {
+async function executeCommand(cmd: Command): Promise<Record<string, unknown> | void> {
   const payload = cmd.payload ?? {};
   switch (cmd.type) {
     case "update":
@@ -747,6 +813,8 @@ async function executeCommand(cmd: Command): Promise<void> {
     case "sync_companion_identity":
       await applyCompanionIdentitySync(payload);
       break;
+    case "send_owner_email":
+      return applySendOwnerEmail(payload);
     case "rotate_secrets": {
       const secrets = payload.secrets;
       if (secrets && typeof secrets === "object") {
@@ -833,8 +901,8 @@ async function heartbeatLoop(): Promise<void> {
     }
     try {
       console.info(`[instance-agent] executing ${cmd.type} (${cmd.id})`);
-      await executeCommand(cmd);
-      await ackCommand(cmd.id, "succeeded");
+      const result = await executeCommand(cmd);
+      await ackCommand(cmd.id, "succeeded", undefined, result ?? undefined);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[instance-agent] command ${cmd.id} failed: ${msg}`);

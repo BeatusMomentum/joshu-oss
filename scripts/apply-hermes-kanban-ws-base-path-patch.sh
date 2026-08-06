@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # Kanban dashboard WebSocket must honour __HERMES_BASE_PATH__ when Joshu (or any
 # reverse proxy) serves Hermes admin under a path prefix, e.g. /joshu/hermes-admin.
-# REST calls already use SDK.fetchJSON (BASE + path); the bundled kanban index.js
-# built the WS URL as /api/plugins/kanban/events at the site root → Caddy sends
-# that to ArozOS :8787, not Hermes :9119 via the Joshu proxy.
 #
-# Also deploy/deploy/Caddyfile rewrites /api/plugins/kanban/* → /joshu/hermes-admin/api/...
-# so the board works even when this patch cannot be applied (Hermes pin drift).
+# Hermes >= ~0.20 builds the URL via SDK.buildWsUrl(); older bundles used a
+# literal `const url = \`${proto}//${host}${API}/events?${qs}\``.
 set -euo pipefail
 
 HERMES_DIR="${HERMES_DIR:-/opt/hermes-agent}"
@@ -39,30 +36,50 @@ helper = """
   }
 """
 
-# Insert helper once, near other top-level helpers (after MIME_TASK).
 anchor = '  const MIME_TASK = "text/x-hermes-task";'
 if anchor not in text:
     raise SystemExit("anchor not found — upstream kanban bundle changed")
 if "function kanbanDashboardBasePath" not in text:
     text = text.replace(anchor, anchor + helper, 1)
 
-# Replace any legacy one-liner WS URL (patched or stock).
-patterns = [
-    r'const url = `\$\{proto\}//\$\{window\.location\.host\}\$\{basePath\}\$\{API\}/events\?\$\{qs\}`;',
-    r'const url = `\$\{proto\}//\$\{window\.location\.host\}\$\{API\}/events\?\$\{qs\}`;',
-]
-replacement = (
-    'const basePath = kanbanDashboardBasePath();\n'
-    '        const url = `${proto}//${window.location.host}${basePath}${API}/events?${qs}`;'
-)
-for pat in patterns:
-    new_text, n = re.subn(pat, replacement, text, count=1)
-    if n:
-        path.write_text(new_text, encoding="utf-8")
-        print("[hermes-kanban-ws-patch] applied")
-        raise SystemExit(0)
+applied = False
 
-raise SystemExit("WebSocket url line not found — upstream kanban bundle changed")
+# v0.20+: SDK.buildWsUrl(`${API}/events`, wsParams).then(...)
+build_pat = r"SDK\.buildWsUrl\(`\$\{API\}/events`,\s*wsParams\)\.then\(function\s*\(\s*url\s*\)\s*\{"
+if re.search(build_pat, text):
+    # Prefix path into the API segment passed to buildWsUrl.
+    text2, n = re.subn(
+        build_pat,
+        "SDK.buildWsUrl(`${kanbanDashboardBasePath()}${API}/events`, wsParams).then(function (url) {",
+        text,
+        count=1,
+    )
+    if n:
+        text = text2
+        applied = True
+
+# Legacy one-liner WS URL (patched or stock).
+if not applied:
+    patterns = [
+        r"const url = `\$\{proto\}//\$\{window\.location\.host\}\$\{basePath\}\$\{API\}/events\?\$\{qs\}`;",
+        r"const url = `\$\{proto\}//\$\{window\.location\.host\}\$\{API\}/events\?\$\{qs\}`;",
+    ]
+    replacement = (
+        "const basePath = kanbanDashboardBasePath();\n"
+        "        const url = `${proto}//${window.location.host}${basePath}${API}/events?${qs}`;"
+    )
+    for pat in patterns:
+        new_text, n = re.subn(pat, replacement, text, count=1)
+        if n:
+            text = new_text
+            applied = True
+            break
+
+if not applied:
+    raise SystemExit("WebSocket url line not found — upstream kanban bundle changed")
+
+path.write_text(text, encoding="utf-8")
+print("[hermes-kanban-ws-patch] applied")
 PY
 
 echo "[hermes-kanban-ws-patch] done — hard-refresh Hermes Admin (Kanban tab) in the browser"

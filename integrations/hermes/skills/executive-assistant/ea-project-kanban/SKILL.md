@@ -128,7 +128,7 @@ Owner can supervise at `hermes-admin.<box>/` — pick board `project-<slug>` in 
 
 **`hermes` CLI not on PATH.** If `which hermes` fails, fall through to `kanban_*` tools or SQLite (step 3D). Do not waste retries on the CLI.
 
-**`kanban_*` tools not in toolset.** When the active profile doesn't include the `kanban` toolset, `kanban_create`, `kanban_list`, etc. are absent from available tools. Use MCP (3A) or SQLite direct insert (3D) without hesitation.
+**`kanban_*` tools not in toolset.** On Joshu jChat/voice (`api_server`), native `kanban_*` should be registered — use `tool_search` or `kanban_list` before assuming absence. On workers, prefer MCP (3A) when bridge tools fit. SQLite (3D) is **worker-only last resort**; never for `ea-scheduling` or owner chat mark-done flows.
 
 **SQLite db_path unknown.** Board databases live at `~/.hermes/kanban/boards/project-<slug>/kanban.db`. If the board hasn't been created yet, use `mcp_joshu_connectors_project_kanban_ensure_board` first, then locate the db from `.meta.db_path`.
 

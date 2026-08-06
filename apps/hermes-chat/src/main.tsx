@@ -115,39 +115,6 @@ function safeJson(value: string): unknown {
   }
 }
 
-/** Plain text for Hermes Edge/OpenAI TTS via Joshu `/tts`. */
-function textForSpeechOutput(markdown: string): string {
-  return markdown
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/\*([^*]+)\*/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/^#{1,6}\s?/gm, "")
-    .replace(/\n{2,}/g, ". ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 32000);
-}
-
-/** Remove invisible / format chars; Hermes/Python trim can leave falsy payloads if only these remain. */
-function normalizeSpeakableText(text: string): string {
-  return text.replace(/[\u200B-\u200D\u2060\uFEFF]/g, "").trim();
-}
-
-const LS_SPEECH_OUT = "hermes-chat.speechOutput";
-
-function readBoolLs(key: string, fallback: boolean): boolean {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === "1" || raw === "true") return true;
-    if (raw === "0" || raw === "false") return false;
-  } catch {
-    /* ignore */
-  }
-  return fallback;
-}
-
 function buildUserContent(text: string, attachments: Attachment[]): string | HermesContentPart[] {
   if (attachments.length === 0) return text;
   const parts: HermesContentPart[] = [
@@ -182,7 +149,6 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [voiceInputOn, setVoiceInputOn] = useState(false);
-  const [speechOutputOn, setSpeechOutputOn] = useState(() => readBoolLs(LS_SPEECH_OUT, false));
   const [s2sVoiceAvailable, setS2sVoiceAvailable] = useState(false);
   const [voiceSessionState, setVoiceSessionState] = useState("idle");
   const [voiceHint, setVoiceHint] = useState("");
@@ -194,13 +160,6 @@ function App() {
   const sessionIdRef = useRef(sessionId);
   const busyRef = useRef(busy);
   const voiceInputOnRef = useRef(false);
-  const pauseVoiceCaptureRef = useRef(false);
-  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
-  const ttsAbortRef = useRef<AbortController | null>(null);
-  /** At most one auto-retry per assistant utterance (avoids spinning on persistent 5xx). */
-  const lastAutoTtsRetryKeyRef = useRef<string | null>(null);
-  /** Bumped after transient TTS failures so the effect can retry the same assistant text. */
-  const [ttsRetryEpoch, setTtsRetryEpoch] = useState(0);
   /** Tray toast fires once per completed assistant message (shell hides it when chat is open). */
   const lastTrayNotifiedIdRef = useRef<string | null>(null);
   const trayAudioLevelRef = useRef(0);
@@ -453,28 +412,6 @@ function App() {
     [pushTrayVoiceState],
   );
 
-  const toggleSpeechOutput = useCallback(() => {
-    setSpeechOutputOn((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(LS_SPEECH_OUT, next ? "1" : "0");
-      } catch {
-        /* ignore */
-      }
-      if (!next) {
-        ttsAbortRef.current?.abort();
-        ttsAbortRef.current = null;
-        if (ttsAudioRef.current) {
-          ttsAudioRef.current.pause();
-          ttsAudioRef.current.src = "";
-          ttsAudioRef.current = null;
-        }
-        pauseVoiceCaptureRef.current = false;
-      }
-      return next;
-    });
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
     fetch(`${API_BASE}/status`, { cache: "no-store" })
@@ -547,7 +484,6 @@ function App() {
     }
 
     let cancelled = false;
-    setSpeechOutputOn(true);
 
     void (async () => {
       try {
@@ -683,101 +619,6 @@ function App() {
     });
   }, [messages, identity.name, portraitUrl]);
 
-  /**
-   * Stable stringify of the current TTS job so the effect does not re-run (and abort in-flight
-   * requests) on unrelated `messages` churn. Only changes when Speech is off, assistant id/text
-   * changes, or `ttsRetryEpoch` bumps after a retryable failure.
-   */
-  const hermesChatTtsJobJson = useMemo(() => {
-    if (!speechOutputOn || (voiceInputOn && s2sVoiceAvailable) || voiceSessionState !== "idle") {
-      return null;
-    }
-
-    const last = [...messages].reverse().find((m) => m.role === "assistant");
-    if (!last || (last.status !== "done" && last.status !== "error")) return null;
-
-    const plain = normalizeSpeakableText(last.content);
-    if (!plain) return null;
-
-    const spoken = normalizeSpeakableText(textForSpeechOutput(plain));
-    if (!spoken) return null;
-
-    return JSON.stringify({ id: last.id, spoken, r: ttsRetryEpoch });
-  }, [messages, speechOutputOn, ttsRetryEpoch, voiceInputOn, s2sVoiceAvailable, voiceSessionState]);
-
-  /** Hermes-backed TTS — pause mic while audio plays (echo avoidance). */
-  useEffect(() => {
-    if (!hermesChatTtsJobJson) {
-      ttsAbortRef.current?.abort();
-      ttsAbortRef.current = null;
-      pauseVoiceCaptureRef.current = false;
-      return;
-    }
-
-    let job: { id: string; spoken: string };
-    try {
-      job = JSON.parse(hermesChatTtsJobJson) as { id: string; spoken: string };
-    } catch {
-      return;
-    }
-    const { spoken } = job;
-
-    ttsAbortRef.current?.abort();
-    const controller = new AbortController();
-    ttsAbortRef.current = controller;
-
-    pauseVoiceCaptureRef.current = true;
-
-    void (async () => {
-      try {
-        const response = await fetch(`${API_BASE}/tts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: spoken }),
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          const errText = await response.text().catch(() => "");
-          console.warn("[hermes-chat] TTS failed:", response.status, errText);
-          pauseVoiceCaptureRef.current = false;
-          if (response.status >= 500 || response.status === 429) {
-            const retryKey = `${job.id}::${spoken}`;
-            if (lastAutoTtsRetryKeyRef.current !== retryKey) {
-              lastAutoTtsRetryKeyRef.current = retryKey;
-              setTtsRetryEpoch((e) => e + 1);
-            }
-          }
-          return;
-        }
-        lastAutoTtsRetryKeyRef.current = null;
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        ttsAudioRef.current = audio;
-        audio.onended = () => {
-          URL.revokeObjectURL(url);
-          pauseVoiceCaptureRef.current = false;
-          if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
-        };
-        audio.onerror = () => {
-          URL.revokeObjectURL(url);
-          pauseVoiceCaptureRef.current = false;
-          if (ttsAudioRef.current === audio) ttsAudioRef.current = null;
-        };
-        await audio.play().catch(() => {
-          URL.revokeObjectURL(url);
-          pauseVoiceCaptureRef.current = false;
-        });
-      } catch {
-        pauseVoiceCaptureRef.current = false;
-      }
-    })();
-
-    return () => {
-      controller.abort();
-    };
-  }, [hermesChatTtsJobJson]);
-
   const addFiles = useCallback(async (files: FileList | null) => {
     if (!files) return;
     const next: Attachment[] = [];
@@ -864,15 +705,6 @@ function App() {
               onClick={openConnectorsApp}
             >
               Connectors
-            </button>
-            <button
-              type="button"
-              className={`jchat-link-btn ${speechOutputOn ? "jchat-link-btn-on" : ""}`}
-              aria-pressed={speechOutputOn}
-              disabled={voiceInputOn && s2sVoiceAvailable}
-              onClick={() => toggleSpeechOutput()}
-            >
-              Speech {speechOutputOn ? "on" : "off"}
             </button>
           </>
         }

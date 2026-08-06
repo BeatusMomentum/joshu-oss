@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
 import { resolveBoxSecret } from "./boxSecrets/resolve.js";
+import { provisionEnvTrim } from "./provisionInstanceEnv.js";
 import { promisify } from "node:util";
 import YAML from "yaml";
 import { bootstrapHermesLearning } from "./hermesLearning.js";
@@ -42,6 +43,10 @@ const APPLY_HERMES_HITL_PATCH_SCRIPT = path.resolve(process.cwd(), "scripts/appl
 const APPLY_HERMES_CONTENT_FILTER_PATCH_SCRIPT = path.resolve(
   process.cwd(),
   "scripts/apply-hermes-content-filter-patch.sh",
+);
+const APPLY_HERMES_READ_FILE_UTF8_PATCH_SCRIPT = path.resolve(
+  process.cwd(),
+  "scripts/apply-hermes-read-file-utf8-patch.sh",
 );
 const MAX_HISTORY_MESSAGES = 12;
 const MAX_OBSERVATION_CHARS = 14_000;
@@ -244,6 +249,10 @@ export function buildHermesLlmDotenvEntries(projectRoot = process.cwd()): Record
     entries.HERMES_API_KEY = gatewayKey;
     entries.API_SERVER_KEY = envString("API_SERVER_KEY") || gatewayKey;
   }
+  // Exa for web_search / web_extract (CP mint or shared → instance.env EXA_API_KEY).
+  // Not a Welcome box-secrets UI key — resolve from provision/process like last30days.
+  const exa = provisionEnvTrim("EXA_API_KEY") || process.env.EXA_API_KEY?.trim() || "";
+  if (exa) entries.EXA_API_KEY = exa;
   return entries;
 }
 
@@ -264,6 +273,65 @@ function getConfiguredJoshuPluginNames(): string[] {
     .split(",")
     .map((name) => name.trim())
     .filter(Boolean);
+}
+
+/** jChat and voice brain both hit Hermes gateway platform `api_server`. */
+const INTERACTIVE_HERMES_PLATFORMS = ["api_server"] as const;
+
+/**
+ * Global `config.toolsets` includes `kanban` (orchestrator gating), but platform
+ * tool resolution uses `platform_toolsets.api_server` — default `hermes-api-server`
+ * alone omits native `kanban_*`. Pin `kanban` on interactive platforms.
+ */
+function syncInteractivePlatformKanbanToolsets(config: ConfigRecord): boolean {
+  const platformToolsets = asRecord(config.platform_toolsets);
+  let changed = false;
+  for (const platform of INTERACTIVE_HERMES_PLATFORMS) {
+    const existing = asStringArray(platformToolsets[platform]);
+    const desired = existing.length > 0 ? [...existing] : ["hermes-api-server"];
+    if (!desired.includes("kanban")) {
+      desired.push("kanban");
+    }
+    if (JSON.stringify(existing) !== JSON.stringify(desired)) {
+      platformToolsets[platform] = desired;
+      changed = true;
+    }
+  }
+  if (changed) {
+    config.platform_toolsets = platformToolsets;
+  }
+  return changed;
+}
+
+/** Hermes bundled backend plugin for Exa (`plugins/web/exa/`, manifest name `web-exa`). */
+const HERMES_WEB_EXA_PLUGIN_KEYS = ["web-exa", "web/exa"] as const;
+
+/**
+ * Ensure the Exa web provider plugin stays loadable when fleet ships EXA_API_KEY.
+ * Bundled web backends auto-load unless listed in plugins.disabled — clear that and
+ * opt in explicitly (Hermes web-search docs / `hermes plugins enable web-exa`).
+ */
+function syncExaWebHermesPlugin(config: ConfigRecord): boolean {
+  let changed = false;
+  const plugins = asRecord(config.plugins);
+  const disabled = asStringArray(plugins.disabled);
+  const enabled = asStringArray(plugins.enabled);
+  const nextDisabled = disabled.filter(
+    (name) => !HERMES_WEB_EXA_PLUGIN_KEYS.includes(name as (typeof HERMES_WEB_EXA_PLUGIN_KEYS)[number]),
+  );
+  if (nextDisabled.length !== disabled.length) {
+    plugins.disabled = nextDisabled;
+    changed = true;
+  }
+  if (!enabled.includes("web-exa")) {
+    enabled.push("web-exa");
+    changed = true;
+  }
+  if (changed) {
+    plugins.enabled = enabled;
+    config.plugins = plugins;
+  }
+  return changed;
 }
 
 function envString(name: string, fallback = ""): string {
@@ -1341,10 +1409,34 @@ export class HermesApiRunner extends EventEmitter {
     }
   }
 
+  private async ensureHermesReadFileUtf8Patch(): Promise<boolean> {
+    const hermesDir = resolveHermesCheckoutDir(this.opts.binary);
+    if (!hermesDir) return false;
+
+    const target = path.join(hermesDir, "tools", "file_operations.py");
+    try {
+      await execFile("test", ["-f", target]);
+    } catch {
+      return false;
+    }
+
+    try {
+      const { stdout } = await execFile("bash", [APPLY_HERMES_READ_FILE_UTF8_PATCH_SCRIPT], {
+        env: { ...process.env, HERMES_DIR: hermesDir },
+        timeout: 15_000,
+      });
+      return stdout.includes("applied →") || stdout.includes("applied ->");
+    } catch (err) {
+      console.warn(`[hermes-api] read_file UTF-8 patch skipped: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
   private async ensureJoshuHermesConfig(): Promise<void> {
     const resyncPatchApplied = await this.ensureHermesHitlBrowserPatch();
     const contentFilterPatchApplied = await this.ensureHermesContentFilterPatch();
-    if (resyncPatchApplied || contentFilterPatchApplied) {
+    const readFileUtf8PatchApplied = await this.ensureHermesReadFileUtf8Patch();
+    if (resyncPatchApplied || contentFilterPatchApplied || readFileUtf8PatchApplied) {
       await this.stopGatewayDaemon();
       this.gateway = undefined;
     }
@@ -1505,6 +1597,33 @@ export class HermesApiRunner extends EventEmitter {
     browser.camofox = camofox;
     config.browser = browser;
 
+    // Pin Exa when fleet provisioned EXA_API_KEY is present (Hermes auto-detect
+    // also prefers Tavily/Firecrawl if those keys exist — explicit backend wins).
+    // Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/web-search
+    const exaForWeb =
+      provisionEnvTrim("EXA_API_KEY") || process.env.EXA_API_KEY?.trim() || "";
+    if (exaForWeb) {
+      const web = asRecord(config.web);
+      if (web.backend !== "exa") {
+        web.backend = "exa";
+        changed = true;
+      }
+      // Clear per-capability overrides so search+extract both use Exa.
+      if (web.search_backend != null && web.search_backend !== "" && web.search_backend !== "exa") {
+        delete web.search_backend;
+        changed = true;
+      }
+      if (web.extract_backend != null && web.extract_backend !== "" && web.extract_backend !== "exa") {
+        delete web.extract_backend;
+        changed = true;
+      }
+      config.web = web;
+      if (syncExaWebHermesPlugin(config)) {
+        changed = true;
+        pluginsChanged = true;
+      }
+    }
+
     const mcpServers = asRecord(config.mcp_servers);
     const gbrainServer = asRecord(mcpServers.gbrain);
     const filesPaths = resolveJoshuFilesPaths(process.cwd());
@@ -1591,6 +1710,10 @@ export class HermesApiRunner extends EventEmitter {
     }
     config.kanban = kanban;
 
+    if (syncInteractivePlatformKanbanToolsets(config)) {
+      changed = true;
+    }
+
     const auxiliary = asRecord(config.auxiliary);
     const sessionSearch = asRecord(auxiliary.session_search);
     const desiredSessionSearchModel = envString(
@@ -1667,6 +1790,9 @@ export class HermesApiRunner extends EventEmitter {
     if (anthropicKey) dotenvSync.ANTHROPIC_API_KEY = anthropicKey;
     const openRouterKey = resolveOpenRouterApiKey();
     if (openRouterKey) dotenvSync.OPENROUTER_API_KEY = openRouterKey;
+    const exaKey =
+      provisionEnvTrim("EXA_API_KEY") || process.env.EXA_API_KEY?.trim() || "";
+    if (exaKey) dotenvSync.EXA_API_KEY = exaKey;
     if (filesPaths && workspaceScope) {
       Object.assign(dotenvSync, joshuFilesPathEnv(filesPaths));
       dotenvSync.JOSHU_REPO_ROOT = process.cwd();

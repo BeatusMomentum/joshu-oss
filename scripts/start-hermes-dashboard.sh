@@ -44,9 +44,20 @@ if ! command -v "${HERMES_BIN}" >/dev/null 2>&1; then
 fi
 
 hermes_web_dist="${HERMES_DIR}/hermes_cli/web_dist/index.html"
-if [[ ! -f "${hermes_web_dist}" ]]; then
+# Hermes v0.20+ rebuilds unless $HERMES_HOME/web-ui-build-stamp.json matches source.
+# Image/canary builds bake web_dist but not that stamp — pass --skip-build when dist exists.
+DASHBOARD_SKIP_BUILD=0
+if [[ -f "${hermes_web_dist}" ]]; then
+  DASHBOARD_SKIP_BUILD=1
+else
   echo "[hermes-dashboard] web_dist missing; building Hermes dashboard frontend (first boot)"
   if command -v npm >/dev/null 2>&1 && [[ -d "${HERMES_DIR}/web" ]]; then
+    # Hermes web vite build requires Node >=22.22 (Camofox base historically shipped Node 20).
+    node_major="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)"
+    if [[ "${node_major}" -lt 22 ]]; then
+      echo "[hermes-dashboard] Node ${node_major} is too old — need Node >=22 to build web_dist (image should overlay node:22-bookworm-slim)" >&2
+      exit 1
+    fi
     (
       cd "${HERMES_DIR}/web"
       npm install --include=dev
@@ -55,6 +66,7 @@ if [[ ! -f "${hermes_web_dist}" ]]; then
       echo "[hermes-dashboard] web UI build failed — install dev deps in ${HERMES_DIR}/web" >&2
       exit 1
     }
+    DASHBOARD_SKIP_BUILD=1
   else
     echo "[hermes-dashboard] npm or ${HERMES_DIR}/web missing; cannot build dashboard UI" >&2
     exit 1
@@ -87,11 +99,18 @@ if [[ -n "${HERMES_DASHBOARD_PUBLIC_URL:-}" ]]; then
   export HERMES_DASHBOARD_PUBLIC_URL
 fi
 
+dashboard_args=(
+  dashboard
+  --host "${HERMES_DASHBOARD_HOST}"
+  --port "${HERMES_DASHBOARD_PORT}"
+  --no-open
+)
+if [[ "${DASHBOARD_SKIP_BUILD}" -eq 1 ]]; then
+  dashboard_args+=(--skip-build)
+fi
+
 echo "[hermes-dashboard] starting on http://${HERMES_DASHBOARD_HOST}:${HERMES_DASHBOARD_PORT} (log: ${HERMES_DASHBOARD_LOG_FILE})"
-nohup "${HERMES_BIN}" dashboard \
-  --host "${HERMES_DASHBOARD_HOST}" \
-  --port "${HERMES_DASHBOARD_PORT}" \
-  --no-open \
+nohup "${HERMES_BIN}" "${dashboard_args[@]}" \
   >>"${HERMES_DASHBOARD_LOG_FILE}" 2>&1 &
 server_pid=$!
 printf '%s\n' "${server_pid}" > "${HERMES_DASHBOARD_PID_FILE}"

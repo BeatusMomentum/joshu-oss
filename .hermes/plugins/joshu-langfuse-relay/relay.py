@@ -364,6 +364,53 @@ class TurnState:
     pending_tools: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     turn_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     started_at: str = field(default_factory=_now_iso)
+    last_assistant_output: Any = None
+    user_message: Any = None
+    platform: str = ""
+    model: str = ""
+    finalized: bool = False
+
+
+def _turn_alias_keys(*, task_id: str = "", session_id: str = "") -> list[str]:
+    keys: list[str] = []
+    for candidate in (task_id, session_id):
+        value = str(candidate or "").strip()
+        if value and value not in keys:
+            keys.append(value)
+    return keys
+
+
+def _register_turn_aliases(state: TurnState, *, task_id: str = "", session_id: str = "") -> None:
+    aliases = _turn_alias_keys(task_id=task_id, session_id=session_id)
+    if not aliases:
+        aliases = [_trace_key(task_id, session_id)]
+    with _STATE_LOCK:
+        for alias in aliases:
+            _TURNS[alias] = state
+
+
+def _unregister_turn(state: TurnState) -> None:
+    with _STATE_LOCK:
+        for key, value in list(_TURNS.items()):
+            if value is state:
+                _TURNS.pop(key, None)
+
+
+def _remember_assistant_output(state: TurnState, output: Any) -> None:
+    if output is None:
+        return
+    if isinstance(output, dict):
+        content = output.get("content")
+        if content:
+            with _STATE_LOCK:
+                state.last_assistant_output = content
+            return
+        if output.get("tool_calls"):
+            with _STATE_LOCK:
+                state.last_assistant_output = output
+            return
+    with _STATE_LOCK:
+        state.last_assistant_output = output
 
 
 _STATE_LOCK = threading.Lock()
@@ -380,15 +427,23 @@ def _get_or_create_turn(
     model: str = "",
     provider: str = "",
 ) -> TurnState:
-    key = _trace_key(task_id, session_id)
+    aliases = _turn_alias_keys(task_id=task_id, session_id=session_id)
     with _STATE_LOCK:
-        existing = _TURNS.get(key)
-        if existing:
-            return existing
-        trace_id = uuid.uuid4().hex
-        root_span_id = f"t-{trace_id}"
-        state = TurnState(trace_id=trace_id, root_span_id=root_span_id, session_id=str(session_id or ""))
-        _TURNS[key] = state
+        for alias in aliases:
+            existing = _TURNS.get(alias)
+            if existing:
+                return existing
+    trace_id = uuid.uuid4().hex
+    root_span_id = f"t-{trace_id}"
+    state = TurnState(
+        trace_id=trace_id,
+        root_span_id=root_span_id,
+        session_id=str(session_id or ""),
+        user_message=user_message,
+        platform=str(platform or ""),
+        model=str(model or ""),
+    )
+    _register_turn_aliases(state, task_id=str(task_id or ""), session_id=str(session_id or ""))
 
     trace_input = None
     if user_message is not None:
@@ -665,6 +720,149 @@ def on_post_api_request(
         output=output,
         hook="post_api_request",
     )
+    _remember_assistant_output(state, output)
+
+
+def _finalize_turn(
+    state: TurnState,
+    *,
+    assistant_response: Any = "",
+    user_message: Any = None,
+    conversation_history: Any = None,
+    model: str = "",
+    platform: str = "",
+    api_call_count: Any = 0,
+    usage: Any = None,
+    assistant_message: Any = None,
+    response: Any = None,
+    finish_reason: Any = None,
+    api_duration_s: Any = None,
+    api_duration: Any = None,
+    hook: str = "post_llm_call",
+) -> None:
+    if state.finalized:
+        return
+
+    resolved_response = assistant_response or state.last_assistant_output or ""
+    req_key = str(api_call_count or 0)
+    with _STATE_LOCK:
+        pending = state.pending_gens.pop(req_key, None)
+        if pending is None and state.pending_gens:
+            first_key = next(iter(state.pending_gens))
+            pending = state.pending_gens.pop(first_key)
+    if pending:
+        output = _generation_output_from_hooks(
+            assistant_message=assistant_message,
+            assistant_response=resolved_response,
+            response=response,
+        )
+        _emit_generation_from_pending(
+            state,
+            pending,
+            model=model or state.model,
+            usage=usage,
+            finish_reason=finish_reason,
+            api_duration_s=api_duration_s if api_duration_s is not None else api_duration,
+            output=output,
+            hook=hook,
+        )
+
+    leftovers: list[dict[str, Any]] = []
+    with _STATE_LOCK:
+        leftovers = list(state.pending_gens.values())
+        state.pending_gens.clear()
+    if leftovers:
+        output = _generation_output_from_hooks(
+            assistant_message=assistant_message,
+            assistant_response=resolved_response,
+            response=response,
+        )
+        for pending in leftovers:
+            _emit_generation_from_pending(
+                state,
+                pending,
+                model=model or state.model,
+                usage=usage,
+                finish_reason=finish_reason,
+                api_duration_s=api_duration_s if api_duration_s is not None else api_duration,
+                output=output,
+                hook=f"{hook}_flush",
+            )
+
+    trace_user_message = user_message if user_message is not None else state.user_message
+    resolved_model = model or state.model
+    resolved_platform = platform or state.platform
+
+    events: list[dict[str, Any]] = []
+    if state.generations_emitted == 0:
+        gen_input = _messages_for_langfuse_input(
+            conversation_history=conversation_history,
+            user_message=trace_user_message,
+        )
+        with _STATE_LOCK:
+            state.generations_emitted += 1
+        events.append(
+            {
+                "id": uuid.uuid4().hex,
+                "type": "generation",
+                "name": "LLM call 1",
+                "traceId": state.trace_id,
+                "parentObservationId": state.root_span_id,
+                "sessionId": state.session_id or None,
+                "input": gen_input,
+                "output": {"content": _safe_value(resolved_response)},
+                "model": resolved_model or None,
+                "startTime": state.started_at,
+                "endTime": _now_iso(),
+                "tags": ["hermes", "langfuse", "joshu-relay"],
+                "metadata": {"hook": f"{hook}_fallback", "joshuRelay": True},
+            }
+        )
+
+    output: Any = {"content": _safe_value(resolved_response)}
+    if state.turn_tool_calls:
+        output["tool_calls"] = state.turn_tool_calls[-20:]
+
+    events.extend(
+        [
+            {
+                "id": state.trace_id,
+                "type": "trace",
+                "name": "Hermes turn",
+                "traceId": state.trace_id,
+                "sessionId": state.session_id or None,
+                "userId": _user_id() or None,
+                "input": {"role": "user", "content": _safe_value(trace_user_message)} if trace_user_message else None,
+                "output": output,
+                "tags": ["hermes", "langfuse", "joshu-relay"],
+                "startTime": state.started_at,
+                "endTime": _now_iso(),
+                "metadata": {
+                    "model": resolved_model or None,
+                    "platform": resolved_platform or None,
+                    "joshuRelay": True,
+                    "hook": hook,
+                },
+            },
+            {
+                "id": state.root_span_id,
+                "type": "span",
+                "name": "Hermes turn",
+                "traceId": state.trace_id,
+                "sessionId": state.session_id or None,
+                "input": {"role": "user", "content": _safe_value(trace_user_message)} if trace_user_message else None,
+                "output": output,
+                "startTime": state.started_at,
+                "endTime": _now_iso(),
+                "tags": ["hermes", "langfuse", "joshu-relay"],
+                "metadata": {"asType": "chain", "joshuRelay": True, "hook": hook},
+            },
+        ]
+    )
+    _emit_async(events)
+    with _STATE_LOCK:
+        state.finalized = True
+    _unregister_turn(state)
 
 
 def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = "", session_id: str = "", **kwargs: Any) -> None:
@@ -753,152 +951,69 @@ def on_post_llm_call(
     api_duration: Any = None,
     **kwargs: Any,
 ) -> None:
-    """Turn-level completion — finalize root trace/span and flush open generations.
-
-    Stock langfuse registers this closer on both post_api_request and post_llm_call.
-    jChat (api_server) can leave pending gens open when post_api misses; always
-    flush here so Langfuse gets at least one GENERATION.
-    """
+    """Turn-level completion — finalize root trace/span and flush open generations."""
     sid = str(session_id or _session_key(kwargs) or "").strip()
     tid = str(task_id or kwargs.get("task_id") or "").strip()
-    key, state = _resolve_turn(tid, sid)
+    _key, state = _resolve_turn(tid, sid)
     print(
-        f"[joshu-langfuse-relay] post_llm_call task={tid!r} session={sid!r} key={key!r} "
+        f"[joshu-langfuse-relay] post_llm_call task={tid!r} session={sid!r} "
+        f"has_state={state is not None} "
         f"llm_calls={state.llm_call_count if state else 0} "
         f"pending={len(state.pending_gens) if state else 0} "
         f"emitted={state.generations_emitted if state else 0}",
         flush=True,
     )
-
-    # Stock-style close for this api_call_count before popping the turn.
-    if state:
-        req_key = str(api_call_count or 0)
-        with _STATE_LOCK:
-            pending = state.pending_gens.pop(req_key, None)
-            if pending is None and state.pending_gens:
-                first_key = next(iter(state.pending_gens))
-                pending = state.pending_gens.pop(first_key)
-        if pending:
-            output = _generation_output_from_hooks(
-                assistant_message=assistant_message,
-                assistant_response=assistant_response,
-                response=response,
-            )
-            _emit_generation_from_pending(
-                state,
-                pending,
-                model=model,
-                usage=usage,
-                finish_reason=finish_reason,
-                api_duration_s=api_duration_s if api_duration_s is not None else api_duration,
-                output=output,
-                hook="post_llm_call",
-            )
-
-    leftovers: list[dict[str, Any]] = []
-    with _STATE_LOCK:
-        if state is not None:
-            leftovers = list(state.pending_gens.values())
-            state.pending_gens.clear()
-            if key:
-                _TURNS.pop(key, None)
-            for k, v in list(_TURNS.items()):
-                if v is state:
-                    _TURNS.pop(k, None)
-
-    if state is not None and leftovers:
-        output = _generation_output_from_hooks(
-            assistant_message=assistant_message,
-            assistant_response=assistant_response,
-            response=response,
-        )
-        for pending in leftovers:
-            _emit_generation_from_pending(
-                state,
-                pending,
-                model=model,
-                usage=usage,
-                finish_reason=finish_reason,
-                api_duration_s=api_duration_s if api_duration_s is not None else api_duration,
-                output=output,
-                hook="post_llm_call_flush",
-            )
-
     if not state:
-        state = _get_or_create_turn(
-            task_id=tid or sid,
-            session_id=sid or tid,
-            user_message=user_message,
-            messages=conversation_history,
-            platform=platform,
-            model=model,
-        )
-        with _STATE_LOCK:
-            _TURNS.pop(_trace_key(tid or sid, sid or tid), None)
-
-    events: list[dict[str, Any]] = []
-    # Fallback when no API-scoped generation was closed this turn.
-    if state.generations_emitted == 0:
-        gen_input = _messages_for_langfuse_input(
-            conversation_history=conversation_history,
-            user_message=user_message,
-        )
-        with _STATE_LOCK:
-            state.generations_emitted += 1
-        events.append(
-            {
-                "id": uuid.uuid4().hex,
-                "type": "generation",
-                "name": "LLM call 1",
-                "traceId": state.trace_id,
-                "parentObservationId": state.root_span_id,
-                "sessionId": state.session_id or sid or None,
-                "input": gen_input,
-                "output": {"content": _safe_value(assistant_response)},
-                "model": model or None,
-                "startTime": state.started_at,
-                "endTime": _now_iso(),
-                "tags": ["hermes", "langfuse", "joshu-relay"],
-                "metadata": {"hook": "post_llm_call_fallback", "joshuRelay": True},
-            }
-        )
-
-    output: Any = {"content": _safe_value(assistant_response)}
-    if state.turn_tool_calls:
-        output["tool_calls"] = state.turn_tool_calls[-20:]
-
-    events.extend(
-        [
-            {
-                "id": state.trace_id,
-                "type": "trace",
-                "name": "Hermes turn",
-                "traceId": state.trace_id,
-                "sessionId": state.session_id or sid or None,
-                "userId": _user_id() or None,
-                "input": {"role": "user", "content": _safe_value(user_message)} if user_message else None,
-                "output": output,
-                "tags": ["hermes", "langfuse", "joshu-relay"],
-                "startTime": state.started_at,
-                "endTime": _now_iso(),
-                "metadata": {"model": model or None, "platform": platform or None, "joshuRelay": True},
-            },
-            {
-                "id": state.root_span_id,
-                "type": "span",
-                "name": "Hermes turn",
-                "traceId": state.trace_id,
-                "sessionId": state.session_id or sid or None,
-                "input": {"role": "user", "content": _safe_value(user_message)} if user_message else None,
-                "output": output,
-                "startTime": state.started_at,
-                "endTime": _now_iso(),
-                "tags": ["hermes", "langfuse", "joshu-relay"],
-                "metadata": {"asType": "chain", "joshuRelay": True},
-            },
-        ]
+        return
+    _finalize_turn(
+        state,
+        assistant_response=assistant_response,
+        user_message=user_message,
+        conversation_history=conversation_history,
+        model=model,
+        platform=platform,
+        api_call_count=api_call_count,
+        usage=usage,
+        assistant_message=assistant_message,
+        response=response,
+        finish_reason=finish_reason,
+        api_duration_s=api_duration_s,
+        api_duration=api_duration,
+        hook="post_llm_call",
     )
-    _emit_async(events)
+
+
+def on_session_end(
+    *,
+    session_id: str = "",
+    completed: bool = True,
+    interrupted: bool = False,
+    model: str = "",
+    platform: str = "",
+    **kwargs: Any,
+) -> None:
+    """Hermes skips post_llm_call when final_response is empty — finalize here instead."""
+    sid = str(session_id or _session_key(kwargs) or "").strip()
+    _key, state = _resolve_turn("", sid)
+    if not state or state.finalized:
+        return
+    fallback = state.last_assistant_output or ""
+    if not fallback and interrupted:
+        fallback = "[interrupted]"
+    elif not fallback and not completed:
+        fallback = "[turn ended without assistant text]"
+    print(
+        f"[joshu-langfuse-relay] on_session_end session={sid!r} completed={completed} "
+        f"interrupted={interrupted} has_output={bool(fallback)}",
+        flush=True,
+    )
+    _finalize_turn(
+        state,
+        assistant_response=fallback,
+        model=model,
+        platform=platform,
+        hook="on_session_end",
+    )
 
 
 def register(ctx) -> None:
@@ -906,11 +1021,12 @@ def register(ctx) -> None:
     ctx.register_hook("pre_api_request", on_pre_api_request)
     ctx.register_hook("post_api_request", on_post_api_request)
     ctx.register_hook("post_llm_call", on_post_llm_call)
+    ctx.register_hook("on_session_end", on_session_end)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     url = _relay_url()
     has_auth = bool(_bearer_token())
     print(
-        f"[joshu-langfuse-relay] registered v1.1.2 (url={'set' if url else 'missing'}, auth={'set' if has_auth else 'missing'})",
+        f"[joshu-langfuse-relay] registered v1.1.3 (url={'set' if url else 'missing'}, auth={'set' if has_auth else 'missing'})",
         flush=True,
     )

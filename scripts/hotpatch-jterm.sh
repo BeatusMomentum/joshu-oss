@@ -29,16 +29,32 @@ rsync -az "${ROOT_DIR}/arozos/icons/terminal.png" "${TARGET}:${REMOTE_TMP}/termi
 # Shortcut helper + lib (for install_jterm_shortcuts)
 rsync -az "${ROOT_DIR}/scripts/lib/arozos-desktop-shortcuts.sh" "${TARGET}:${REMOTE_TMP}/arozos-desktop-shortcuts.sh"
 
-echo "[jterm-hotpatch] installing into ArozOS volume + refreshing shortcuts…"
+echo "[jterm-hotpatch] recreate joshu-stack, then install (post-boot)…"
 ssh "${TARGET}" bash -s <<EOF
 set -euo pipefail
-CID="\$(cd /opt/joshu/deploy && docker compose -f docker-compose.yml --env-file /etc/joshu/instance.env ps -q joshu-stack | head -1)"
+cd /opt/joshu/deploy
+docker compose -f docker-compose.yml --env-file /etc/joshu/instance.env up -d --force-recreate joshu-stack
+
+# Install AFTER recreate. Pre-recreate installs are racy: boot may seed jTerm
+# from the image template and leave stale Vite hashed assets + old index.html.
+echo "[jterm-hotpatch] waiting for joshu-stack…"
+CID=""
+for i in \$(seq 1 60); do
+  CID="\$(cd /opt/joshu/deploy && docker compose -f docker-compose.yml --env-file /etc/joshu/instance.env ps -q joshu-stack | head -1)"
+  if [[ -n "\${CID}" ]] && docker exec "\${CID}" true 2>/dev/null; then
+    break
+  fi
+  sleep 2
+done
 if [[ -z "\${CID}" ]]; then
-  echo "joshu-stack container not found" >&2
+  echo "joshu-stack container not found after recreate" >&2
   exit 1
 fi
-# Copy subservice into live ArozOS data + template (so next boot keeps it)
+
+echo "[jterm-hotpatch] installing into ArozOS volume + template…"
+# Clear app/ first — docker cp merges and leaves stale hashed Vite assets.
 docker exec "\${CID}" mkdir -p /var/lib/arozos/subservice/jterm /opt/arozos-template/subservice/jterm
+docker exec "\${CID}" rm -rf /var/lib/arozos/subservice/jterm/app /opt/arozos-template/subservice/jterm/app
 docker cp "${REMOTE_TMP}/jterm/." "\${CID}:/var/lib/arozos/subservice/jterm/"
 docker cp "${REMOTE_TMP}/jterm/." "\${CID}:/opt/arozos-template/subservice/jterm/"
 docker exec "\${CID}" chmod +x /var/lib/arozos/subservice/jterm/start.sh /var/lib/arozos/subservice/jterm/server.py
@@ -53,18 +69,8 @@ docker exec -e AROZ_DATA=/var/lib/arozos "\${CID}" bash -lc '
   source /tmp/arozos-desktop-shortcuts.sh
   install_jterm_shortcuts
 '
-# Restart ArozOS process inside stack so it reloads subservices
-docker exec "\${CID}" bash -lc '
-  if pgrep -x arozos >/dev/null 2>&1; then
-    pkill -x arozos || true
-    sleep 1
-  fi
-  # vps-start keeps arozos under the stack; nudge via joshu health or recreate
-  true
-'
+# Bounce jTerm PTY only (ArozOS will respawn the subservice). Avoid pkill -x arozos.
+docker exec "\${CID}" bash -lc 'pkill -f "/var/lib/arozos/subservice/jterm/server.py" 2>/dev/null || true' || true
 rm -rf "${REMOTE_TMP}"
-echo "[jterm-hotpatch] recreate joshu-stack so ArozOS relaunches with jTerm…"
-cd /opt/joshu/deploy
-docker compose -f docker-compose.yml --env-file /etc/joshu/instance.env up -d --force-recreate joshu-stack
-echo "[jterm-hotpatch] done — hard-refresh the desktop and open jTerm"
+echo "[jterm-hotpatch] done — hard-refresh the desktop (Cmd+Shift+R) and open a new jTerm window"
 EOF

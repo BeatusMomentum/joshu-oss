@@ -171,7 +171,8 @@ curl -fsS "http://127.0.0.1:8788/joshu/api/connectors/calendar/google/free-slots
 | Context | Preferred tools |
 |---------|-----------------|
 | **jChat kickoff** (ensure board + triage root) | **`project_kanban_ensure_board`**, **`project_kanban_create_triage_root`** (connectors MCP → Joshu bridge) |
-| **Workers / dispatcher** (list, block, complete cards) | Native Hermes **`kanban_*`** when available in the worker toolset |
+| **jChat / voice** (list, complete, block cards) | Native Hermes **`kanban_*`** (`platform_toolsets.api_server` includes `kanban`) |
+| **Workers / dispatcher** (list, block, complete cards) | Native Hermes **`kanban_*`** when in the worker toolset |
 | **Fallback** (only if MCP missing) | `hermes kanban …` CLI — avoid in jChat when connectors tools are registered |
 
 Outbound steps still go through **`nylas_send_message`** (action guard). Skill: [`ea-project-kanban`](../integrations/hermes/skills/executive-assistant/ea-project-kanban/SKILL.md). Product spec: [`ea-for-joshu.md`](executive-assistant.md#project-kanban-multi-step--hitl-2026-06).
@@ -428,7 +429,7 @@ Hermes agents call sends via **`mcp_joshu_connectors_nylas_send_message`**, whic
 
 **Worker behavior:** [`ea-scheduling` v4.22+](../integrations/hermes/skills/executive-assistant/ea-scheduling/SKILL.md) and [`ea-playbook` v2.16+](../integrations/hermes/skills/executive-assistant/ea-playbook/SKILL.md): on send timeout with guard enabled → **`kanban_block(reason="awaiting owner approval")`**, not `connectors-mcp-down`. Pass **`kanbanTaskId`** on `nylas_send_message` so Joshu rewrites `block_reason` after approve/deny (delivered → `awaiting reply: …`). After **denied** send (`decision: denied` in action-guard audit, or `blocked-*` messageId), use [ops retry](../executive-assistant.md#ea-scheduling--ops-retry-denied-send--bad-slots) — do not treat kanban comment "sent availability" as mail delivered.
 
-**Future fix (backlog):** full async approval — REST returns `{ status: "pending_approval", pendingId }` immediately; worker blocks on Kanban until Joshu completes send after owner approve. See [`ea-skill-future-fixes.md`](Joshu-SOP/ea-skill-future-fixes.md). Partial fix shipped: post-approve Kanban `block_reason` rewrite when `kanbanTaskId` is present.
+**Future fix (backlog):** full async approval — REST returns `{ status: "pending_approval", pendingId }` immediately; worker blocks on Kanban until Joshu completes send after owner approve. See [`ea-skill-future-fixes.md`](hermes-integration.md). Partial fix shipped: post-approve Kanban `block_reason` rewrite when `kanbanTaskId` is present.
 
 **Disable:** `JOSHU_ACTION_GUARD_ENABLED=false` or `"enabled": false` in policy — Composio MCP reverts to direct cloud URL on next gateway sync (`POST …/connectors/composio/sync` with `restartGateway: true`).
 

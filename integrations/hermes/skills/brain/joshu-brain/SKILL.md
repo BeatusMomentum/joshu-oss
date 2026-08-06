@@ -1,11 +1,11 @@
 ---
 name: joshu-brain
 description: Search Desktop files via gbrain; mail use joshu-mail.
-version: 1.9.1
+version: 1.10.0
 metadata:
   hermes:
     category: brain
-    version: 1.9.1
+    version: 1.10.0
 ---
 
 # Joshu File Brain
@@ -31,14 +31,21 @@ Use **Hindsight memory** (Hermes memory provider) when the user asks about:
 
 Do **not** duplicate chats into markdown files for gbrain. Hindsight owns conversational memory.
 
-### Finding user self-sent notes & reminders
+### Finding user self-sent notes & reminders (multi-channel)
 
-When the user says "I sent some notes/reminders via email" or "remember those random things I jotted down":
+When the user says "I sent some notes/reminders via email" or "remember those random things I jotted down" — or sends a note via Slack DM:
 
 1. **gbrain_query first** — the mirrored email content is already indexed. Semantic search catches notes even without exact subject keywords.
 2. **Gmail API second** — only if gbrain misses something.
+3. **Cross-channel dedup** — if the same note arrives via Slack that was already tracked from email, write a journal entry with `(re-up)` rather than duplicating the todo item. See **`references/find-user-notes.md`**.
 
-Common subject patterns on user notes: "Another note to file", "Another idea to jot down", "Top things to sort out", or blank. More detail in **`references/find-user-notes.md`**.
+Common subject patterns on user notes: "Another note to file", "Another idea to jot down", "Top things to sort out", or blank.
+
+### Filing user product notes & ideas
+
+When the owner sends a product idea/note (email, Slack, voice), load **`references/file-product-notes.md`** for the complete filing workflow: target project selection, journal create/append, `about.md` updates (Design Concepts / Active threads), and memory backup.
+
+The pattern: one journal entry per date, `about.md` as the living reference, and memory for cross-session recall. Do not create task-actionable items in `todo.md` for conceptual ideas — those go into Design Concepts. If the idea implies concrete next steps, add a todo row **and** the Design Concepts entry.
 
 ## Brain-first retrieval
 

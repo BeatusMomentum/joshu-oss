@@ -59,9 +59,24 @@ function JTermApp() {
     let resizeTimer: number | undefined;
     let lastCols = 0;
     let lastRows = 0;
+    // Outer host size (CSS px) — ignore sub-cell ResizeObserver noise from scrollbar chrome.
+    let lastHostW = 0;
+    let lastHostH = 0;
     let ws: WebSocket | null = null;
 
+    const hostSizeChangedEnough = (force: boolean): boolean => {
+      const w = host.clientWidth;
+      const h = host.clientHeight;
+      if (!force && Math.abs(w - lastHostW) < 2 && Math.abs(h - lastHostH) < 2) {
+        return false;
+      }
+      lastHostW = w;
+      lastHostH = h;
+      return true;
+    };
+
     const sendResizeIfChanged = (force = false) => {
+      if (!hostSizeChangedEnough(force)) return;
       fit.fit();
       const cols = term.cols;
       const rows = term.rows;
@@ -76,7 +91,7 @@ function JTermApp() {
     const scheduleResize = () => {
       window.clearTimeout(resizeTimer);
       // Debounce — ArozOS float drag fires many events; Hermes redraws on every SIGWINCH.
-      resizeTimer = window.setTimeout(() => sendResizeIfChanged(false), 80);
+      resizeTimer = window.setTimeout(() => sendResizeIfChanged(false), 120);
     };
 
     const connect = () => {

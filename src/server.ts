@@ -23,8 +23,9 @@ import {
 } from "./hermesBrowserSyncPolicy.js";
 import { registerMovieEditorRoutes } from "./movieEditorApi.js";
 import type { HermesChatMessage } from "./hermesApi.js";
-import { audioMimeForPath, getHermesHomeDir, spawnHermesPython } from "./hermesVoiceRuntime.js";
+import { getHermesHomeDir, spawnHermesPython } from "./hermesVoiceRuntime.js";
 import { registerInstanceHealthRoutes } from "./instanceHealth.js";
+import { registerInstanceOwnerEmailRoutes } from "./instanceOwnerEmail.js";
 import { readHermesGatewayPreference, writeHermesGatewayPreference } from "./hermesGatewayPreference.js";
 import { hasCompanionIdentityBootstrap, syncCompanionIdentityFromEnv } from "./companionIdentitySync.js";
 import { registerBoxStateRoutes } from "./boxStateApi.js";
@@ -32,6 +33,7 @@ import { registerBoxSecretsRoutes } from "./boxSecrets/routes.js";
 import { registerOnboardingRoutes } from "./onboardingApi.js";
 import { registerDay0Routes } from "./day0/day0Api.js";
 import { registerHermesCronRoutes } from "./hermesCronApi.js";
+import { registerLast30DaysRoutes } from "./last30days/routes.js";
 import {
   handleHermesDashboardUpgrade,
   hermesDashboardPathSegment,
@@ -142,14 +144,6 @@ function readBrowserSyncMode(value: unknown): BrowserSyncMode | undefined {
   const mode = value.trim().toLowerCase();
   if (mode === "auto" || mode === "off" || mode === "light" || mode === "full") return mode;
   return undefined;
-}
-
-/** Normalize chat TTS payload: invisible chars + NBSP so trim/JSON parity matches the Hermes Chat client. */
-function normalizeTtsPayloadText(raw: string): string {
-  return raw
-    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "")
-    .replace(/\u00A0/g, " ")
-    .trim();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -459,6 +453,9 @@ function buildAppRouter(): {
 
   router.use(express.json({ limit: "12mb" }));
 
+  // CP-initiated owner email (needs JSON body; localhost-only inside the handler).
+  registerInstanceOwnerEmailRoutes(router, { projectRoot: process.cwd() });
+
   registerExcalidrawCwmRoutes(router);
   registerShareChatRoutes(router);
 
@@ -473,6 +470,7 @@ function buildAppRouter(): {
   registerDay0Routes(router, { projectRoot: PROJECT_ROOT });
 
   registerHermesCronRoutes(router);
+  registerLast30DaysRoutes(router, { projectRoot: PROJECT_ROOT });
   registerNylasRoutes(router, { projectRoot: PROJECT_ROOT });
   registerComposioRoutes(router, { projectRoot: PROJECT_ROOT, runner });
   registerConnectorComposioRoutes(router, { projectRoot: PROJECT_ROOT, runner });
@@ -514,56 +512,6 @@ function buildAppRouter(): {
       res.json({ ok: true, silenceThreshold, silenceDurationSec });
     } catch (error) {
       res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
-    }
-  });
-
-  router.post("/api/hermes-chat/tts", async (req: Request, res: Response) => {
-    const body = (req.body ?? {}) as { text?: unknown };
-    const rawText = typeof body.text === "string" ? body.text : "";
-    const payloadText = normalizeTtsPayloadText(rawText);
-    if (!payloadText) {
-      // Container/platform logs often capture stdout only; use console.info for visibility.
-      console.info("[joshu] tts: missing or empty text", {
-        contentType: req.headers["content-type"],
-        typeofText: typeof (body as { text?: unknown }).text,
-        bodyKeys: body && typeof body === "object" ? Object.keys(body as object) : [],
-        rawLength: typeof body.text === "string" ? body.text.length : 0,
-      });
-      return res.status(400).json({ error: "text is required" });
-    }
-    if (payloadText.length > 32000) {
-      return res.status(400).json({ error: "text too long (max 32000 chars)" });
-    }
-
-    try {
-      const { stdout, stderr, code } = await spawnHermesPython("hermes-chat-tts.py", [], payloadText);
-      const trimmed = stdout.trim();
-      const lastLine = trimmed.split("\n").pop() ?? trimmed;
-
-      let meta: { success?: boolean; file_path?: string; error?: string };
-      try {
-        meta = JSON.parse(lastLine) as { success?: boolean; file_path?: string; error?: string };
-      } catch {
-        console.warn("[joshu] tts JSON parse failed:", lastLine.slice(0, 500), stderr);
-        return res.status(502).json({
-          error: "Hermes TTS produced invalid JSON",
-          stderr: stderr.slice(0, 2000),
-          exitCode: code,
-        });
-      }
-
-      if (!meta.success || !meta.file_path) {
-        return res.status(502).json({ error: meta.error || "TTS generation failed" });
-      }
-
-      const audioBuf = await readFile(meta.file_path);
-      await rm(meta.file_path, { force: true }).catch(() => undefined);
-
-      res.setHeader("Content-Type", audioMimeForPath(meta.file_path));
-      res.send(audioBuf);
-    } catch (error) {
-      console.warn("[joshu] tts error:", error);
-      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 

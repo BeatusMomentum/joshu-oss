@@ -2,7 +2,7 @@
 
 The **Joshu App SDK** is the manifest contract and validation layer for Joshu desktop apps. It is **not** a UI framework — apps are Vite/React bundles; the SDK defines **`joshu.app.json`** (what your app declares) and **`@joshu/app-sdk`** (how the box validates and derives runtime behavior).
 
-**Related:** [`platform-architecture.md`](platform-architecture.md) · [`platform-data.md`](platform-data.md) · [`app-agent.md`](app-agent.md) (embedded chat) · [`joshu.app.schema.json`](joshu.app.schema.json)
+**Related:** [`joshu-app-architecture-intro.md`](joshu-app-architecture-intro.md) · [`platform-architecture.md`](platform-architecture.md) · [`platform-data.md`](platform-data.md) · [`app-agent.md`](app-agent.md) (embedded chat) · [`joshu.app.schema.json`](joshu.app.schema.json)
 
 ---
 

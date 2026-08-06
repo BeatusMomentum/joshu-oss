@@ -281,6 +281,16 @@ The **owner** sometimes sends batch emails to multiple people (investors, partne
 
 No kanban task is needed for this pattern — the owner's instruction is in the email body, not in a scheduling ingress workflow. Reply, wait for the counterparty, then proceed with standard meeting booking.
 
+## Owner jChat / voice — mark meeting tasks done
+
+When the owner asks in **jChat or voice** to mark scheduling tasks complete (by name, “all open items”, etc.):
+
+1. **`kanban_list(board="ea-scheduling")`** or **`scheduling_list_meeting_tasks`** (connectors MCP) — resolve task ids by title/name
+2. **`kanban_complete(task_id="t_…", summary=…)`** for each matched card — pass explicit `task_id` (orchestrator context; no `HERMES_KANBAN_TASK` required)
+3. Confirm what was archived in the reply
+
+**Forbidden on this path:** SQLite, `hermes kanban` CLI, `execute_code` / shell against `kanban.db`, or loading **`kanban-sqlite.md`** from ea-project-kanban.
+
 ## Not for general multi-step / HITL projects
 
 User-initiated **multi-step work** (drip campaigns, research pipelines, vendor chases, approval-heavy sends) belongs on a **`project-<slug>`** board via skill **`ea-project-kanban`**. Do not create triage cards on `ea-sched-*` boards for those workflows. This skill is only for **meeting-mail** scheduling negotiation.

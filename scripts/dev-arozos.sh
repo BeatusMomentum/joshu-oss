@@ -275,6 +275,19 @@ prepare_hermes_content_filter_patch() {
   fi
 }
 
+prepare_hermes_read_file_utf8_patch() {
+  if [[ ! -x "${ROOT_DIR}/scripts/apply-hermes-read-file-utf8-patch.sh" ]]; then
+    return 0
+  fi
+  local hermes_dir="${HERMES_DIR:-}"
+  if [[ -z "${hermes_dir}" && -n "${HERMES_BIN:-}" ]]; then
+    hermes_dir="$(cd "$(dirname "${HERMES_BIN}")/.." && pwd)"
+  fi
+  if [[ -f "${hermes_dir}/tools/file_operations.py" ]]; then
+    HERMES_DIR="${hermes_dir}" bash "${ROOT_DIR}/scripts/apply-hermes-read-file-utf8-patch.sh" || true
+  fi
+}
+
 prepare_hermes_invoke_tool_post_hook_patch() {
   if [[ ! -x "${ROOT_DIR}/scripts/apply-hermes-invoke-tool-post-hook-patch.sh" ]]; then
     return 0
@@ -332,6 +345,7 @@ prepare_arozos_template() {
   rsync -a "${ROOT_DIR}/arozos/subservice/hindsight-viewer/" "${AROZ_TEMPLATE}/subservice/hindsight-viewer/"
   rsync -a "${ROOT_DIR}/arozos/subservice/file-brain-viewer/" "${AROZ_TEMPLATE}/subservice/file-brain-viewer/"
   rsync -a "${ROOT_DIR}/arozos/subservice/schedules/" "${AROZ_TEMPLATE}/subservice/schedules/"
+  rsync -a "${ROOT_DIR}/arozos/subservice/last30days/" "${AROZ_TEMPLATE}/subservice/last30days/"
   rsync -a "${ROOT_DIR}/arozos/subservice/icon-test/" "${AROZ_TEMPLATE}/subservice/icon-test/"
   rsync -a "${ROOT_DIR}/arozos/subservice/jmovie/" "${AROZ_TEMPLATE}/subservice/jmovie/"
   rsync -a "${ROOT_DIR}/arozos/subservice/jmail/" "${AROZ_TEMPLATE}/subservice/jmail/"
@@ -349,6 +363,7 @@ prepare_arozos_template() {
     npm run build:hindsight-viewer
     npm run build:file-brain-viewer
     npm run build:schedules
+    npm run build:last30days
     npm run build:movie-editor
     npm run build:jmail
     npm run build:connectors
@@ -367,6 +382,8 @@ prepare_arozos_template() {
   rsync -a --delete "${ROOT_DIR}/dist/file-brain-viewer/" "${AROZ_TEMPLATE}/subservice/file-brain-viewer/app/"
   mkdir -p "${AROZ_TEMPLATE}/subservice/schedules/app"
   rsync -a --delete "${ROOT_DIR}/dist/schedules/" "${AROZ_TEMPLATE}/subservice/schedules/app/"
+  mkdir -p "${AROZ_TEMPLATE}/subservice/last30days/app"
+  rsync -a --delete "${ROOT_DIR}/dist/last30days-app/" "${AROZ_TEMPLATE}/subservice/last30days/app/"
   mkdir -p "${AROZ_TEMPLATE}/subservice/jmovie/app"
   rsync -a --delete "${ROOT_DIR}/dist/movie-editor/" "${AROZ_TEMPLATE}/subservice/jmovie/app/"
   mkdir -p "${AROZ_TEMPLATE}/subservice/jmail/app"
@@ -387,6 +404,7 @@ prepare_arozos_template() {
   chmod +x "${AROZ_TEMPLATE}/subservice/hindsight-viewer/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/file-brain-viewer/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/schedules/start.sh"
+  chmod +x "${AROZ_TEMPLATE}/subservice/last30days/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/icon-test/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/jmovie/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/jmail/start.sh"
@@ -448,6 +466,7 @@ require_ripgrep
 prepare_hermes_hitl_browser_patch
 prepare_hermes_langfuse_system_patch
 prepare_hermes_content_filter_patch
+prepare_hermes_read_file_utf8_patch
 prepare_hermes_invoke_tool_post_hook_patch
 prepare_hermes_kanban_ws_patch
 start_local_camofox_if_needed

@@ -3,11 +3,15 @@
 # Build: npm run vps:predeploy && npm run vps:build-image (or JOSHU_IMAGE_PUSH=1 JOSHU_IMAGE_TAG=0.1.4 …)
 
 ARG CAMOFOX_BASE=ghcr.io/jo-inc/camofox-browser@sha256:3ab61b4742105922aab6f8c99460f55563b6f93e906975383ddce16ec8917f3f
+# Hermes web (v0.20+) requires Node >=22.22; Camofox base still ships Node 20 in /usr/local.
+ARG NODE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_IMAGE} AS node22
+
 FROM ${CAMOFOX_BASE} AS builder
 
 ARG HERMES_AGENT_REPO=https://github.com/NousResearch/hermes-agent.git
-# v2026.5.16 → Hermes Agent v0.14.0 (synced from deploy/RELEASE.json)
-ARG HERMES_AGENT_REF=a91a57fa5a13d516c38b07a141a9ce8a3daabeb0
+# v2026.8.3 → Hermes Agent v0.20.0 (synced from deploy/RELEASE.json)
+ARG HERMES_AGENT_REF=3c27eb6234bf91b8ceee9e9071591b31e9b148cb
 ARG GO_VERSION=1.24.1
 ARG PGVECTOR_REPO=https://github.com/pgvector/pgvector.git
 ARG PGVECTOR_REF=v0.8.1
@@ -21,6 +25,18 @@ ENV APP_DIR=/opt/joshu \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash build-essential ca-certificates curl git postgresql-server-dev-${POSTGRES_VERSION} python3-venv rsync \
     && rm -rf /var/lib/apt/lists/*
+
+# Replace Camofox Node 20 with official Node 22 (Hermes web + Camofox engines >=22).
+COPY --from=node22 /usr/local/bin/node /usr/local/bin/node
+COPY --from=node22 /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && node -v | grep -E '^v22\.' \
+    && npm -v \
+    # /app natives ship for the base image's Node ABI; rebuild after overlay or
+    # Camofox dies with "Module did not self-register" (jWeb browserConnected:false).
+    && cd /app && npm rebuild better-sqlite3 --foreground-scripts \
+    && node --input-type=module -e 'import Database from "better-sqlite3"; const db=new Database(":memory:"); db.exec("select 1"); db.close(); console.log("better-sqlite3 ok", process.version)'
 
 # Go for ArozOS build
 RUN rm -rf /usr/local/go \
@@ -42,10 +58,24 @@ RUN git init "${HERMES_DIR}" \
     && npm run build \
     && rm -rf node_modules /root/.npm
 
-COPY scripts/hermes-langfuse-system-prompt.patch scripts/hermes-langfuse-user-id.patch scripts/hermes-langfuse-openrouter-cost.patch scripts/hermes-openrouter-usage-include.patch scripts/hermes-content-filter.patch scripts/apply-hermes-langfuse-patches.sh scripts/apply-hermes-kanban-ws-base-path-patch.sh scripts/apply-hermes-content-filter-patch.sh /tmp/joshu-hermes-patches/
+# v0.20+ applicators (Python) plus legacy .patch fallbacks for older pins.
+COPY scripts/hermes-langfuse-system-prompt.patch \
+     scripts/hermes-langfuse-user-id.patch \
+     scripts/hermes-langfuse-openrouter-cost.patch \
+     scripts/hermes-openrouter-usage-include.patch \
+     scripts/hermes-content-filter.patch \
+     scripts/patch-hermes-langfuse-openrouter.py \
+     scripts/patch-hermes-content-filter-v020.py \
+     scripts/patch-hermes-read-file-utf8.py \
+     scripts/apply-hermes-langfuse-patches.sh \
+     scripts/apply-hermes-kanban-ws-base-path-patch.sh \
+     scripts/apply-hermes-content-filter-patch.sh \
+     scripts/apply-hermes-read-file-utf8-patch.sh \
+     /tmp/joshu-hermes-patches/
 RUN HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-langfuse-patches.sh \
     && HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-kanban-ws-base-path-patch.sh \
     && HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-content-filter-patch.sh \
+    && HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-read-file-utf8-patch.sh \
     && rm -rf "${HERMES_DIR}/.git" /root/.cache/pip /tmp/joshu-hermes-patches
 
 # Hindsight uses local PostgreSQL on VPS. Build pgvector with portable flags so
@@ -109,6 +139,7 @@ RUN bash ${APP_DIR}/scripts/apply-arozos-patches.sh \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/welcome/ ${AROZ_TEMPLATE}/subservice/welcome/ \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/jterm/ ${AROZ_TEMPLATE}/subservice/jterm/ \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/telephone/ ${AROZ_TEMPLATE}/subservice/telephone/ \
+    && rsync -a ${APP_DIR}/arozos-subservice-staging/last30days/ ${AROZ_TEMPLATE}/subservice/last30days/ \
     && rsync -a ${APP_DIR}/dist/excalidraw/ ${AROZ_TEMPLATE}/subservice/excalidraw/app/ \
     && rsync -a ${APP_DIR}/dist/hermes-chat/ ${AROZ_TEMPLATE}/subservice/hermes-chat/app/ \
     && rsync -a ${APP_DIR}/dist/hindsight-viewer/ ${AROZ_TEMPLATE}/subservice/hindsight-viewer/app/ \
@@ -121,13 +152,14 @@ RUN bash ${APP_DIR}/scripts/apply-arozos-patches.sh \
     && rsync -a ${APP_DIR}/dist/welcome/ ${AROZ_TEMPLATE}/subservice/welcome/app/ \
     && rsync -a ${APP_DIR}/dist/jterm/ ${AROZ_TEMPLATE}/subservice/jterm/app/ \
     && rsync -a ${APP_DIR}/dist/telephone/ ${AROZ_TEMPLATE}/subservice/telephone/app/ \
+    && rsync -a ${APP_DIR}/dist/last30days-app/ ${AROZ_TEMPLATE}/subservice/last30days/app/ \
     && bash ${APP_DIR}/scripts/install-proprietary-apps.sh ${AROZ_TEMPLATE}/subservice \
     && chmod +x ${AROZ_TEMPLATE}/subservice/*/start.sh \
     && (python3 ${APP_DIR}/scripts/apply_arozos_joshu_theme.py ${AROZ_TEMPLATE}/web || true)
 
 FROM ${CAMOFOX_BASE} AS runtime
 
-ARG HERMES_AGENT_REF=a91a57fa5a13d516c38b07a141a9ce8a3daabeb0
+ARG HERMES_AGENT_REF=3c27eb6234bf91b8ceee9e9071591b31e9b148cb
 ARG GBRAIN_REF=fa2c7a6990a7a57b251979ef6e1988ff09529021
 
 ENV APP_DIR=/opt/joshu \
@@ -143,7 +175,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && python3 -m pip install --no-cache-dir --break-system-packages pypdf \
     && curl -fsSL https://bun.sh/install | bash \
     && /root/.bun/bin/bun install -g "github:garrytan/gbrain#${GBRAIN_REF}" \
-    && ln -sf /root/.bun/bin/gbrain /usr/local/bin/gbrain
+    && curl -fsSL https://astral.sh/uv/install.sh | sh \
+    && /root/.local/bin/uv python install 3.12 \
+    && mkdir -p /opt/joshu/.local/python312/bin \
+    && ln -sf /root/.local/share/uv/python/cpython-3.12-*/bin/python3.12 /opt/joshu/.local/python312/bin/python3.12 \
+    && /opt/joshu/.local/python312/bin/python3.12 --version
+
+# Same Node 22 overlay as builder — dashboard first-boot rebuild + runtime npm tools.
+COPY --from=node22 /usr/local/bin/node /usr/local/bin/node
+COPY --from=node22 /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && node -v | grep -E '^v22\.' \
+    && npm -v \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && cd /app && npm rebuild better-sqlite3 --foreground-scripts \
+    && node --input-type=module -e 'import Database from "better-sqlite3"; const db=new Database(":memory:"); db.exec("select 1"); db.close(); console.log("better-sqlite3 ok", process.version)' \
+    && apt-get purge -y build-essential \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/hermes-agent /opt/hermes-agent
 COPY --from=builder /opt/arozos-template /opt/arozos-template
@@ -234,6 +285,7 @@ ENV PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin
     HINDSIGHT_POSTGRES_DATA_DIR=/var/lib/postgresql/hindsight/data \
     HERMES_BIN=${HERMES_DIR}/venv/bin/hermes \
     HERMES_AGENT_REF=${HERMES_AGENT_REF} \
+    LAST30DAYS_PYTHON=/opt/joshu/.local/python312/bin/python3.12 \
     ENABLE_VNC=1 \
     NOVNC_URL=/novnc \
     NOVNC_PROXY_TARGET=http://127.0.0.1:6080 \

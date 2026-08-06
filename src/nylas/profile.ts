@@ -1,12 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import {
-  DEFAULT_JOSHU_IDENTITY,
-  resolveJoshuIdentity,
-  writeJoshuIdentity,
-} from "../joshuIdentity.js";
+import { resolveJoshuIdentity, writeJoshuIdentity } from "../joshuIdentity.js";
 import { normalizeIanaTimezone } from "../ianaTimezone.js";
 import { joshuConfigDir } from "./paths.js";
+
+// Literals — do not import DEFAULT_JOSHU_IDENTITY here. joshuIdentity → hermesContextFile →
+// this module is a cycle; reading that const at module eval time throws TDZ ReferenceError.
 
 export interface NylasAgentProfile {
   ownerName?: string;
@@ -75,5 +74,5 @@ export function updateAgentProfile(fields: NylasAgentProfile, projectRoot = proc
   return true;
 }
 
-export const DEFAULT_ASSISTANT_NAME = DEFAULT_JOSHU_IDENTITY.name;
-export const DEFAULT_OWNER_NAME = DEFAULT_JOSHU_IDENTITY.owner.displayName;
+export const DEFAULT_ASSISTANT_NAME = "Companion";
+export const DEFAULT_OWNER_NAME = "Owner";

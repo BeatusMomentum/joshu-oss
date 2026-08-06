@@ -64,12 +64,26 @@ body,
   min-height: 0;
   padding: 0.35rem;
   box-sizing: border-box;
+  /* Clip fractional-cell leftovers so FitAddon does not oscillate with scrollbars. */
+  overflow: hidden;
 }
 
 .jterm-term .xterm {
   height: 100%;
+  overflow: hidden;
 }
 
+.jterm-term .xterm-screen {
+  overflow: hidden;
+}
+
+/*
+ * FitAddon measures the viewport; when overflow flips between auto/none the
+ * measured size changes by ~scrollbar width → ResizeObserver → fit → blink loop.
+ * Always reserve the vertical gutter; never show a horizontal bar (cols are fitted).
+ */
 .jterm-term .xterm-viewport {
-  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overflow-y: scroll !important;
+  scrollbar-gutter: stable;
 }

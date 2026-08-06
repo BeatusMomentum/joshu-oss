@@ -12,10 +12,9 @@ export const DEFAULT_HERMES_SKILLS_ENABLED_FILE = path.resolve(
 /** Bundled Hermes skills Joshu keeps enabled (not under integrations/hermes/skills). */
 export const JOSHU_ESSENTIAL_HERMES_SKILLS = [
   "hermes-agent",
-  "native-mcp",
+  // native-mcp / kanban-worker were folded into hermes-agent + KANBAN_GUIDANCE (Hermes >= 0.20)
   "mcporter",
   "joshu-browser",
-  "kanban-worker",
 ] as const;
 
 function normalizeSkillNames(names: unknown): string[] {

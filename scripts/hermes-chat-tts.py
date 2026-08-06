@@ -31,7 +31,14 @@ def main() -> None:
 
     sys.path.insert(0, root)
 
-    fd, out_path = tempfile.mkstemp(suffix=".mp3", prefix="joshu-tts-")
+    # Fleet boxes set HERMES_WRITE_SAFE_ROOT (ArozOS Desktop). TTS must write inside it.
+    safe_root = os.environ.get("HERMES_WRITE_SAFE_ROOT", "").strip()
+    if safe_root and os.path.isdir(safe_root):
+        tts_dir = os.path.join(safe_root, ".joshu-tts")
+    else:
+        tts_dir = os.path.join(os.environ.get("HERMES_HOME", "/root/.hermes"), "tmp", "tts")
+    os.makedirs(tts_dir, exist_ok=True)
+    fd, out_path = tempfile.mkstemp(suffix=".mp3", prefix="joshu-tts-", dir=tts_dir)
     os.close(fd)
 
     try:

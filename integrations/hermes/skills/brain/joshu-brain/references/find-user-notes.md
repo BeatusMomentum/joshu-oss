@@ -1,17 +1,19 @@
-# Finding user notes & reminders sent via email
+# Finding user notes & reminders (multi-channel)
 
-The user often captures thoughts by emailing themselves (to their `owner work email` inbox). When they ask "remember those notes I sent" or "organize the things I jotted down", use this pattern.
+The user often captures thoughts by emailing themselves, sending Slack DMs, or voice notes. Notes can arrive via **multiple channels** (email + Slack) for the same item — you must dedup, not double-track.
+
+When they ask about finding notes, use this pattern.
 
 ## Pattern: gbrain-first, Gmail-second
 
 ```
 1. mcp_gbrain_query(query="<topic>", recency="on", limit=20)
    → Already has mirrored email content. Catches body text via semantic search
-   → Source slugs like: joshus-files/connectors/mail/gmail/db_at_project-aeon_com/threads/<thread_id>
+   → Source slugs like: joshus-files/connectors/mail/gmail/{account_key}/threads/<thread_id>
 
 2. For anything gbrain missed, use Gmail API:
    COMPOSIO_SEARCH_TOOLS → GMAIL_FETCH_EMAILS(from:owner work email, after:YYYY/MM/DD)
-   → owner's "notes to self" come FROM owner work email
+   → Owner's "notes to self" come FROM owner work email
 ```
 
 ## Why gbrain first
@@ -28,3 +30,19 @@ Self-sent notes tend to be:
 - Subject: "Another note to file", "Another idea to jot down", "Top things to sort out", or blank
 - Sent TO the user's own principal email (`owner work email`)
 - Mix of reminders, to-dos, and larger project ideas in a single email
+
+## Cross-channel dedup — Slack re-iterations
+
+When a note arrives via **Slack DM** (or other non-email channel) that appears related to something already tracked:
+
+1. **gbrain_query first** — search the project's journal pages and `todo.md` for matching items. Use `recency="on"` and `since="90d"` to catch recent entries.
+2. If found **already tracked in todo.md** with same/similar wording:
+   - Do NOT add a new todo row
+   - Write a **journal entry** on the new date with `(re-up)` in the section title, noting the original source date and cross-referencing the existing todo row
+   - This gives a timestamped record of the reprioritization signal without duplicating work items
+3. If NOT found in gbrain: file as a new note following the same pattern as email-sourced notes.
+
+Slack DM source format:
+`Source: Slack DM (thread <thread_id>)`
+
+The key rule: **one todo row per unique intent**, regardless of channel. Journal pages capture timing signals; todo rows capture what needs doing.

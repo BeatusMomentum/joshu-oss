@@ -1,11 +1,11 @@
 {
-  "version": "0.1.38",
+  "version": "0.1.39",
   "channel": "stable",
-  "imageRef": "ghcr.io/db-aeon/joshu-oss:0.1.38",
-  "voiceImageRef": "ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.38",
-  "hermesRef": "a91a57fa5a13d516c38b07a141a9ce8a3daabeb0",
+  "imageRef": "ghcr.io/db-aeon/joshu-sandbox:0.1.39",
+  "voiceImageRef": "ghcr.io/db-aeon/joshu-voice-realtime:0.1.39",
+  "hermesRef": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
   "gbrainRef": "fa2c7a6990a7a57b251979ef6e1988ff09529021",
   "camofoxBase": "ghcr.io/jo-inc/camofox-browser@sha256:3ab61b4742105922aab6f8c99460f55563b6f93e906975383ddce16ec8917f3f",
-  "builtAt": "2026-07-30T16:45:00.000Z",
-  "notes": "Deterministic passphrase-lock voice prompts: locked PSTN calls are voiced from pre-rendered clips in the box voice, not by the speech-to-speech model (which paraphrased rejections as \"Unlocked\"). Clips live in a dedicated joshu_voice_clips volume and heal on voice-realtime startup.\n\n## Highlights\n\n### Deterministic lock prompts\n\n* Fixed lock lines (greeting, retry, unlock, hang-up, session timeout) are rendered ahead of time via Gemini/OpenAI TTS in the box Joshu voice\n* While locked, the model is muted — it still hears the caller for passphrase transcription, but nothing it generates reaches them\n* Partial clip sets keep the old model-spoken fallback rather than risk a silent call\n* `ensureLockPromptClips()` runs when voice-realtime starts listening for PSTN\n\n### Runtime\n\n* New writable volume `joshu_voice_clips` → `/var/lib/joshu-voice` (ArozOS stays read-only for voice-realtime)\n* Docs: passphrase tips for phone ASR (short words blur into neighbours); lock-prompt troubleshooting in `voice-realtime.md`"
+  "builtAt": "2026-08-06T05:00:00.000Z",
+  "notes": "Fleet 0.1.39 — last30days app (SC CP relay, clustering/ordering patches, Python 3.12), Hermes v0.20 / Node 22, read_file UTF-8 patch, Exa web-exa boot sync"
 }

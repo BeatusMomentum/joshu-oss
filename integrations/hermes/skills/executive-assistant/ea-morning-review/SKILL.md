@@ -4,7 +4,7 @@ description: Daily handoff — prep yesterday carryover, interactive morning rev
 metadata:
   hermes:
     category: executive-assistant
-    version: "1.2.0"
+    version: "1.3.0"
 ---
 
 # EA Morning Review (daily handoff)
@@ -122,3 +122,4 @@ Skip sections with nothing new. Full data-source table lives in **`ea-playbook`*
 ## References
 
 - `references/daily-review-schema.md` — frontmatter + section contract
+- `references/quick-status-check.md` — ad-hoc "what's on my plate" query (multi-source status check outside morning review)

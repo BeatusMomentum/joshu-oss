@@ -39,6 +39,26 @@ export type NylasSyncResult = {
   error?: string;
 };
 
+/** Nylas Agent Account grants reject `search_query_native` (400). Fall back to limit-only listing. */
+async function listAgentInboxThreads(
+  grantId: string,
+  opts: { limit: number; days: number },
+): Promise<Awaited<ReturnType<typeof listThreads>>> {
+  try {
+    return await listThreads(grantId, {
+      limit: opts.limit,
+      searchQueryNative: `newer_than:${opts.days}d`,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/bad request/i.test(msg)) throw err;
+    console.info(
+      `[nylas-sync] native search unsupported — listing ${opts.limit} recent threads without filter`,
+    );
+    return listThreads(grantId, { limit: opts.limit });
+  }
+}
+
 export async function syncNylasConnectors(
   projectRoot: string,
   opts: {
@@ -67,10 +87,7 @@ export async function syncNylasConnectors(
   let eventsWritten = 0;
 
   try {
-    const threadSummaries = await listThreads(agent.grantId, {
-      limit,
-      searchQueryNative: `newer_than:${days}d`,
-    });
+    const threadSummaries = await listAgentInboxThreads(agent.grantId, { limit, days });
     const threadsDir = mailThreadsDir("nylas", paths.filesRoot);
     const syncedAt = new Date().toISOString();
     const classifyTriage = opts.classifyTriage !== false;

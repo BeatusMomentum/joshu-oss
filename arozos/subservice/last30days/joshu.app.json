@@ -1,0 +1,17 @@
+{
+  "id": "last30days",
+  "name": "last30days",
+  "version": "0.1.0",
+  "license": "AGPL-3.0",
+  "publisher": "joshu",
+  "entry": "last30days/index.html",
+  "apiPrefix": "/joshu/api/last30days",
+  "description": "Research the last 30 days across social and web sources (ScrapeCreators; no yt-dlp/cookies)",
+  "agent": {
+    "headless": true,
+    "actions": [
+      { "name": "research", "description": "Run a last30days topic research job" },
+      { "name": "doctor", "description": "Run last30days doctor health check" }
+    ]
+  }
+}

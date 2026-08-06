@@ -1,11 +1,11 @@
 ---
 name: joshu-mail
 description: Find/search mail; local cache first, deep server Gmail.
-version: 1.3.0
+version: 1.4.0
 metadata:
   hermes:
     category: mail
-    version: "1.3.0"
+    version: "1.4.0"
 ---
 
 # Joshu mail — find, search, recall
@@ -83,10 +83,23 @@ Hermes tool names: `mcp_composio_COMPOSIO_*`.
 ### Multi-Gmail (critical)
 
 1. **`connectors_status`** → `gmail.accounts[]` → `email`, `accountKey`, `connectedAccountId`  
-2. Pick the account the user named (e.g. `owner work email` → `db_at_project_aeon_com`)  
+2. Pick the account the user named (e.g. `owner work email` → matching `accountKey`)  
 3. **`GMAIL_FETCH_EMAILS`:** always **`user_id: "me"`** — **never** an email address (delegation denied)  
-4. Put **`connected_account_id: ca_…`** in `SEARCH_TOOLS` `known_fields`; scope OAuth to that account per Composio plan  
+4. If you used `SEARCH_TOOLS`, pass the target account's email in `known_fields` (e.g. `"target_account: owner@example.com"`). Note: `GMAIL_FETCH_EMAILS` has **no** `connected_account_id` parameter — `user_id: "me"` may resolve to whichever account is session-bound, not the one you want.  
 5. Do **not** assume `user_id: me` hits principal mail if the Composio session is bound to another account
+
+#### Mirror fallback (when Composio routing is wrong)
+
+When `GMAIL_FETCH_EMAILS` with `user_id: "me"` returns the wrong account's emails (e.g. personal instead of work), or the delegation denies the target email:
+
+1. Identify the correct mirror path from `connectors_status` → `gmail.accounts[]` → `accountKey`
+2. List threads by mtime (most recent first):
+   ```
+   ls -t ${JOSHU_FILES_ROOT}/connectors/mail/gmail/{account_key}/threads/ | head -5
+   ```
+3. Read the frontmatter of the newest files — `from:`, `subject:`, `date:` are in the YAML header, thread body below
+4. To find the most recent message within a multi-message thread, search for the latest `### <Date>` heading in the body
+5. Use `grep -n "### "` to find message boundaries, then read the matching section
 
 ### Workbench / sandbox
 

@@ -4,7 +4,7 @@ description: Triage mail to Projects. Not drips—use ea-project-kanban.
 metadata:
   hermes:
     category: executive-assistant
-    version: "2.17.0"
+    version: "2.19.0"
 ---
 
 # EA Playbook — Triage & rollups
@@ -64,15 +64,25 @@ Do **not** duplicate thread bodies, Kanban card bodies, or chat transcripts into
 
 ## Mail ingress (ea-mail-ingress)
 
-When your Kanban task body includes `kind: mail_ingress`:
+When your Kanban task body includes `kind: mail_ingress`, run this **short-circuit** — no browse-until-found loops.
 
-1. **`skill_view('ea-playbook')`** — MAIL INGRESS mode (required; do not load `ea-project-kanban`).
-2. Read the ingress task body for **`agent_authorized`**, **`scheduling_eligible`**, **`allowed_actions`**, and mail mirror at `source_path`. Triage stub is a pointer only — no classifier hints.
-3. **File:** match existing project (thread, gbrain, `Projects/`) or create minimal `about.md` / `todo.md` / `journal_*` from `_template/` when new.
-4. **`mail_list_track_tasks`** on `project-<slug>` → **match** → `mail_handoff_track_task` | **no match** → `mail_create_track_task` (**blocked**).
+### Required order (do not reorder)
+
+1. **`skill_view('ea-playbook')`** — this section (required; do **not** load `ea-project-kanban`).
+2. **Read ingress body fields:** `agent_authorized`, `scheduling_eligible`, `allowed_actions`, `source_path`, `thread_id`, `message_id`, `account_key`, `provider`. Triage stub is a pointer only.
+3. **`read_file` the mail mirror** at `${JOSHU_FILES_ROOT}/<source_path>` (once). Then file:
+   - Match existing `Projects/<slug>/` (thread, gbrain, `about.md`) **or** create minimal `about.md` / `todo.md` / `journal_*` from `_template/`.
+   - Prefer known slug from gbrain / prior tracks over inventing new folders.
+   - Skip AppleDouble `._*` and other sidecar noise in search results.
+4. **Track via Joshu MCP** (args are **flat** — never nest `tool_call`, never use `slug`):
+   - `mail_list_track_tasks(projectSlug="<folder-slug>")` — folder name only, e.g. `joshu-product-development` (board is `project-<slug>`).
+   - **Match** → `mail_handoff_track_task(taskId=…, projectSlug=…, sourcePath=…, messageId=…, summary=…)`.
+   - **No match** → `mail_create_track_task(…, projectSlug=…, threadId=…, messageId=…, sourcePath=…)` (**blocked**).
 5. **Scheduling decision** — only when **`scheduling_eligible: true`** (see [Scheduling decision gate](#scheduling-decision-gate-mail-ingress-step-5)). If **`agent_authorized: false`** or **`allowed_actions: file`** — **stop after step 4**; no scheduling child, no outbound mail, no calendar probes.
-6. Mark stub `state: done` → `Triage/_done/`.
-7. `kanban_complete` the ingress card.
+6. **Stub done:** open `Triage/gmail-<account_key>-<thread_id>.stub.md` (or `Triage/<provider>-<thread_id>.stub.md` when no account_key) — set `state: done`, move to `Triage/_done/`. Prefer that path; do not recursive-search for stubs.
+7. **`kanban_complete`** the ingress card.
+
+Stop when the short-circuit is done. Do **not** spend turns on directory explore, `search_files` fishing for `about.md`, or re-reading the mirror after you already filed.
 
 ### MCP / Joshu API failures
 
@@ -227,6 +237,23 @@ the owner often uses jChat (or voice) to dump ideas, follow-ups, and product tho
 - Items added during another activity (pre-jog, between meetings)
 
 **Capture workflow:**
+
+**Pitfall — don't discuss, just save:** When the owner is dumping notes (vision, ideas, product thoughts), they want the note saved, not discussed. Do not philosophize, analyze, or respond with your own thoughts. Acknowledge briefly and move on. This is a storage action, not a conversation.
+
+**Location transparency:** When acknowledging a saved note, include *where* it landed (the file path and section), not just "Saved". The owner will ask "where did you save this?" if you don't — and wants a concrete answer. Good: "Saved under `Projects/<slug>/about.md` → Vision & North Star." Bad: "Saved to your project files."
+
+**Rapid-fire note sequences:** When the owner follows up with "another note" or "also" within 1–2 messages, it's a batch — don't read and write project files redundantly between each item. Collect all notes first, then do *one* read of the target files and *one* write. Acknowledge the batch once.
+
+**Directive path (owner names the destination):** If the owner explicitly says where notes should go (e.g. "file in product development notes"), file directly to the specified project — **skip the Planning/capture-* step**. The owner told you exactly where it belongs.
+
+**What to update in the project** (when filing past capture):
+- **Vision / North Star / philosophy / requirements-level notes** → `Projects/<slug>/about.md`
+- **Action items / tasks / follow-ups** → `Projects/<slug>/todo.md`
+- **General notes / logging** → `Projects/<slug>/journal_YYYY-MM-DD.md`
+
+Also save to **agent memory** (`memory()` tool) as a backup. The **project filesystem is the durable home**.
+
+**Default path (no destination specified):**
 
 1. **Append to today's capture file first** — `${JOSHU_FILES_ROOT}/Planning/capture-YYYY-MM-DD.md` (create from `Planning/` template if missing). Sections: **Tasks**, **Ideas**. One bullet per distinct item.
 2. **Clarify** — same classification buckets as mail (project, isolated todo, scheduling, info-only). If clearly belongs to one project, also patch `Projects/<slug>/todo.md` + journal with **links** (no stub to archive).

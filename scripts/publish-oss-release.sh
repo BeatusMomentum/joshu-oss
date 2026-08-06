@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Publish OSS release — legacy one-way snapshot (pre-OSS-canonical flip).
-# Prefer: develop in joshu-oss, merge into fleet via scripts/sync-from-oss.sh.
+# Prefer: develop in joshu-oss, sync into fleet via scripts/sync-from-oss.sh (rsync).
 # This script remains for occasional bulk refresh until fully retired.
 set -euo pipefail
 
