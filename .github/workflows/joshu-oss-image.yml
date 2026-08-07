@@ -54,6 +54,11 @@ jobs:
         if: inputs.images != 'voice-only'
       - run: npm run vps:sync-camofox-pin
         if: inputs.images != 'voice-only'
+      # Empty design-pack marker for vanilla OSS images (Dockerfile COPY requires the path).
+      - run: bash scripts/stage-docker-design-pack.sh
+        if: inputs.images != 'voice-only'
+        env:
+          JOSHU_DESIGN_PACK_SKIP: "1"
 
       - name: Resolve Hermes pin
         id: hermes
