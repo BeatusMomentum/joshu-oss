@@ -46,6 +46,8 @@ jobs:
         if: inputs.images != 'voice-only'
       - run: npm run check:oss-boundaries
         if: inputs.images != 'voice-only'
+      - run: bash scripts/sync-last30days-skill.sh
+        if: inputs.images != 'voice-only'
       - run: npm run build:deploy
         if: inputs.images != 'voice-only'
       - run: npm run vps:sync-hermes-pin
