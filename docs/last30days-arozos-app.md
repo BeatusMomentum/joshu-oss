@@ -33,26 +33,29 @@ bash scripts/sync-last30days-skill.sh
 
 Requires network once. Applies Joshu patches automatically:
 
-- `scripts/patch-last30days-sc-relay.py` — fleet CP ScrapeCreators proxy (when `JOSHU_SCRAPECREATORS_MODE=relay`)
 - `scripts/patch-last30days-clustering.py` — softer clustering for social/opinion queries + engagement-sorted agent JSON
+- Optionally `scripts/patch-last30days-sc-relay.py` — only when an operator enables a custom HTTP proxy mode (self-host normally uses a direct API key)
 
 Re-apply after manual skill sync:
 
 ```bash
-bash scripts/apply-last30days-sc-relay-patch.sh
 bash scripts/apply-last30days-clustering-patch.sh
+# only if using custom proxy mode:
+# bash scripts/apply-last30days-sc-relay-patch.sh
 ```
 
-Needs **Python ≥ 3.12** on PATH. Fleet image **0.1.39+** ships `/opt/joshu/.local/python312/bin/python3.12` (uv) and sets `LAST30DAYS_PYTHON` in the container env.
+Needs **Python ≥ 3.12** on PATH. Image **0.1.39+** ships `/opt/joshu/.local/python312/bin/python3.12` (uv) and sets `LAST30DAYS_PYTHON` in the container env.
 
 ## Config
 
 Written to `~/.config/last30days/.env` (mode `0600`) by the first-use setup dialog and the gear → Settings dialog:
 
-- **ScrapeCreators** key and `INCLUDE_SOURCES` (app-specific; per box via that file — **or fleet CP relay**, no key on box)
+- **ScrapeCreators** — set `SCRAPECREATORS_API_KEY` (your own key from [ScrapeCreators](https://scrapecreators.com/)) and `INCLUDE_SOURCES`
 - Optional **Perplexity** key (separate opt-in source — not a drop-in for engine `grounding`; stays in this file)
 
-**LLM / reasoning (planner + rerank):** uses the **per-box OpenRouter key** — same resolution as Hermes (`/etc/joshu/instance.env` on fleet, Welcome → Connect AI, or `.joshu/box-secrets/local-env.json`). When OpenRouter is present the engine sets `LAST30DAYS_REASONING_PROVIDER=openrouter` and routes through OpenRouter. Joshu pins planner/rerank to `google/gemini-3.1-flash-lite` (the engine’s default OpenRouter slug `…-preview` returns HTTP 404). The runner does **not** inherit host-shell `GEMINI_API_KEY` / `OPENAI_API_KEY`; without OpenRouter, planner/rerank fall back to deterministic/local scoring.
+Self-host / OSS: paste the key in the app Settings UI, or set `SCRAPECREATORS_API_KEY=` in `/etc/joshu/instance.env` / the last30days env file. No proxy or relay is required.
+
+**LLM / reasoning (planner + rerank):** uses the **per-box OpenRouter key** — same resolution as Hermes (`/etc/joshu/instance.env`, Welcome → Connect AI, or `.joshu/box-secrets/local-env.json`). When OpenRouter is present the engine sets `LAST30DAYS_REASONING_PROVIDER=openrouter` and routes through OpenRouter. Joshu pins planner/rerank to `google/gemini-3.1-flash-lite` (the engine’s default OpenRouter slug `…-preview` returns HTTP 404). The runner does **not** inherit host-shell `GEMINI_API_KEY` / `OPENAI_API_KEY`; without OpenRouter, planner/rerank fall back to deterministic/local scoring.
 
 Recommended `INCLUDE_SOURCES`:
 
@@ -110,27 +113,25 @@ Setting `LAST30DAYS_NATIVE_SEARCH=1` tells the engine to **skip** keyless `groun
 
 ## Web / grounding
 
-Engine **`grounding`** = general web. Joshu prefers **Exa** when CP has provisioned `EXA_API_KEY` (per-box mint via `EXA_SERVICE_KEY`, or shared `DEFAULT_EXA_API_KEY` fallback). Without Exa, keyless DuckDuckGo → Startpage → optional SearXNG. Runner still strips Brave/Serper/Parallel/Firecrawl env keys.
+Engine **`grounding`** = general web. Joshu prefers **Exa** when `EXA_API_KEY` is set on the box. Without Exa, keyless DuckDuckGo → Startpage → optional SearXNG. Runner still strips Brave/Serper/Parallel/Firecrawl env keys.
 
 On some networks (including many dev IPs), **keyless** providers return bot-challenge HTML → **`grounding: failed`** or thin web in Results. Exa avoids that path. Social sources (Reddit, HN, SC lanes) can still work either way.
 
-**Not wired in Joshu yet:** `LAST30DAYS_SEARXNG_URL` (Settings UI + fleet env). **Not the same as Perplexity:** adding Perplexity to `INCLUDE_SOURCES` enables a separate source; it does not replace Exa/`grounding`.
+**Not wired in Joshu yet:** `LAST30DAYS_SEARXNG_URL` (Settings UI + env). **Not the same as Perplexity:** adding Perplexity to `INCLUDE_SOURCES` enables a separate source; it does not replace Exa/`grounding`.
 
 GUI research always uses **`emit=json`** / `jsonProfile=agent` for structured Results; `--emit=md` is for Extra argv / Hermes export only.
 
-## Fleet rollout (e.g. patrick)
+## Deploy / image
 
-Ships in `npm run build:deploy` → sandbox image includes `dist/last30days-app/` and `arozos/subservice/last30days/`. Desktop shortcut: `scripts/lib/arozos-desktop-shortcuts.sh`.
+Ships in `npm run build:deploy` → image includes `dist/last30days-app/` and `arozos/subservice/last30days/`. Desktop shortcut: `scripts/lib/arozos-desktop-shortcuts.sh`.
 
-**Per-box (not CP-provisioned):** owner pastes **ScrapeCreators** into the app Settings → `~/.config/last30days/.env` — **unless fleet relay is on** (default for new boxes).
-
-**Fleet ScrapeCreators relay (default):** when CP has `DEFAULT_SCRAPECREATORS_API_KEY`, provision ships `JOSHU_SCRAPECREATORS_MODE=relay` + `JOSHU_SCRAPECREATORS_RELAY_URL` — **no** `SCRAPECREATORS_API_KEY` on the box. The vendored engine’s `http.py` forwards `api.scrapecreators.com` calls to `POST /api/instances/scrapecreators/proxy` (instance-agent Bearer). Enable on existing boxes: `pnpm enable:scrapecreators-relay patrick` in control-plane. Patch engine after skill sync: `bash scripts/apply-last30days-sc-relay-patch.sh`.
+**ScrapeCreators (self-host):** owner pastes the key into the app Settings → `~/.config/last30days/.env`, or sets `SCRAPECREATORS_API_KEY` in instance env.
 
 **Clustering / Results ordering:** Joshu patches `cluster.py` (lower similarity threshold for opinion/comparison) and `schema.py` (export clusters sorted by engagement). The GUI also sorts cluster cards by engagement and sorts members by relevance. See `scripts/patch-last30days-clustering.py`.
 
-**Same as Hermes (CP-provisioned):** **OpenRouter** from `/etc/joshu/instance.env` (`joshu-box-{slug}`) — planner/rerank; no host-shell Gemini/OpenAI inheritance. **Exa** from the same file (`EXA_API_KEY`) — web grounding; Hermes pins `web.backend: exa` and enables bundled plugin **`web-exa`** ([web search docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/web-search)).
+**Same as Hermes:** **OpenRouter** from `/etc/joshu/instance.env` or Welcome — planner/rerank; no host-shell Gemini/OpenAI inheritance. **Exa** from the same file (`EXA_API_KEY`) — web grounding; Hermes pins `web.backend: exa` and enables bundled plugin **`web-exa`** ([web search docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/web-search)).
 
-**Typical hotpatch bundle** (after `npm run build:deploy` locally or image pull):
+**Typical update bundle** (after `npm run build:deploy` locally or image pull):
 
 - `dist/last30days/` (server routes + runner)
 - Surgical **`server.js`** patch — add `registerLast30DaysRoutes` import + call (do **not** rsync a dev-built `server.js` over the whole host `dist/`)
@@ -147,9 +148,7 @@ bash scripts/last30days-app-smoke.sh
 curl -fsS https://<host>/joshu/api/last30days/status
 ```
 
-**Verify reasoning:** Settings JSON → `reasoning.provider` should be `openrouter` on fleet boxes with provisioned keys. Doctor → preflight should show OpenRouter present, native search absent, `--web-backend=exa` when `EXA_API_KEY` is set (else `keyless`). Status `policy.web` mirrors that.
-
-See also: [hotpatch-running-box.md](vps-sandbox/hotpatch-running-box.md) (general B3/A lanes).
+**Verify reasoning:** Settings JSON → `reasoning.provider` should be `openrouter` when OpenRouter is configured. Doctor → preflight should show OpenRouter present, native search absent, `--web-backend=exa` when `EXA_API_KEY` is set (else `keyless`). Status `policy.web` mirrors that.
 
 ## Related
 

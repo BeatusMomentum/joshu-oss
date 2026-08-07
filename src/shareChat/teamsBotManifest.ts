@@ -21,7 +21,7 @@ function teamsBotAssetsDir(): string {
   for (const dir of candidates) {
     if (fs.existsSync(path.join(dir, "color.png"))) return dir;
   }
-  return candidates[0];
+  return candidates[0] ?? path.join(process.cwd(), "src/shareChat/teamsBotAssets");
 }
 
 export function buildTeamsBotManifest(opts: {

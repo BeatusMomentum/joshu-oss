@@ -21,6 +21,7 @@ import {
   resolveWebBackendChoice,
   sanitizePathNoYtdlp,
 } from "./config.js";
+import { exportLast30DaysRunReport, notifyLast30DaysRunSession } from "./runDelivery.js";
 
 export type Last30DaysRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
@@ -42,6 +43,13 @@ export type Last30DaysRunRecord = {
   stdout: string;
   stderrLines: string[];
   events: Last30DaysRunEvent[];
+  /** Research topic (denormalized for delivery + export). */
+  topic?: string;
+  /** Hermes session to reply in when run completes out-of-app. */
+  hermesSessionKey?: string;
+  hermesSessionId?: string;
+  /** Path under JOSHU_FILES_ROOT after markdown export. */
+  outputRelativePath?: string;
 };
 
 export type SpawnEngineOpts = {
@@ -50,6 +58,11 @@ export type SpawnEngineOpts = {
   /** Extra env (already scrubbed). */
   env?: Record<string, string>;
   configDir?: string;
+  meta?: {
+    topic?: string;
+    hermesSessionKey?: string;
+    hermesSessionId?: string;
+  };
 };
 
 const runs = new Map<string, Last30DaysRunRecord>();
@@ -93,6 +106,10 @@ function coercePersistedRun(raw: unknown): Last30DaysRunRecord | null {
     stdout: typeof o.stdout === "string" ? o.stdout : "",
     stderrLines: Array.isArray(o.stderrLines) ? o.stderrLines.map(String) : [],
     events: Array.isArray(o.events) ? (o.events as Last30DaysRunEvent[]) : [],
+    topic: typeof o.topic === "string" ? o.topic : undefined,
+    hermesSessionKey: typeof o.hermesSessionKey === "string" ? o.hermesSessionKey : undefined,
+    hermesSessionId: typeof o.hermesSessionId === "string" ? o.hermesSessionId : undefined,
+    outputRelativePath: typeof o.outputRelativePath === "string" ? o.outputRelativePath : undefined,
   };
 }
 
@@ -133,6 +150,11 @@ export function initRunStore(projectRoot: string): void {
   runsRootDir = runsDir(projectRoot);
   hydratedFromDisk = false;
   hydrateRunsFromDisk();
+}
+
+/** Persist run snapshot (exported for delivery layer re-write after export). */
+export function persistRunRecord(projectRoot: string, run: Last30DaysRunRecord): void {
+  persistRun(projectRoot, run);
 }
 
 function persistRun(projectRoot: string, run: Last30DaysRunRecord): void {
@@ -233,6 +255,26 @@ export function listRuns(): Last30DaysRunRecord[] {
   return [...runs.values()].sort((a, b) => b.createdAt - a.createdAt);
 }
 
+/** First positional topic in engine argv (after python + script). */
+export function topicFromRunArgv(argv?: string[]): string | undefined {
+  if (!argv || argv.length < 3) return undefined;
+  const candidate = argv[2];
+  if (!candidate || candidate.startsWith("-")) return undefined;
+  return candidate;
+}
+
+/** Skip duplicate concurrent spawns for the same topic (agent double-fire, etc.). */
+export function findActiveRunForTopic(topic: string): Last30DaysRunRecord | undefined {
+  const normalized = topic.trim().toLowerCase();
+  if (!normalized) return undefined;
+  for (const run of listRuns()) {
+    if (run.status !== "running" && run.status !== "queued") continue;
+    const runTopic = topicFromRunArgv(run.argv);
+    if (runTopic?.trim().toLowerCase() === normalized) return run;
+  }
+  return undefined;
+}
+
 export function getRun(id: string): Last30DaysRunRecord | undefined {
   hydrateRunsFromDisk();
   const mem = runs.get(id);
@@ -247,6 +289,22 @@ export function getRun(id: string): Last30DaysRunRecord | undefined {
     runs.set(loaded.id, loaded);
   }
   return loaded ?? undefined;
+}
+
+export function attachHermesSessionToRun(
+  runId: string,
+  projectRoot: string,
+  meta: { hermesSessionKey?: string; hermesSessionId?: string },
+): Last30DaysRunRecord | undefined {
+  const run = getRun(runId);
+  if (!run) return undefined;
+  const key = meta.hermesSessionKey?.trim();
+  const id = meta.hermesSessionId?.trim();
+  if (key) run.hermesSessionKey = key;
+  if (id) run.hermesSessionId = id;
+  if (!key && !id) return run;
+  persistRun(projectRoot, run);
+  return run;
 }
 
 export function cancelRun(id: string): boolean {
@@ -325,6 +383,9 @@ export function spawnEngine(opts: SpawnEngineOpts): Last30DaysRunRecord {
     stdout: "",
     stderrLines: [],
     events: [],
+    topic: opts.meta?.topic?.trim() || topicFromRunArgv([python, script, ...argv]),
+    hermesSessionKey: opts.meta?.hermesSessionKey?.trim() || undefined,
+    hermesSessionId: opts.meta?.hermesSessionId?.trim() || undefined,
   };
   runs.set(id, run);
   pruneRuns();
@@ -368,7 +429,8 @@ export function spawnEngine(opts: SpawnEngineOpts): Last30DaysRunRecord {
     pushEvent(run, { type: "status", status: "failed", ts: Date.now() });
     pushEvent(run, { type: "done", exitCode: null, ts: Date.now(), error: err.message });
     children.delete(id);
-    persistRun(opts.projectRoot, run);
+    const exportResult = exportLast30DaysRunReport(opts.projectRoot, run);
+    void notifyLast30DaysRunSession(opts.projectRoot, run, exportResult).catch(() => undefined);
   });
 
   child.on("close", (code) => {
@@ -385,6 +447,12 @@ export function spawnEngine(opts: SpawnEngineOpts): Last30DaysRunRecord {
       }
     }
     pushEvent(run, { type: "status", status: run.status, ts: Date.now() });
+    if (run.status === "completed" || run.status === "failed") {
+      const exportResult = exportLast30DaysRunReport(opts.projectRoot, run);
+      void notifyLast30DaysRunSession(opts.projectRoot, run, exportResult).catch((err: Error) => {
+        console.warn(`[last30days] session delivery failed: ${err.message}`);
+      });
+    }
     pushEvent(run, {
       type: "done",
       exitCode: code,

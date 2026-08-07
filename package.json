@@ -53,6 +53,7 @@
     "test:hermes-browser-sync-policy": "npm run build && node scripts/check-hermes-browser-sync-policy.mjs",
     "test:excalidraw-cwm-backend": "node scripts/test-excalidraw-cwm-backend.mjs",
     "test:owner-local-time": "npm run build && node scripts/check-owner-local-time.mjs",
+    "test:ea-cron-timezone": "npm run build && node scripts/check-ea-cron-timezone.mjs",
     "test:mail-dedup": "npm run build && node scripts/check-mail-dedup.mjs",
     "test:mail-classifier-routing": "npm run build && node scripts/check-mail-classifier-routing.mjs",
     "test:hermes-skills-policy": "npm run build && node scripts/check-hermes-skills-policy.mjs",

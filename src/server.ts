@@ -33,6 +33,7 @@ import { registerBoxSecretsRoutes } from "./boxSecrets/routes.js";
 import { registerOnboardingRoutes } from "./onboardingApi.js";
 import { registerDay0Routes } from "./day0/day0Api.js";
 import { registerHermesCronRoutes } from "./hermesCronApi.js";
+import { registerHermesChatSessionListener } from "./hermesChatSessionPush.js";
 import { registerLast30DaysRoutes } from "./last30days/routes.js";
 import {
   handleHermesDashboardUpgrade,
@@ -768,6 +769,28 @@ function buildAppRouter(): {
     }
   });
 
+  /** SSE — jChat subscribes while a session is open; server pushes when async jobs append to SessionDB. */
+  router.get("/api/hermes-chat/sessions/:sessionId/events", (req: Request, res: Response) => {
+    const sessionId = readString(req.params.sessionId);
+    if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
+
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+
+    registerHermesChatSessionListener(sessionId, res);
+
+    const ping = setInterval(() => {
+      try {
+        res.write(": ping\n\n");
+      } catch {
+        clearInterval(ping);
+      }
+    }, 30_000);
+    req.on("close", () => clearInterval(ping));
+  });
+
   router.get("/api/hindsight/status", async (_req: Request, res: Response) => {
     try {
       const health = await proxyHindsightJson("health");
@@ -896,6 +919,12 @@ function buildAppRouter(): {
             });
 
       const turnSystemMessages = buildTurnSystemMessages(PROJECT_ROOT, { browser: browserContext });
+      const sessionCallbackHint: HermesChatMessage = {
+        role: "system",
+        content:
+          `Hermes session callback key for async Joshu jobs: joshu-hermes-chat:${sessionId}. ` +
+          "Pass as hermesSessionKey when starting last30days research via invoke.",
+      };
 
       let activeSessionId = sessionId;
 
@@ -903,7 +932,7 @@ function buildAppRouter(): {
         {
           sessionId,
           model: model || undefined,
-          messages: [...turnSystemMessages, ...messages],
+          messages: [...turnSystemMessages, sessionCallbackHint, ...messages],
           signal: controller.signal,
         },
         {

@@ -6,7 +6,7 @@ import {
   isExcalidrawBoardMutatingAction,
   latestUserText,
   requiresExcalidrawBoardMutation,
-} from "./agUiAppContext.ts";
+} from "./agUiAppContext.js";
 
 test("board-mutating actions are propose/recall/stage only", () => {
   assert.equal(isExcalidrawBoardMutatingAction("proposeTransaction"), true);

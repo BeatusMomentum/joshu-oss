@@ -1,11 +1,11 @@
 {
-  "version": "0.1.39",
+  "version": "0.1.40",
   "channel": "stable",
-  "imageRef": "ghcr.io/db-aeon/joshu-sandbox:0.1.39",
-  "voiceImageRef": "ghcr.io/db-aeon/joshu-voice-realtime:0.1.39",
+  "imageRef": "ghcr.io/db-aeon/joshu-oss:0.1.40",
+  "voiceImageRef": "ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.40",
   "hermesRef": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
   "gbrainRef": "fa2c7a6990a7a57b251979ef6e1988ff09529021",
   "camofoxBase": "ghcr.io/jo-inc/camofox-browser@sha256:3ab61b4742105922aab6f8c99460f55563b6f93e906975383ddce16ec8917f3f",
-  "builtAt": "2026-08-06T05:00:00.000Z",
-  "notes": "Fleet 0.1.39 — last30days app (SC CP relay, clustering/ordering patches, Python 3.12), Hermes v0.20 / Node 22, read_file UTF-8 patch, Exa web-exa boot sync"
+  "builtAt": "2026-08-07T15:00:00.000Z",
+  "notes": "0.1.40 \u2014 last30days multimodal agent reports + owner delivery; JoshuMultimodalApp in app-agent; Hermes chat session push; EA cron owner-timezone repair/resync; ScrapeCreators self-host key path"
 }

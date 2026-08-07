@@ -3,6 +3,7 @@
  * EA v2: morning, evening, weekly — no midday. Idempotent by fixed job name.
  */
 import { callCronBridge, type CronBridgeJobSummary } from "../hermesCronBridge.js";
+import { syncHermesOwnerTimezone } from "../hermesOwnerTimezone.js";
 import type { OnboardingDraft } from "./types.js";
 
 export const EA_CRON_JOB_NAMES = {
@@ -154,6 +155,18 @@ export type SyncEaCronJobsResult = {
 export async function syncEaCronJobs(draft: OnboardingDraft): Promise<SyncEaCronJobsResult> {
   const schedules = buildSchedules(draft);
   try {
+    // Hermes cron hour/minute are interpreted in owner local time — not VPS UTC.
+    const tzResult = await syncHermesOwnerTimezone(draft.timezone);
+    if (!tzResult.ok) {
+      return {
+        ok: false,
+        created: 0,
+        updated: 0,
+        schedules,
+        error: tzResult.error ?? "Hermes timezone sync failed",
+      };
+    }
+
     const existing = await listExistingJobs();
     await removeLegacyMidday(existing);
     const specs = buildJobSpecs(draft);

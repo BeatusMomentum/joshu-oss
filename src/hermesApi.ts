@@ -12,6 +12,7 @@ import { provisionEnvTrim } from "./provisionInstanceEnv.js";
 import { promisify } from "node:util";
 import YAML from "yaml";
 import { bootstrapHermesLearning } from "./hermesLearning.js";
+import { hasActiveCronExecutions } from "./hermesCronExecutions.js";
 import { loadProductSkillsPolicy } from "./hermesSkillsConfig.js";
 import { syncHermesContextFile } from "./hermesContextFile.js";
 import { syncBundledAppSkillsToHermes } from "./appSkillsSync.js";
@@ -36,6 +37,8 @@ import {
   waitForJoshuMcpDependencies,
 } from "./mcpDependencyHealth.js";
 import { buildOwnerTimeSystemMessage } from "./ownerLocalTime.js";
+import { readAgentProfile } from "./nylas/profile.js";
+import { isValidIanaTimezone, normalizeIanaTimezone } from "./ianaTimezone.js";
 
 const execFile = promisify(execFileCb);
 const HERMES_GATEWAY_PID_FILE = path.join(homedir(), ".hermes", "gateway.pid");
@@ -862,6 +865,9 @@ export class HermesApiRunner extends EventEmitter {
    */
   async restartGateway(projectRoot = process.cwd()): Promise<{ running: boolean; autoStart: boolean }> {
     await syncHermesMessagingEnv(projectRoot);
+    if (await this.deferGatewayRestartIfCronActive("explicit restartGateway")) {
+      return this.getGatewayStatus();
+    }
     if (this.gateway && !this.gateway.killed && this.gateway.exitCode === null) {
       this.gateway.kill("SIGTERM");
     }
@@ -1149,6 +1155,13 @@ export class HermesApiRunner extends EventEmitter {
     };
   }
 
+  /** Avoid SIGTERM mid-run — cron agent sessions die when the gateway is replaced. */
+  private async deferGatewayRestartIfCronActive(reason: string): Promise<boolean> {
+    if (!(await hasActiveCronExecutions(getHermesHome()))) return false;
+    console.log(`[hermes-api] deferring gateway restart (${reason}) — active cron execution(s)`);
+    return true;
+  }
+
   private async ensureApiServer(): Promise<{ ok: true }> {
     const llmEnvChanged = await syncHermesLlmEnv();
     await this.ensureJoshuHermesConfig();
@@ -1160,20 +1173,28 @@ export class HermesApiRunner extends EventEmitter {
       const connectorsOk = await probeMcpHttpHealth(resolveConnectorsMcpHealthUrl());
       const needsMcpCatalogRefresh = this.gatewayMcpReloadPending || !connectorsOk;
       if (llmEnvChanged) {
-        console.log("[hermes-api] restarting Hermes gateway with synchronized LLM credentials");
-        await this.stopGatewayDaemon();
-        this.gateway = undefined;
+        if (!(await this.deferGatewayRestartIfCronActive("LLM env sync"))) {
+          console.log("[hermes-api] restarting Hermes gateway with synchronized LLM credentials");
+          await this.stopGatewayDaemon();
+          this.gateway = undefined;
+        }
       } else if (ownsGateway && !needsMcpCatalogRefresh) {
         return { ok: true };
       } else if (!ownsGateway && !needsMcpCatalogRefresh && !this.gatewayAutoStart) {
         return { ok: true };
       } else if (ownsGateway && needsMcpCatalogRefresh) {
-        console.log("[hermes-api] restarting owned Hermes gateway to refresh MCP tool catalog");
-        await this.stopGatewayDaemon();
-        this.gateway = undefined;
+        if (!(await this.deferGatewayRestartIfCronActive("MCP catalog refresh"))) {
+          console.log("[hermes-api] restarting owned Hermes gateway to refresh MCP tool catalog");
+          await this.stopGatewayDaemon();
+          this.gateway = undefined;
+        }
       } else if (!ownsGateway && this.gatewayAutoStart) {
-        console.log("[hermes-api] replacing existing Hermes gateway with current process env");
-        await this.stopGatewayDaemon();
+        if (!(await this.deferGatewayRestartIfCronActive("takeover"))) {
+          console.log("[hermes-api] replacing existing Hermes gateway with current process env");
+          await this.stopGatewayDaemon();
+        } else {
+          return { ok: true };
+        }
       }
       await this.releaseStaleGbrainMcp();
     }
@@ -1572,6 +1593,21 @@ export class HermesApiRunner extends EventEmitter {
       toolsets.push("joshu-app-gui");
       changed = true;
     }
+    {
+      const plugins = asRecord(config.plugins);
+      const enabled = asStringArray(plugins.enabled);
+      if (!enabled.includes("joshu-last30days")) {
+        enabled.push("joshu-last30days");
+        changed = true;
+        pluginsChanged = true;
+      }
+      plugins.enabled = enabled;
+      config.plugins = plugins;
+    }
+    if (!toolsets.includes("joshu-last30days")) {
+      toolsets.push("joshu-last30days");
+      changed = true;
+    }
 
     // Hermes tool workers read ~/.hermes/config.yaml; gateway env alone is not always
     // enough. Pin the shared HITL Camofox identity so browser_scroll etc. reuse the
@@ -1748,6 +1784,16 @@ export class HermesApiRunner extends EventEmitter {
     }
     if (Object.keys(memory).length > 0) config.memory = memory;
 
+    // Owner IANA zone — Hermes cron hour/minute are wall-clock in this zone (not VPS UTC).
+    const profileTz = readAgentProfile(process.cwd())?.timezone?.trim();
+    if (profileTz) {
+      const normalizedTz = normalizeIanaTimezone(profileTz);
+      if (isValidIanaTimezone(normalizedTz) && config.timezone !== normalizedTz) {
+        config.timezone = normalizedTz;
+        changed = true;
+      }
+    }
+
     const wroteConfig = await writeMergedHermesConfig(hermesHome, config);
     if (wroteConfig && recoveredFromCorrupt) {
       console.warn(`[hermes-api] repaired Hermes config at ${configPath}`);
@@ -1827,6 +1873,16 @@ export class HermesApiRunner extends EventEmitter {
     const langfuseUserId = resolveLangfuseUserId();
     if (langfuseUserId) dotenvSync.HERMES_LANGFUSE_USER_ID = langfuseUserId;
     Object.assign(dotenvSync, buildHermesMessagingDotenvEntries(process.cwd()));
+
+    const ownerTz =
+      typeof config.timezone === "string" && config.timezone.trim()
+        ? config.timezone.trim()
+        : profileTz
+          ? normalizeIanaTimezone(profileTz)
+          : "";
+    if (ownerTz && isValidIanaTimezone(ownerTz)) {
+      dotenvSync.HERMES_TIMEZONE = ownerTz;
+    }
 
     const connectorsApiBase = envString(
       "JOSHU_CONNECTORS_API_BASE",

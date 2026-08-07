@@ -20,16 +20,37 @@ import {
   writeConfigFile,
 } from "./config.js";
 import {
+  attachHermesSessionToRun,
   buildHardenedEnv,
   cancelRun,
+  findActiveRunForTopic,
   getRun,
   initRunStore,
   listRuns,
   researchRequestToArgs,
   spawnEngine,
+  topicFromRunArgv,
   waitForRun,
   type ResearchRequest,
 } from "./runner.js";
+
+function readHermesSession(
+  req: Request,
+  body: Record<string, unknown>,
+): { hermesSessionKey?: string; hermesSessionId?: string } {
+  const key =
+    readString(req.headers["x-hermes-session-key"]) ||
+    readString(body.hermesSessionKey) ||
+    readString((body.args as Record<string, unknown> | undefined)?.hermesSessionKey);
+  const id =
+    readString(req.headers["x-hermes-session-id"]) ||
+    readString(body.hermesSessionId) ||
+    readString((body.args as Record<string, unknown> | undefined)?.hermesSessionId);
+  return {
+    ...(key ? { hermesSessionKey: key } : {}),
+    ...(id ? { hermesSessionId: id } : {}),
+  };
+}
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -240,8 +261,30 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
 
   const startRun = (req: Request, res: Response, research: ResearchRequest) => {
     try {
+      const body = (req.body || {}) as ResearchRequest & Record<string, unknown>;
+      const topic = readString(research.topic);
+      if (topic) {
+        const existing = findActiveRunForTopic(topic);
+        if (existing) {
+          res.status(202).json({
+            ok: true,
+            runId: existing.id,
+            status: existing.status,
+            argv: existing.argv,
+            deduped: true,
+          });
+          return;
+        }
+      }
       const args = researchRequestToArgs(research);
-      const run = spawnEngine({ projectRoot: projectRootFrom(req, projectRoot), args });
+      const run = spawnEngine({
+        projectRoot: projectRootFrom(req, projectRoot),
+        args,
+        meta: {
+          topic: topic || undefined,
+          ...readHermesSession(req, body),
+        },
+      });
       res.status(202).json({
         ok: true,
         runId: run.id,
@@ -356,7 +399,33 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
         exitCode: r.exitCode,
         error: r.error,
         argv: r.argv,
+        topic: topicFromRunArgv(r.argv),
+        outputRelativePath: r.outputRelativePath,
+        reportUri: r.outputRelativePath ? `joshu://${r.outputRelativePath.replace(/^\/+/, "")}` : undefined,
       })),
+    });
+  });
+
+  router.patch("/api/last30days/runs/:id/session", (req: Request, res: Response) => {
+    const runId = readString(req.params.id);
+    const body = (req.body || {}) as Record<string, unknown>;
+    if (!runId) {
+      res.status(400).json({ ok: false, error: "run id required" });
+      return;
+    }
+    const updated = attachHermesSessionToRun(runId, projectRootFrom(req, projectRoot), {
+      hermesSessionKey: readString(body.hermesSessionKey),
+      hermesSessionId: readString(body.hermesSessionId),
+    });
+    if (!updated) {
+      res.status(404).json({ ok: false, error: "run not found" });
+      return;
+    }
+    res.json({
+      ok: true,
+      runId: updated.id,
+      hermesSessionKey: updated.hermesSessionKey,
+      hermesSessionId: updated.hermesSessionId,
     });
   });
 
@@ -525,6 +594,28 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
     try {
       const body = (req.body || {}) as { args?: string[] };
       const args = Array.isArray(body.args) ? body.args.map(String) : ["show"];
+      const result = await runCompanion(projectRoot, "briefing.py", args);
+      res.json({ ok: result.exitCode === 0, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  /** Invoke-friendly alias — headless watchlist run-all */
+  router.post("/api/last30days/watchlistRunAll", async (_req: Request, res: Response) => {
+    try {
+      const result = await runCompanion(projectRoot, "watchlist.py", ["run-all"]);
+      res.json({ ok: result.exitCode === 0, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+  });
+
+  /** Invoke-friendly alias — generate briefing digest */
+  router.post("/api/last30days/briefingGenerate", async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as { weekly?: boolean };
+      const args = body.weekly ? ["generate", "--weekly"] : ["generate"];
       const result = await runCompanion(projectRoot, "briefing.py", args);
       res.json({ ok: result.exitCode === 0, ...result });
     } catch (err) {

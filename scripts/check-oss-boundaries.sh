@@ -61,7 +61,7 @@ should_skip() {
     docs/README.md|docs/joshu-identity.md|docs/day0-cold-start.md|docs/hermes-customizations.md|docs/box-state.md)
       return 0
       ;;
-    docs/vps-sandbox/first-provisioning-notes.md|docs/vps-sandbox/troubleshooting-and-lessons.md|docs/vps-sandbox/session-*|docs/vps-sandbox/hotpatch-running-box.md|docs/vps-sandbox/provider-choices.md|docs/vps-sandbox/voice-*|docs/vps-sandbox/web-voice.md|docs/vps-sandbox/phone-voice-local-test.md)
+    docs/vps-sandbox/first-provisioning-notes.md|docs/vps-sandbox/troubleshooting-and-lessons.md|docs/vps-sandbox/session-*|docs/vps-sandbox/hotpatch-running-box.md|docs/vps-sandbox/provider-choices.md|docs/vps-sandbox/voice-*|docs/vps-sandbox/web-voice.md|docs/vps-sandbox/phone-voice-local-test.md|docs/vps-sandbox/credential-isolation-langfuse-relay.md|docs/vps-sandbox/update-hardening-todo.md|docs/vps-sandbox/README.md|docs/vps-sandbox/control-plane.md)
       return 0
       ;;
     docs/design/brand-guidelines.md|docs/README.oss.md|docs/box-state.oss.md|docs/vps-sandbox/README.oss.md|docs/design/README.oss.md)
@@ -70,7 +70,8 @@ should_skip() {
     README.md|CONTRIBUTING.md|README.oss.md|CONTRIBUTING.oss.md)
       return 0
       ;;
-    scripts/check-oss-boundaries.sh|scripts/prepare-oss-snapshot.sh|scripts/oss-doc-sanitize.sh|scripts/publish-oss-release.sh)
+    # Fleet-only export/sync pipeline (stripped from OSS snapshot).
+    scripts/check-oss-boundaries.sh|scripts/prepare-oss-snapshot.sh|scripts/oss-doc-sanitize.sh|scripts/publish-oss-release.sh|scripts/sync-from-oss.sh|scripts/repair-fleet-*)
       return 0
       ;;
   esac

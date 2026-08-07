@@ -10,6 +10,7 @@ import {
   registerAppAction,
   type JoshuAppManifest,
 } from "./appRegistry.js";
+import { registerManifestInvokeHandlers } from "./appInvokeRegistry.js";
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -55,6 +56,17 @@ export function registerBuiltInAppActions(apiBase: string): void {
 
 export function registerAppInvokeRoutes(router: Router, projectRoot: string, apiBase: string): void {
   registerBuiltInAppActions(apiBase);
+  const boxOrigin = process.env.JOSHU_BOX_ORIGIN?.trim() || "http://127.0.0.1:8788";
+  let manifestHandlersReady: Promise<number> | null = null;
+  const ensureManifestHandlers = () => {
+    if (!manifestHandlersReady) {
+      manifestHandlersReady = registerManifestInvokeHandlers(projectRoot, boxOrigin);
+    }
+    return manifestHandlersReady;
+  };
+  void ensureManifestHandlers().catch((err) => {
+    console.warn("[app-invoke] manifest proxy registration failed:", err);
+  });
 
   router.get("/api/apps", async (_req: Request, res: Response) => {
     await loadAppManifests(projectRoot);
@@ -80,6 +92,7 @@ export function registerAppInvokeRoutes(router: Router, projectRoot: string, api
       return res.status(400).json({ error: "appId and action are required" });
     }
 
+    await ensureManifestHandlers();
     await loadAppManifests(projectRoot);
     if (!getAppManifest(appId)) {
       return res.status(404).json({ error: `Unknown app: ${appId}` });
@@ -91,7 +104,22 @@ export function registerAppInvokeRoutes(router: Router, projectRoot: string, api
     }
 
     try {
-      const result = await handler(args);
+      const body = (req.body ?? {}) as {
+        action?: unknown;
+        args?: unknown;
+        hermesSessionKey?: unknown;
+        hermesSessionId?: unknown;
+      };
+      const sessionKey =
+        readString(req.headers["x-hermes-session-key"]) || readString(body.hermesSessionKey);
+      const sessionId =
+        readString(req.headers["x-hermes-session-id"]) || readString(body.hermesSessionId);
+      const enrichedArgs = {
+        ...args,
+        ...(sessionKey ? { hermesSessionKey: sessionKey } : {}),
+        ...(sessionId ? { hermesSessionId: sessionId } : {}),
+      };
+      const result = await handler(enrichedArgs);
       res.json({ ok: true, appId, action, result });
     } catch (err) {
       res.status(500).json({

@@ -140,13 +140,18 @@ export function appGuiActionFromHermesToolRaw(raw: unknown): AppGuiAction | null
   const appId = readString(record.appId);
   const actionName = readString(record.action);
   if (appId && actionName) {
+    const rawArgs =
+      record.args && typeof record.args === "object" && !Array.isArray(record.args)
+        ? record.args
+        : record.arguments &&
+            typeof record.arguments === "object" &&
+            !Array.isArray(record.arguments)
+          ? record.arguments
+          : undefined;
     const candidate: AppGuiAction = {
       appId,
       action: actionName,
-      args:
-        record.args && typeof record.args === "object" && !Array.isArray(record.args)
-          ? (record.args as Record<string, unknown>)
-          : undefined,
+      args: rawArgs as Record<string, unknown> | undefined,
     };
     if (isValidAppGuiAction(candidate)) return candidate;
   }

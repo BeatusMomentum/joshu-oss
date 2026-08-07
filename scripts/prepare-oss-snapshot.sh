@@ -44,8 +44,11 @@ rsync -a "${RSYNC_DELETE[@]}" \
   --exclude 'docs/vps-sandbox/first-provisioning-notes.md' \
   --exclude 'docs/vps-sandbox/troubleshooting-and-lessons.md' \
   --exclude 'docs/vps-sandbox/session-2026-06-11-learning-browser-sync.md' \
+  --exclude 'docs/vps-sandbox/session-2026-06-30-fleet-image-0.1.30-patrick.md' \
   --exclude 'docs/vps-sandbox/hotpatch-running-box.md' \
   --exclude 'docs/vps-sandbox/credential-isolation-langfuse-relay.md' \
+  --exclude 'docs/vps-sandbox/update-hardening-todo.md' \
+  --exclude 'docs/vps-sandbox/control-plane.md' \
   --exclude 'docs/vps-sandbox/provider-choices.md' \
   --exclude 'docs/vps-sandbox/voice-think-speak.md' \
   --exclude 'docs/vps-sandbox/voice-realtime.md' \
@@ -59,6 +62,21 @@ rsync -a "${RSYNC_DELETE[@]}" \
   --exclude 'docs/README.oss.md' \
   --exclude 'docs/vps-sandbox/README.oss.md' \
   --exclude 'docs/design/README.oss.md' \
+  --exclude 'scripts/sync-from-oss.sh' \
+  --exclude 'scripts/repair-fleet-ea-cron-timezone.sh' \
+  --exclude 'scripts/hotfix-box-to-0.1.26.sh' \
+  --exclude 'scripts/sync-hermes-to-vps.sh' \
+  --exclude 'scripts/sync-hindsight-to-vps.sh' \
+  --exclude 'scripts/sync-camofox-proxy-to-vps.sh' \
+  --exclude 'scripts/repair-vps-admin-update.sh' \
+  --exclude 'scripts/repair-instance-env-drift.sh' \
+  --exclude 'scripts/refresh-vps-ghcr-login.sh' \
+  --exclude 'scripts/diff-factory-skill-with-learning.sh' \
+  --exclude 'scripts/lib/ensure-hermes-learning-git.sh' \
+  --exclude 'src/hermesLearningGitCron.ts' \
+  --exclude '.github/workflows/fleet-sync-check.yml' \
+  --exclude '.github/workflows/joshu-sandbox-image.yml' \
+  --exclude 'deploy/.env.vps.example.oss' \
   "${ROOT_DIR}/" "${OUT_DIR}/"
 
 # Public doc indexes (curated for joshu-oss).
@@ -68,6 +86,31 @@ cp "${ROOT_DIR}/docs/README.oss.md" "${OUT_DIR}/docs/README.md"
 cp "${ROOT_DIR}/docs/vps-sandbox/README.oss.md" "${OUT_DIR}/docs/vps-sandbox/README.md"
 cp "${ROOT_DIR}/docs/design/README.oss.md" "${OUT_DIR}/docs/design/README.md"
 cp "${ROOT_DIR}/docs/box-state.oss.md" "${OUT_DIR}/docs/box-state.md"
+
+# Keys-only self-host env template (no CP relay URLs).
+if [[ -f "${ROOT_DIR}/deploy/.env.vps.example.oss" ]]; then
+  cp "${ROOT_DIR}/deploy/.env.vps.example.oss" "${OUT_DIR}/deploy/.env.vps.example"
+fi
+
+# Rewrite RELEASE.json image refs for public GHCR package names.
+if [[ -f "${OUT_DIR}/deploy/RELEASE.json" ]]; then
+  python3 - "${OUT_DIR}/deploy/RELEASE.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    data = json.load(f)
+ver = data.get("version", "")
+if ver:
+    data["imageRef"] = f"ghcr.io/db-aeon/joshu-oss:{ver}"
+    data["voiceImageRef"] = f"ghcr.io/db-aeon/joshu-oss-voice-realtime:{ver}"
+    notes = (data.get("notes") or "").strip()
+    if notes.startswith("Fleet "):
+        data["notes"] = notes.removeprefix("Fleet ").strip()
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+PY
+fi
 
 bash "${ROOT_DIR}/scripts/oss-doc-sanitize.sh" "${OUT_DIR}"
 
@@ -79,14 +122,16 @@ rm -rf \
   "${OUT_DIR}/docs/hermes-customizations.md" \
   "${OUT_DIR}/docs/joshu-identity.md" \
   "${OUT_DIR}/docs/day0-cold-start.md" \
-  "${OUT_DIR}/docs/box-state.md" \
   "${OUT_DIR}/docs/design/brand-guidelines.md" \
   "${OUT_DIR}/docs/design/joshu-style-guide-v1.png" \
   "${OUT_DIR}/docs/vps-sandbox/first-provisioning-notes.md" \
   "${OUT_DIR}/docs/vps-sandbox/troubleshooting-and-lessons.md" \
   "${OUT_DIR}/docs/vps-sandbox/session-2026-06-11-learning-browser-sync.md" \
+  "${OUT_DIR}/docs/vps-sandbox/session-2026-06-30-fleet-image-0.1.30-patrick.md" \
   "${OUT_DIR}/docs/vps-sandbox/hotpatch-running-box.md" \
   "${OUT_DIR}/docs/vps-sandbox/credential-isolation-langfuse-relay.md" \
+  "${OUT_DIR}/docs/vps-sandbox/update-hardening-todo.md" \
+  "${OUT_DIR}/docs/vps-sandbox/control-plane.md" \
   "${OUT_DIR}/docs/vps-sandbox/provider-choices.md" \
   "${OUT_DIR}/docs/vps-sandbox/voice-think-speak.md" \
   "${OUT_DIR}/docs/vps-sandbox/voice-realtime.md" \
@@ -94,7 +139,27 @@ rm -rf \
   "${OUT_DIR}/docs/vps-sandbox/phone-voice-local-test.md" \
   "${OUT_DIR}/arozos/web-overlays" \
   "${OUT_DIR}/.cursor" \
+  "${OUT_DIR}/scripts/sync-from-oss.sh" \
+  "${OUT_DIR}/scripts/repair-fleet-ea-cron-timezone.sh" \
+  "${OUT_DIR}/scripts/hotfix-box-to-0.1.26.sh" \
+  "${OUT_DIR}/scripts/sync-hermes-to-vps.sh" \
+  "${OUT_DIR}/scripts/sync-hindsight-to-vps.sh" \
+  "${OUT_DIR}/scripts/sync-camofox-proxy-to-vps.sh" \
+  "${OUT_DIR}/scripts/repair-vps-admin-update.sh" \
+  "${OUT_DIR}/scripts/repair-instance-env-drift.sh" \
+  "${OUT_DIR}/scripts/refresh-vps-ghcr-login.sh" \
+  "${OUT_DIR}/scripts/diff-factory-skill-with-learning.sh" \
+  "${OUT_DIR}/scripts/lib/ensure-hermes-learning-git.sh" \
+  "${OUT_DIR}/src/hermesLearningGitCron.ts" \
+  "${OUT_DIR}/.github/workflows/fleet-sync-check.yml" \
+  "${OUT_DIR}/.github/workflows/joshu-sandbox-image.yml" \
+  "${OUT_DIR}/deploy/.env.vps.example.oss" \
   2>/dev/null || true
+
+# Drop accidental build artifacts that should never ship publicly.
+find "${OUT_DIR}/src" -type f \( -name '*.js' -o -name '*.js.map' -o -name '*.d.ts' \) \
+  ! -path '*/shareChat/teamsBotAssets/*' -delete 2>/dev/null || true
+rm -rf "${OUT_DIR}/apps"/*/.cache "${OUT_DIR}/packages"/*/.cache 2>/dev/null || true
 
 DOC_COUNT="$(find "${OUT_DIR}/docs" -type f | wc -l | tr -d ' ')"
 echo "[prepare-oss-snapshot] docs in OSS tree: ${DOC_COUNT}"
@@ -102,7 +167,8 @@ echo "[prepare-oss-snapshot] docs in OSS tree: ${DOC_COUNT}"
 STALE=0
 while IFS= read -r pattern; do
   [[ -z "$pattern" || "$pattern" =~ ^# ]] && continue
-  if rg -q "$pattern" "${OUT_DIR}/docs" 2>/dev/null; then
+  # Scan docs + the public env example for relay / fleet leak patterns.
+  if rg -q "$pattern" "${OUT_DIR}/docs" "${OUT_DIR}/deploy/.env.vps.example" 2>/dev/null; then
     echo "[prepare-oss-snapshot] WARN stale doc pattern still present: $pattern" >&2
     STALE=1
   fi
@@ -113,6 +179,9 @@ your-org/joshu
 joshu-beige\.vercel\.app
 vps-sandbox/control-plane-portal\.md
 apps/control-plane/
+hello\.joshu\.me/api/instances/
+JOSHU_SCRAPECREATORS_MODE=relay
+credential-isolation-langfuse-relay
 PATTERNS
 
 if [[ "$STALE" -eq 1 ]]; then

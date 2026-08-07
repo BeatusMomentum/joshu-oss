@@ -1,5 +1,6 @@
 export {
   validateJoshuAppManifest,
+  validateMultimodalProfile,
   resolveManifestVoiceTools,
   parameterNamesForGuiAction,
   type JoshuAppManifest,

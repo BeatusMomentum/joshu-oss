@@ -11,11 +11,9 @@ Joshu can provision a **dedicated agent email address** via [Nylas Agent Account
 | Environment | Where | Keys |
 |-------------|--------|------|
 | Local / OSS self-host | Repo root `.env` or box `instance.env` | `NYLAS_API_KEY`, optional `NYLAS_API_URI` (**direct** mode — default when key is set) |
-| Fleet VPS (Joshu control plane) | CP `DEFAULT_NYLAS_*` only (must be set on Vercel) | Boxes use `JOSHU_NYLAS_MODE=relay` and **do not** receive `NYLAS_API_KEY`; mail/calendar go through CP `POST /api/instances/nylas/proxy` |
+| Managed Joshu fleet | Control plane only | Boxes do **not** store `NYLAS_API_KEY`; operators configure fleet proxy separately |
 
-**Self-host / OSS:** keep `NYLAS_API_KEY` on the box. Do not set `JOSHU_NYLAS_MODE=relay` unless you run a control plane that implements the Nylas proxy. Unset mode + local key → same behavior as before relay existed.
-
-**Fleet status / cutover:** Patrick pilot complete — see [`vps-sandbox/credential-isolation-langfuse-relay.md`](vps-sandbox/credential-isolation-langfuse-relay.md) (Vercel `DEFAULT_NYLAS_*`, `EmailIdentity` grant backfill, enable script, acceptance including a transient first-send `500` that retried clean).
+**Self-host / OSS:** keep `NYLAS_API_KEY` on the box (`/etc/joshu/instance.env` or Welcome). Bring your own Nylas API key — no proxy or relay URL is required.
 
 ```dotenv
 NYLAS_API_KEY=nyk_v0_...

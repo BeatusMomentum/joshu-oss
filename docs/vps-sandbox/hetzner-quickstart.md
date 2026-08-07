@@ -15,7 +15,7 @@ No proprietary control plane — this is **standalone self-host** only. Control-
 | --- | --- |
 | VPS public IP | `203.0.113.50` |
 | Hostname | `mybox.example.com` |
-| Release image | `ghcr.io/db-aeon/joshu-oss:0.1.29` (see [`deploy/RELEASE.json`](../../deploy/RELEASE.json)) |
+| Release image | `ghcr.io/db-aeon/joshu-oss:0.1.40` (see [`deploy/RELEASE.json`](../../deploy/RELEASE.json)) |
 
 ---
 
@@ -95,8 +95,8 @@ CUSTOMER_DOMAIN=mybox.example.com
 VPS_IPV4=203.0.113.50
 ACME_EMAIL=you@example.com
 
-JOSHU_RELEASE_VERSION=0.1.29
-JOSHU_IMAGE_REF=ghcr.io/db-aeon/joshu-oss:0.1.29
+JOSHU_RELEASE_VERSION=0.1.40
+JOSHU_IMAGE_REF=ghcr.io/db-aeon/joshu-oss:0.1.40
 ```
 
 Save: **Ctrl+O** Enter, **Ctrl+X**.

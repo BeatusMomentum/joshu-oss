@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { resolveBoxSecret } from "../boxSecrets/resolve.js";
 import { JOSHU_OPENROUTER_HINDSIGHT_LLM_MODEL } from "../joshuOpenRouterDefaults.js";
 import { joshuConfigDir } from "../nylas/paths.js";
@@ -478,7 +479,16 @@ export function resolveCompanionScript(
   );
 }
 
-/** Prefer python3.13 / 3.12 / 3.14, then python3. */
+/** True when a python binary resolves on PATH or as an absolute path. */
+function pythonBinRunnable(bin: string): boolean {
+  const trimmed = bin.trim();
+  if (!trimmed) return false;
+  if (trimmed.includes(path.sep)) return fs.existsSync(trimmed);
+  const probe = spawnSync(trimmed, ["--version"], { encoding: "utf8" });
+  return probe.status === 0;
+}
+
+/** Prefer LAST30DAYS_PYTHON when present on disk, then python3.13 / 3.12 / 3.14, then python3. */
 export function resolvePythonBin(): string {
   const candidates = [
     process.env.LAST30DAYS_PYTHON,
@@ -489,10 +499,7 @@ export function resolvePythonBin(): string {
   ].filter((v): v is string => Boolean(v && v.trim()));
 
   for (const bin of candidates) {
-    // Absolute path
-    if (bin.includes(path.sep) && fs.existsSync(bin)) return bin;
+    if (pythonBinRunnable(bin)) return bin;
   }
-
-  // Defer to PATH lookup at spawn time — return first preferred name.
-  return candidates[0] || "python3";
+  return "python3";
 }

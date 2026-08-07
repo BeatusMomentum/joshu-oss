@@ -1,17 +1,63 @@
 {
   "id": "last30days",
   "name": "last30days",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "AGPL-3.0",
   "publisher": "joshu",
   "entry": "last30days/index.html",
   "apiPrefix": "/joshu/api/last30days",
   "description": "Research the last 30 days across social and web sources (ScrapeCreators; no yt-dlp/cookies)",
+  "delivery": {
+    "onComplete": "hermes_session",
+    "outputDir": "research/last30days"
+  },
+  "cron": {
+    "jobs": [
+      {
+        "id": "watchlist-daily",
+        "name": "last30days: watchlist daily",
+        "schedule": "0 8 * * *",
+        "noAgent": true,
+        "script": "last30days-watchlist-run.sh",
+        "deliver": "local"
+      }
+    ]
+  },
   "agent": {
-    "headless": true,
+    "skill": "last30days-gui",
+    "usesSkills": ["joshu-browser"],
+    "headless": false,
+    "guiActions": [
+      {
+        "name": "runResearch",
+        "description": "Run topic research in the open app (updates Results panel)",
+        "parameters": [
+          { "name": "topic", "type": "string", "required": true },
+          { "name": "days", "type": "number" },
+          { "name": "depth", "type": "string", "description": "quick | default | deep" },
+          { "name": "mock", "type": "boolean" }
+        ],
+        "voice": {
+          "shortcut": "research",
+          "phrases": ["research", "what are people saying about", "run research on"]
+        }
+      },
+      { "name": "cancelRun", "description": "Cancel the active research run" },
+      {
+        "name": "openRun",
+        "description": "Open a historical run by id",
+        "parameters": [{ "name": "runId", "type": "string", "required": true }]
+      },
+      { "name": "openSettings", "description": "Open Settings dialog" },
+      { "name": "runDoctor", "description": "Run doctor health check (json mode)" },
+      { "name": "refreshRuns", "description": "Refresh recent runs list" },
+      { "name": "openWatchlist", "description": "Switch to Watchlist nav" }
+    ],
     "actions": [
-      { "name": "research", "description": "Run a last30days topic research job" },
-      { "name": "doctor", "description": "Run last30days doctor health check" }
+      { "name": "research", "description": "Headless topic research (async; pass wait:true to block)" },
+      { "name": "doctor", "description": "Headless doctor health check" },
+      { "name": "watchlistRunAll", "description": "Run research for all enabled watchlist topics" },
+      { "name": "briefingGenerate", "description": "Generate briefing digest from store" }
     ]
   }
 }

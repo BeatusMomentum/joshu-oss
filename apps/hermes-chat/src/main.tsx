@@ -15,6 +15,7 @@ import {
   fetchChatSessionMessages,
   fetchChatSessions,
   type ChatSessionRow,
+  type ChatTranscriptMessage,
 } from "./chatSessions";
 import { syncJChatTray } from "./traySync";
 import { resolvePortraitUrl, useIdentity } from "./useIdentity";
@@ -127,8 +128,13 @@ function buildUserContent(text: string, attachments: Attachment[]): string | Her
   return parts;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function transcriptToJChatMessages(transcript: ChatTranscriptMessage[]): JChatMessage[] {
+  return transcript.map((message) => ({
+    id: newId(message.role),
+    role: message.role,
+    content: message.content,
+    status: "done" as const,
+  }));
 }
 
 function App() {
@@ -164,6 +170,7 @@ function App() {
   const lastTrayNotifiedIdRef = useRef<string | null>(null);
   const trayAudioLevelRef = useRef(0);
   const traySyncRafRef = useRef<number | null>(null);
+  const pendingTranscriptRefreshRef = useRef(false);
 
   const transcriptForHermes = useMemo<HermesMessage[]>(
     () => [{ role: "system", content: SYSTEM_PROMPT }],
@@ -195,10 +202,51 @@ function App() {
     }
   }, []);
 
+  const refreshTranscriptFromServer = useCallback(async () => {
+    try {
+      const { sessionId: resolvedId, messages: transcript } = await fetchChatSessionMessages(
+        API_BASE,
+        sessionIdRef.current,
+      );
+      setSessionId(resolvedId);
+      setMessages(transcriptToJChatMessages(transcript));
+      if (historyOpen) void refreshChatSessions();
+    } catch {
+      /* gateway warming — next push or manual refresh will catch up */
+    }
+  }, [historyOpen, refreshChatSessions]);
+
   useEffect(() => {
     if (!historyOpen) return;
     void refreshChatSessions();
   }, [historyOpen, refreshChatSessions]);
+
+  /** Server pushes when async jobs append to this session's Hermes transcript. */
+  useEffect(() => {
+    const source = new EventSource(
+      `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/events`,
+    );
+
+    const onTranscriptUpdated = () => {
+      if (busyRef.current) {
+        pendingTranscriptRefreshRef.current = true;
+        return;
+      }
+      void refreshTranscriptFromServer();
+    };
+
+    source.addEventListener("transcript_updated", onTranscriptUpdated);
+    return () => {
+      source.removeEventListener("transcript_updated", onTranscriptUpdated);
+      source.close();
+    };
+  }, [sessionId, refreshTranscriptFromServer]);
+
+  useEffect(() => {
+    if (busy || !pendingTranscriptRefreshRef.current) return;
+    pendingTranscriptRefreshRef.current = false;
+    void refreshTranscriptFromServer();
+  }, [busy, refreshTranscriptFromServer]);
 
   const startNewChat = useCallback(() => {
     if (busy) return;
@@ -329,11 +377,12 @@ function App() {
                 raw: parsed.raw ?? parsed,
               };
               const found = existing.some((tool) => tool.id === toolCallId);
+              const nextTools = found
+                ? existing.map((tool) => (tool.id === toolCallId ? { ...tool, ...nextTool } : tool))
+                : [...existing, nextTool];
               return {
                 ...message,
-                tools: found
-                  ? existing.map((tool) => (tool.id === toolCallId ? { ...tool, ...nextTool } : tool))
-                  : [...existing, nextTool],
+                tools: nextTools,
               };
             });
             return;

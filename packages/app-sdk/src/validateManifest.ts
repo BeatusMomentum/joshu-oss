@@ -182,3 +182,25 @@ export function validateJoshuAppManifest(raw: unknown): ManifestValidationResult
   const manifest = { ...(doc as JoshuAppManifest), agent: parsedAgent ?? (doc.agent as JoshuAppManifest["agent"]) };
   return { ok: true, errors: [], manifest };
 }
+
+/** Stricter profile for multimodal desktop apps (chat + GUI + headless invoke). */
+export function validateMultimodalProfile(manifest: JoshuAppManifest): ManifestValidationResult {
+  const errors: string[] = [];
+  if (!manifest.apiPrefix?.trim()) {
+    errors.push("multimodal profile requires apiPrefix");
+  }
+  if (!manifest.agent?.skill?.trim()) {
+    errors.push("multimodal profile requires agent.skill");
+  }
+  if (!manifest.agent?.guiActions?.length) {
+    errors.push("multimodal profile requires agent.guiActions[]");
+  }
+  if (!manifest.agent?.actions?.length) {
+    errors.push("multimodal profile requires agent.actions[]");
+  }
+  if (manifest.agent?.headless === true) {
+    errors.push("multimodal desktop apps should set agent.headless to false (headless actions use agent.actions[])");
+  }
+  if (errors.length > 0) return { ok: false, errors, manifest };
+  return { ok: true, errors: [], manifest };
+}

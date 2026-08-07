@@ -38,7 +38,7 @@ services:
       # jterm: Hermes must not cat instance.env / GHCR secrets (until baked in image).
       - ../scripts/patch-hermes-terminal-secrets-guard.mjs:/opt/joshu/scripts/patch-hermes-terminal-secrets-guard.mjs:ro
       - ../scripts/apply-hermes-hitl-patch.sh:/opt/joshu/scripts/apply-hermes-hitl-patch.sh:ro
-      # Hermes v0.20+ patch applicators (re-applied on boot; bind so Patrick can iterate without image rebuild).
+      # Hermes v0.20+ patch applicators (re-applied on boot; bind so operators can iterate without image rebuild).
       - ../scripts/apply-hermes-langfuse-patches.sh:/opt/joshu/scripts/apply-hermes-langfuse-patches.sh:ro
       - ../scripts/apply-hermes-content-filter-patch.sh:/opt/joshu/scripts/apply-hermes-content-filter-patch.sh:ro
       - ../scripts/apply-hermes-read-file-utf8-patch.sh:/opt/joshu/scripts/apply-hermes-read-file-utf8-patch.sh:ro
@@ -79,6 +79,7 @@ services:
       - ../scripts/start-gbrain-mcp-http.sh:/opt/joshu/scripts/start-gbrain-mcp-http.sh:ro
       - ../scripts/gbrain-mcp-http-server.mjs:/opt/joshu/scripts/gbrain-mcp-http-server.mjs:ro
       - ../scripts/ensure-gbrain-indexed.sh:/opt/joshu/scripts/ensure-gbrain-indexed.sh:ro
+      - ../scripts/ensure-last30days-python.sh:/opt/joshu/scripts/ensure-last30days-python.sh:ro
       - ../scripts/ensure-hermes-gbrain-mcp.mjs:/opt/joshu/scripts/ensure-hermes-gbrain-mcp.mjs:ro
       - ../scripts/joshu-connectors-mcp-http-server.mjs:/opt/joshu/scripts/joshu-connectors-mcp-http-server.mjs:ro
       - ../scripts/start-joshu-connectors-mcp.sh:/opt/joshu/scripts/start-joshu-connectors-mcp.sh:ro

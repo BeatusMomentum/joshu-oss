@@ -175,4 +175,19 @@ export function registerOnboardingRoutes(router: Router, opts: { projectRoot: st
       res.status(500).json({ error: (err as Error).message });
     }
   });
+
+  /** Ops repair: re-apply Hermes owner timezone + EA cron windows from draft or Nylas profile. */
+  router.post("/api/onboarding/resync-ea-crons", async (_req: Request, res: Response) => {
+    try {
+      const { resyncEaCronFromBox } = await import("./onboarding/resyncEaCronFromBox.js");
+      const result = await resyncEaCronFromBox(opts.projectRoot);
+      if (!result.ok) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
 }

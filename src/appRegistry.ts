@@ -23,26 +23,49 @@ export function getAppActionHandler(appId: string, action: string): AppActionHan
   return actionHandlers.get(appId)?.get(action);
 }
 
+export function hasAppActionHandler(appId: string, action: string): boolean {
+  return actionHandlers.get(appId)?.has(action) ?? false;
+}
+
 export async function loadAppManifests(projectRoot: string): Promise<Map<string, JoshuAppManifest>> {
   manifestCache.clear();
-  const subRoot = path.join(projectRoot, "arozos", "subservice");
+  const subRoots = resolveSubserviceRoots(projectRoot);
+  for (const subRoot of subRoots) {
+    await scanSubserviceRoot(subRoot, manifestCache);
+  }
+  return manifestCache;
+}
+
+/** Dev monorepo first; runtime ArozOS volume fills gaps on VPS hotpatches. */
+function resolveSubserviceRoots(projectRoot: string): string[] {
+  const roots: string[] = [path.join(projectRoot, "arozos", "subservice")];
+  const arozData = process.env.AROZ_DATA?.trim();
+  if (arozData) roots.push(path.join(arozData, "subservice"));
+  const arozTemplate = process.env.AROZ_TEMPLATE?.trim();
+  if (arozTemplate) roots.push(path.join(arozTemplate, "subservice"));
+  return roots;
+}
+
+async function scanSubserviceRoot(
+  subRoot: string,
+  cache: Map<string, JoshuAppManifest>,
+): Promise<void> {
   let entries: string[];
   try {
     entries = await readdir(subRoot);
   } catch {
-    return manifestCache;
+    return;
   }
   for (const dir of entries) {
     const manifestPath = path.join(subRoot, dir, "joshu.app.json");
     try {
       const raw = await readFile(manifestPath, "utf8");
       const doc = JSON.parse(raw) as JoshuAppManifest;
-      if (doc.id) manifestCache.set(doc.id, doc);
+      if (doc.id && !cache.has(doc.id)) cache.set(doc.id, doc);
     } catch {
       /* skip dirs without manifest */
     }
   }
-  return manifestCache;
 }
 
 export function getAppManifest(appId: string): JoshuAppManifest | undefined {

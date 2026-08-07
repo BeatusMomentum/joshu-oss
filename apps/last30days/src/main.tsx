@@ -1,10 +1,26 @@
 import "@joshu/design-system/typography.css";
 import "@joshu/design-system/tokens.css";
 import "@joshu/design-system/base.css";
+import "@joshu/app-agent/agentChat.css";
 import "./styles.css";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { JoshuMultimodalApp } from "@joshu/app-agent";
+
+import { LAST30DAYS_MANIFEST } from "./last30daysAppManifest.js";
+import {
+  createLast30DaysGuiActions,
+  type Last30DaysGuiAgentApi,
+  type Last30DaysNavId,
+} from "./last30daysGuiActions.js";
+import {
+  indexClustersForDisplay,
+  membersForCluster,
+  sourceCounts,
+  sourceIssuesFromStatus,
+  tryParseAgentReport,
+} from "@joshu/last30days-format";
 
 const API = (import.meta.env.VITE_LAST30DAYS_API_BASE || "/joshu/api/last30days").replace(
   /\/+$/,
@@ -43,42 +59,6 @@ function appendSanitizedLog(prev: string[], line: string): string[] {
   const cleaned = sanitizeLogLine(line);
   if (cleaned == null) return prev;
   return [...prev.slice(-400), cleaned];
-}
-
-type AgentCluster = {
-  title?: string;
-  summary?: string;
-  sources?: string[];
-  engagement_total?: number;
-};
-
-type AgentResultItem = {
-  candidate_id?: string;
-  title?: string;
-  summary?: string;
-  url?: string;
-  source?: string;
-  published_at?: string;
-  cluster?: number;
-  engagement?: Record<string, number>;
-  relevance_score?: number;
-};
-
-type AgentReport = {
-  query?: string;
-  window_days?: number;
-  generated_at?: string;
-  clusters?: AgentCluster[];
-  results?: AgentResultItem[];
-  source_status?: Record<string, string>;
-  schema_version?: string;
-};
-
-function sourceIssuesFromStatus(status?: Record<string, string>): string[] {
-  if (!status) return [];
-  return Object.entries(status)
-    .filter(([, value]) => value && value !== "ok")
-    .map(([name, value]) => `${name}: ${value}`);
 }
 
 /** Pull human-facing warnings out of engine markdown briefs (emit=md). */
@@ -121,74 +101,6 @@ function stripMdAgentEnvelope(text: string): string {
     )
     .replace(/# END OF last30days CANONICAL OUTPUT[\s\S]*/g, "")
     .trim();
-}
-
-function tryParseAgentReport(text: string): AgentReport | null {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const obj = parsed as AgentReport;
-    if (!Array.isArray(obj.clusters) && !Array.isArray(obj.results)) return null;
-    return obj;
-  } catch {
-    return null;
-  }
-}
-
-type IndexedCluster = {
-  cluster: AgentCluster;
-  /** Original cluster index referenced by result items. */
-  idx: number;
-  memberCount: number;
-};
-
-/** Display clusters by engagement; keep original idx for result membership. */
-function indexClustersForDisplay(
-  clusters: AgentCluster[],
-  items: AgentResultItem[],
-): IndexedCluster[] {
-  return clusters
-    .map((cluster, idx) => ({
-      cluster,
-      idx,
-      memberCount: items.filter((item) => item.cluster === idx).length,
-    }))
-    .sort((a, b) => {
-      const engA = a.cluster.engagement_total ?? 0;
-      const engB = b.cluster.engagement_total ?? 0;
-      if (engB !== engA) return engB - engA;
-      if (b.memberCount !== a.memberCount) return b.memberCount - a.memberCount;
-      return a.idx - b.idx;
-    });
-}
-
-function membersForCluster(
-  items: AgentResultItem[],
-  clusterIdx: number,
-  limit = 6,
-): AgentResultItem[] {
-  return items
-    .filter((item) => item.cluster === clusterIdx)
-    .sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0))
-    .slice(0, limit);
-}
-
-function sourceCounts(report: AgentReport): { name: string; count: number; status?: string }[] {
-  const counts = new Map<string, number>();
-  for (const item of report.results || []) {
-    const src = (item.source || "unknown").toLowerCase();
-    counts.set(src, (counts.get(src) || 0) + 1);
-  }
-  const names = new Set<string>([...counts.keys(), ...Object.keys(report.source_status || {})]);
-  return [...names]
-    .sort()
-    .map((name) => ({
-      name,
-      count: counts.get(name) || 0,
-      status: report.source_status?.[name],
-    }));
 }
 
 function ResearchReportView({ text }: { text: string }) {
@@ -368,12 +280,7 @@ function ResearchReportView({ text }: { text: string }) {
   );
 }
 
-type NavId =
-  | "research"
-  | "watchlist"
-  | "store"
-  | "briefings"
-  | "doctor";
+type NavId = Last30DaysNavId;
 
 type PublicConfig = {
   setupComplete?: boolean;
@@ -400,10 +307,68 @@ type RunSummary = {
   id: string;
   status: string;
   createdAt: number;
+  topic?: string;
   exitCode?: number | null;
   error?: string;
   argv?: string[];
+  outputRelativePath?: string;
+  reportUri?: string;
 };
+
+function runTopicLabel(r: RunSummary): string {
+  if (r.topic?.trim()) return r.topic.trim();
+  const argv = r.argv;
+  if (!argv || argv.length < 3) return "—";
+  const candidate = argv[2];
+  return candidate.startsWith("-") ? "—" : candidate;
+}
+
+function formatRunWhen(ts: number): string {
+  return new Date(ts).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+/** Tool result for runResearch — model summarizes in the same turn after the run finishes. */
+function buildRunCompleteToolResult(
+  status: string,
+  topic: string,
+  stdout: string,
+  reportUri?: string,
+): string {
+  if (status === "failed" || status === "cancelled") {
+    const detail = stdout.trim() || "No output.";
+    return `Research ${status} for topic "${topic}". ${detail.slice(0, 600)}`;
+  }
+
+  const report = tryParseAgentReport(stdout);
+  if (report) {
+    const nClusters = report.clusters?.length ?? 0;
+    const nItems = report.results?.length ?? 0;
+    const indexed = indexClustersForDisplay(report.clusters || [], report.results || []);
+    const themes = indexed
+      .slice(0, 3)
+      .map((entry) => entry.cluster?.title?.trim())
+      .filter(Boolean);
+    return (
+      `Research completed for "${report.query ?? topic}"` +
+      (report.window_days ? ` (${report.window_days} days)` : "") +
+      `. ${nClusters} clusters, ${nItems} items.` +
+      (themes.length ? ` Top themes: ${themes.join("; ")}.` : "") +
+      (reportUri ? ` Report file: ${reportUri}.` : "") +
+      " Full report is in the Results panel — summarize 1–3 key findings for the user in plain language."
+    );
+  }
+
+  const trimmed = stdout.trim();
+  return trimmed
+    ? `Research completed for "${topic}". ${trimmed.slice(0, 1200)}`
+    : `Research completed for "${topic}" with no stdout.`;
+}
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -413,9 +378,28 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
-  const body = (await response.json()) as T & { error?: string; ok?: boolean };
+  const raw = await response.text();
+  let body: (T & { error?: string; ok?: boolean }) | null = null;
+  if (raw.trim()) {
+    try {
+      body = JSON.parse(raw) as T & { error?: string; ok?: boolean };
+    } catch {
+      throw new Error(
+        response.ok
+          ? `Invalid JSON from ${url}`
+          : `Request failed (${response.status}): ${raw.slice(0, 120) || response.statusText}`,
+      );
+    }
+  }
   if (!response.ok) {
-    throw new Error(typeof body.error === "string" ? body.error : `Request failed (${response.status})`);
+    throw new Error(
+      body && typeof body.error === "string"
+        ? body.error
+        : `Request failed (${response.status})${raw ? `: ${raw.slice(0, 120)}` : ""}`,
+    );
+  }
+  if (body == null) {
+    throw new Error(`Empty response from ${url}`);
   }
   return body;
 }
@@ -436,6 +420,10 @@ function StatusPill({
 }
 
 function App() {
+  const guiRef = useRef<Last30DaysGuiAgentApi | null>(null);
+  const runInFlightRef = useRef(false);
+  const seenRunIdsRef = useRef<Set<string>>(new Set());
+  const runsPollReadyRef = useRef(false);
   const [nav, setNav] = useState<NavId>("research");
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -458,6 +446,7 @@ function App() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<string[]>([]);
   const [resultText, setResultText] = useState("");
+  const [activeReportUri, setActiveReportUri] = useState<string | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [drillTarget, setDrillTarget] = useState("1");
 
@@ -495,64 +484,103 @@ function App() {
   const refreshRuns = useCallback(async () => {
     const data = await fetchJson<{ runs: RunSummary[] }>(`${API}/runs`);
     setRuns(data.runs || []);
+    return data.runs || [];
   }, []);
 
   useEffect(() => {
-    void refreshStatus().catch((err: Error) => setError(err.message));
-    void refreshRuns().catch(() => undefined);
+    void refreshStatus().catch((err: Error) => {
+      // During box boot the API may return empty bodies — avoid scary JSON parse errors.
+      const msg = err.message.includes("JSON") || err.message.includes("Empty response")
+        ? "Joshu API is starting — retry in a moment."
+        : err.message;
+      setError(msg);
+    });
+    void refreshRuns()
+      .then((initial) => {
+        for (const r of initial) seenRunIdsRef.current.add(r.id);
+        runsPollReadyRef.current = true;
+      })
+      .catch(() => {
+        runsPollReadyRef.current = true;
+      });
   }, [refreshStatus, refreshRuns]);
 
-  const attachRunStream = useCallback((runId: string) => {
+  const attachRunStream = useCallback((runId: string): Promise<string> => {
     setActiveRunId(runId);
     setLogLines([]);
     setResultText("");
+    setActiveReportUri(null);
     setBusy(true);
-    let settled = false;
-    const settle = () => {
-      if (settled) return;
-      settled = true;
-      setBusy(false);
-      void fetchJson<{ run: { stdout: string; status: string; error?: string } }>(
-        `${API}/runs/${runId}`,
-      )
-        .then((full) => {
-          setResultText(full.run.stdout || full.run.error || "");
-          void refreshRuns();
-        })
-        .catch(() => {
-          void refreshRuns();
-        });
-    };
-    const es = new EventSource(`${API}/runs/${runId}/events`);
-    es.onmessage = (ev) => {
-      try {
-        const payload = JSON.parse(ev.data) as {
-          type: string;
-          line?: string;
-          chunk?: string;
-          status?: string;
-          exitCode?: number | null;
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        setBusy(false);
+        runInFlightRef.current = false;
+      void fetchJson<{
+        run: {
+          stdout: string;
+          status: string;
           error?: string;
+          argv?: string[];
+          outputRelativePath?: string;
         };
-        if (payload.type === "stderr" && payload.line != null) {
-          setLogLines((prev) => appendSanitizedLog(prev, payload.line!));
+      }>(`${API}/runs/${runId}`)
+        .then((full) => {
+          const stdout = full.run.stdout || full.run.error || "";
+          setResultText(stdout);
+          void refreshRuns();
+          const label = runTopicLabel({
+            id: runId,
+            status: full.run.status,
+            createdAt: 0,
+            argv: full.run.argv,
+          });
+          const reportUri = full.run.outputRelativePath
+            ? `joshu://${full.run.outputRelativePath.replace(/^\/+/, "")}`
+            : undefined;
+          setActiveReportUri(reportUri ?? null);
+          resolve(buildRunCompleteToolResult(full.run.status, label, stdout, reportUri));
+        })
+          .catch((err: Error) => {
+            void refreshRuns();
+            reject(err);
+          });
+      };
+
+      const es = new EventSource(`${API}/runs/${runId}/events`);
+      es.onmessage = (ev) => {
+        try {
+          const payload = JSON.parse(ev.data) as {
+            type: string;
+            line?: string;
+            chunk?: string;
+            status?: string;
+            exitCode?: number | null;
+            error?: string;
+          };
+          if (payload.type === "stderr" && payload.line != null) {
+            setLogLines((prev) => appendSanitizedLog(prev, payload.line!));
+          }
+          if (payload.type === "stdout" && payload.chunk) {
+            setResultText((prev) => prev + payload.chunk);
+          }
+          if (payload.type === "done") {
+            es.close();
+            settle();
+          }
+        } catch {
+          /* ignore malformed */
         }
-        if (payload.type === "stdout" && payload.chunk) {
-          setResultText((prev) => prev + payload.chunk);
-        }
-        if (payload.type === "done") {
-          es.close();
-          settle();
-        }
-      } catch {
-        /* ignore malformed */
-      }
-    };
-    es.onerror = () => {
-      es.close();
-      // Browsers often fire error when the SSE stream ends after done — still load stdout.
-      settle();
-    };
+      };
+      es.onerror = () => {
+        es.close();
+        // Browsers often fire error when the SSE stream ends after done — still load stdout.
+        settle();
+      };
+    });
   }, [refreshRuns]);
 
   const openHistoricalRun = useCallback(async (runId: string) => {
@@ -575,27 +603,64 @@ function App() {
     }
   }, []);
 
-  const startResearch = async () => {
+  // Pick up runs started outside the UI (chat invoke, headless invoke, duplicate tab).
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (!runsPollReadyRef.current) return;
+      void refreshRuns()
+        .then((next) => {
+          for (const r of next) {
+            if (seenRunIdsRef.current.has(r.id)) continue;
+            seenRunIdsRef.current.add(r.id);
+            const label = runTopicLabel(r);
+            if (label !== "—") setTopic(label);
+            if (r.status === "running" || r.status === "queued") {
+              attachRunStream(r.id);
+            } else if (nav === "research") {
+              void openHistoricalRun(r.id);
+            }
+            break;
+          }
+        })
+        .catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [attachRunStream, nav, openHistoricalRun, refreshRuns]);
+
+  const startResearch = async (overrides?: {
+    topic?: string;
+    days?: number;
+    depth?: "default" | "quick" | "deep";
+    mock?: boolean;
+  }): Promise<string | null> => {
+    if (runInFlightRef.current || busy) return null;
     setError(null);
-    if (!topic.trim() && !mock) {
+    const effectiveTopic = (overrides?.topic ?? topic).trim();
+    const effectiveMock = overrides?.mock ?? mock;
+    if (!effectiveTopic && !effectiveMock) {
       setError("Enter a topic");
-      return;
+      return null;
     }
+    if (overrides?.topic) setTopic(overrides.topic);
+    if (overrides?.days) setDays(overrides.days);
+    if (overrides?.depth) setDepth(overrides.depth);
+    if (overrides?.mock != null) setMock(overrides.mock);
+    setNav("research");
+    runInFlightRef.current = true;
     setBusy(true);
     try {
       const body: Record<string, unknown> = {
-        topic: topic.trim() || "mock topic",
-        // GUI Results panel expects structured agent JSON, not Hermes markdown envelope.
+        topic: effectiveTopic || "mock topic",
         emit: "json",
         jsonProfile: "agent",
         register,
-        days,
-        mock,
+        days: overrides?.days ?? days,
+        mock: effectiveMock,
         hiringSignals,
         deepResearch,
         search: searchOverride || undefined,
-        quick: depth === "quick",
-        deep: depth === "deep",
+        quick: (overrides?.depth ?? depth) === "quick",
+        deep: (overrides?.depth ?? depth) === "deep",
       };
       if (competitors) body.competitors = true;
       if (advanced.trim()) {
@@ -605,10 +670,13 @@ function App() {
         method: "POST",
         body: JSON.stringify(body),
       });
-      attachRunStream(data.runId);
+      seenRunIdsRef.current.add(data.runId);
+      return attachRunStream(data.runId);
     } catch (err) {
+      runInFlightRef.current = false;
       setBusy(false);
       setError((err as Error).message);
+      throw err;
     }
   };
 
@@ -698,6 +766,71 @@ function App() {
     return "Ready";
   }, [status]);
 
+  guiRef.current = {
+    getGuiSnapshot: () => ({
+      activeView: nav,
+      topic,
+      activeRunId,
+      runStatus: busy ? "running" : activeRunId ? "idle" : null,
+      resultPreview: resultText.slice(0, 600),
+      recentRuns: runs.slice(0, 5).map((r) => ({
+        id: r.id,
+        status: r.status,
+        topic: runTopicLabel(r),
+        when: formatRunWhen(r.createdAt),
+      })),
+      engineReady: Boolean(status?.enginePresent),
+    }),
+    runResearch: async (args) => {
+      const depthRaw = typeof args.depth === "string" ? args.depth : undefined;
+      const depthNorm =
+        depthRaw === "quick" || depthRaw === "deep" || depthRaw === "default"
+          ? depthRaw
+          : depthRaw === "standard"
+            ? "default"
+            : undefined;
+      if (runInFlightRef.current || busy) {
+        return "Research already in progress — wait for it to finish or call cancelRun.";
+      }
+      const summary = await startResearch({
+        topic: typeof args.topic === "string" ? args.topic : undefined,
+        days: typeof args.days === "number" ? args.days : undefined,
+        depth: depthNorm,
+        mock: args.mock === true,
+      });
+      if (!summary) {
+        return "Could not start research — enter a topic or use mock.";
+      }
+      return summary;
+    },
+    cancelRun: async () => {
+      await cancelActive();
+      return "Cancel requested.";
+    },
+    openRun: async (runId) => {
+      await openHistoricalRun(runId);
+      return `Opened run ${runId}.`;
+    },
+    openSettings: () => {
+      setOnboardingOpen(false);
+      setSettingsOpen(true);
+      return "Settings opened.";
+    },
+    runDoctor: async () => {
+      setNav("doctor");
+      await loadDoctor("json");
+      return "Doctor json run complete.";
+    },
+    refreshRuns: async () => {
+      await refreshRuns();
+      return "Runs refreshed.";
+    },
+    openWatchlist: () => {
+      setNav("watchlist");
+      return "Watchlist opened.";
+    },
+  };
+
   const navItems: { id: NavId; label: string }[] = [
     { id: "research", label: "Research" },
     { id: "watchlist", label: "Watchlist" },
@@ -712,6 +845,13 @@ function App() {
   };
 
   return (
+    <JoshuMultimodalApp
+      manifest={LAST30DAYS_MANIFEST}
+      guiRef={guiRef}
+      createGuiActions={createLast30DaysGuiActions}
+      guiReadableDescription="Current last30days UI — activeView, topic, runs, results preview"
+      chatTitle="last30days"
+    >
     <div className="app-shell">
       <aside className="nav">
         <div className="brand">
@@ -891,6 +1031,11 @@ function App() {
               <div className="panel form-grid results-main">
                 <div className="panel-head">
                   <p className="eyebrow">Results</p>
+                  {activeReportUri ? (
+                    <p className="report-uri" title="Open from Joshu Files on the desktop">
+                      Saved report: <code>{activeReportUri}</code>
+                    </p>
+                  ) : null}
                   <div className="row">
                     <button
                       type="button"
@@ -934,6 +1079,7 @@ function App() {
                     <thead>
                       <tr>
                         <th>When</th>
+                        <th>Topic</th>
                         <th>Status</th>
                         <th />
                       </tr>
@@ -941,14 +1087,8 @@ function App() {
                     <tbody>
                       {runs.slice(0, 10).map((r) => (
                         <tr key={r.id}>
-                          <td>
-                            {new Date(r.createdAt).toLocaleString(undefined, {
-                              month: "short",
-                              day: "numeric",
-                              hour: "numeric",
-                              minute: "2-digit",
-                            })}
-                          </td>
+                          <td>{formatRunWhen(r.createdAt)}</td>
+                          <td className="run-topic">{runTopicLabel(r)}</td>
                           <td>
                             <span className={`run-status ${r.status}`}>{r.status}</span>
                           </td>
@@ -1287,6 +1427,7 @@ function App() {
         ) : null}
       </main>
     </div>
+    </JoshuMultimodalApp>
   );
 }
 

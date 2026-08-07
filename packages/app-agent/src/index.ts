@@ -49,6 +49,11 @@ export {
 } from "./JoshuEmbeddedAppAgent.js";
 
 export {
+  JoshuMultimodalApp,
+  type JoshuMultimodalAppProps,
+} from "./JoshuMultimodalApp.js";
+
+export {
   buildAppAgentChatThreadId,
   appAgentChatThreadStorageKey,
   rotateAppAgentChatThread,

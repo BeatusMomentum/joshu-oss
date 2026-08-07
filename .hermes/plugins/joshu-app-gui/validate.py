@@ -16,6 +16,9 @@ def normalize_app_gui_action(args: dict) -> tuple[dict | None, str | None]:
 
     raw_args = args.get("args")
     if raw_args is None:
+        # LLMs often emit OpenAI-style "arguments" instead of our schema field "args".
+        raw_args = args.get("arguments")
+    if raw_args is None:
         normalized_args = {}
     elif isinstance(raw_args, dict):
         normalized_args = raw_args

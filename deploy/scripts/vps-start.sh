@@ -850,6 +850,13 @@ for _pkg in app-sdk box-state email-signature; do
   fi
 done
 
+ensure_last30days_python() {
+  local script="${APP_DIR}/scripts/ensure-last30days-python.sh"
+  [[ -f "${script}" ]] || return 0
+  bash "${script}" || echo "[vps-start] WARN: last30days Python 3.12 ensure failed" >&2
+}
+ensure_last30days_python
+
 echo "[vps-start] Joshu ${HOST}:${PORT}"
 export JOSHU_DEFER_HERMES_GATEWAY_WARM=true
 ( cd "${APP_DIR}" && node dist/server.js ) &
