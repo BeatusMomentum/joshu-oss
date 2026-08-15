@@ -130,6 +130,7 @@ Changes from any channel appear in `~/.hermes/cron/jobs.json` immediately. Refre
 |-----|-------|--------------------------------|
 | `EA morning` / `EA evening` / `EA weekly` | `ea-playbook` | Morning → **`ea-morning-review`**; evening → **`ea-shutdown`**; weekly → playbook weekly section |
 | `EA scheduling` Kanban tasks (`ea-scheduling` board) | `ea-scheduling` | Meeting negotiation |
+| `EA owner-reply` Kanban tasks (`ea-owner-reply` board) | `ea-owner-reply` | Do owner ask then reply on Nylas thread |
 
 Manual install (if needed):
 

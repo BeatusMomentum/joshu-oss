@@ -46,7 +46,8 @@ export function ComposioConnections({ apiBase, open, onClose }: Props) {
 
       const params = new URLSearchParams();
       const q = search.trim();
-      if (q) params.set("search", q);
+      // Composio requires 3+ characters; shorter queries stay on the featured list.
+      if (q.length >= 3) params.set("search", q);
       const listRes = await fetch(`${composioRoot}/toolkits?${params}`, { cache: "no-store" });
       if (!listRes.ok) throw new Error(await listRes.text());
       const listJson = (await listRes.json()) as { toolkits?: ComposioToolkitRow[] };
@@ -159,7 +160,7 @@ export function ComposioConnections({ apiBase, open, onClose }: Props) {
                 type="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search providers (e.g. gmail, notion)…"
+                placeholder="Search providers (3+ characters)…"
                 aria-label="Search providers"
               />
               <button type="button" onClick={() => void refresh()} disabled={loading}>

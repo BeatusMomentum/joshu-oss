@@ -263,7 +263,9 @@ export async function listComposioToolkits(
   const composio = composioClient();
   const session = await composio.use(sessionId);
 
-  const search = options.search?.trim();
+  // Composio toolkit search rejects queries shorter than 3 characters (HTTP 400 / 10400).
+  const rawSearch = options.search?.trim() || "";
+  const search = rawSearch.length >= 3 ? rawSearch : "";
   const requested = options.limit ?? (search ? 40 : 50);
   const limit = Math.min(50, Math.max(1, requested));
 

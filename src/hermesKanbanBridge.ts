@@ -70,11 +70,15 @@ export const EA_SCHED_INGRESS_KANBAN_BOARD = "ea-sched-ingress";
 
 export const EA_MAIL_INGRESS_KANBAN_BOARD = "ea-mail-ingress";
 
+/** Owner→agent deliverable replies (spawned after mail ingress; ready, not default-blocked). */
+export const EA_OWNER_REPLY_KANBAN_BOARD = "ea-owner-reply";
+
 /** Boards where create must use assignee → ready (no triage / auto-decompose). */
 export const EA_KANBAN_BOARDS = [
   EA_SCHEDULING_KANBAN_BOARD,
   EA_SCHED_INGRESS_KANBAN_BOARD,
   EA_MAIL_INGRESS_KANBAN_BOARD,
+  EA_OWNER_REPLY_KANBAN_BOARD,
 ] as const;
 
 export type KanbanCreatePayload = KanbanBridgePayload & {
@@ -124,6 +128,17 @@ export async function ensureEaMailIngressBoard(filesRoot: string): Promise<Kanba
     slug: EA_MAIL_INGRESS_KANBAN_BOARD,
     name: "EA Mail Ingress",
     description: "Joshu executive assistant — one Kanban task per trackable email (route to project boards)",
+    default_workdir: filesRoot,
+  });
+}
+
+/** Idempotent board setup for owner→agent reply workers (do-the-ask then nylas_send). */
+export async function ensureEaOwnerReplyBoard(filesRoot: string): Promise<KanbanBridgeResult> {
+  return callKanbanBridge({
+    action: "ensure_board",
+    slug: EA_OWNER_REPLY_KANBAN_BOARD,
+    name: "EA Owner Reply",
+    description: "Joshu executive assistant — owner asked the companion; reply on that Nylas thread",
     default_workdir: filesRoot,
   });
 }

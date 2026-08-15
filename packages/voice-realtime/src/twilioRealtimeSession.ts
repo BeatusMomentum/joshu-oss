@@ -16,7 +16,7 @@ import {
   resolveTwilioThinkPassword,
   VOICE_S2S_PROVIDER,
 } from "./config.js";
-import { runJoshuThink } from "./brainThink.js";
+import { runJoshuThink, resolveThinkUserQuote } from "./brainThink.js";
 import { JOSHU_IDENTITY } from "./config.js";
 import { createVoiceS2sClient, voiceS2sProviderLabel } from "./createVoiceS2sClient.js";
 import { normalizeThinkToolName, PHONE_TOOL_NAMES } from "./realtimeTools.js";
@@ -736,6 +736,15 @@ export class TwilioRealtimeSession {
       .slice(-4000);
   }
 
+  /** Most recent user transcript line — STT fallback when Realtime omits user_quote. */
+  private lastUserTranscript(): string | undefined {
+    for (let i = this.transcript.length - 1; i >= 0; i--) {
+      const turn = this.transcript[i];
+      if (turn?.role === "user" && turn.text.trim()) return turn.text.trim();
+    }
+    return undefined;
+  }
+
   private cancelActiveJob(): void {
     if (!this.activeJob) return;
     this.clearProgressTimer(this.activeJob);
@@ -915,14 +924,16 @@ export class TwilioRealtimeSession {
     const intent = String(args.intent ?? "task");
     const summary = this.sanitizeTextForThinkContext(String(args.summary ?? this.conversationSummary()));
     const rawUserQuote = typeof args.user_quote === "string" ? args.user_quote : undefined;
-    const userQuote = rawUserQuote
-      ? this.sanitizeTextForThinkContext(rawUserQuote) || undefined
-      : undefined;
+    const userQuote = resolveThinkUserQuote(
+      rawUserQuote ? this.sanitizeTextForThinkContext(rawUserQuote) || undefined : undefined,
+      this.lastUserTranscript(),
+    );
     const jobId = randomUUID().slice(0, 8);
     this.requiresRestatedIntentAfterUnlock = false;
 
     voiceLog(this.callSid, "turn", `#${this.turn} THINK START job=${jobId} intent=${JSON.stringify(intent)}`, {
       userQuote,
+      hasUserQuote: Boolean(userQuote),
       summaryPreview: summary.slice(0, 120),
     });
     // No response.create on tool output — Realtime will guess/hallucinate if we let it speak here.

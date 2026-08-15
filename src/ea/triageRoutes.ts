@@ -27,7 +27,13 @@ import {
   reconcileLegacySchedulingStubs,
 } from "./triageSchedulingBridge.js";
 import { archiveTriageStub } from "./triageStub.js";
-import { resolveSchedulingMailAuthorization } from "./agentAuthorization.js";
+import { resolveOwnerEmails, resolveSchedulingMailAuthorization } from "./agentAuthorization.js";
+import {
+  handoffOwnerReplyTask,
+  listOwnerReplyTasks,
+  queueOwnerReplyTask,
+} from "./ownerReplyCron.js";
+import { isOwnerReplyEligible } from "./ownerReplyEligibility.js";
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -372,6 +378,128 @@ export function registerEaTriageRoutes(router: Router, opts: { projectRoot: stri
           : {}),
       });
       res.json({ ok: true, sidecar });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  /** Open owner_reply tasks on board ea-owner-reply. */
+  router.get("/api/ea/owner-reply/tasks", async (req: Request, res: Response) => {
+    const filesRoot = filesRootFromProject(opts.projectRoot);
+    if (!filesRoot) {
+      res.status(503).json({ error: "JOSHU_FILES_ROOT unavailable" });
+      return;
+    }
+    const threadId =
+      readString(req.query.threadId) || readString(req.query.thread_id) || undefined;
+    try {
+      const tasks = await listOwnerReplyTasks({ filesRoot, threadId });
+      res.json({ ok: true, board: "ea-owner-reply", count: tasks.length, tasks });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  /** Create ready owner_reply task (ingress — do not use Hermes kanban_create). */
+  router.post("/api/ea/owner-reply/tasks", async (req: Request, res: Response) => {
+    const filesRoot = filesRootFromProject(opts.projectRoot);
+    if (!filesRoot) {
+      res.status(503).json({ error: "JOSHU_FILES_ROOT unavailable" });
+      return;
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const messageId = readString(body.messageId) || readString(body.message_id);
+    const sourcePath = readString(body.sourcePath) || readString(body.source_path);
+    if (!messageId) {
+      res.status(400).json({ error: "messageId required" });
+      return;
+    }
+    if (!sourcePath) {
+      res.status(400).json({ error: "sourcePath required" });
+      return;
+    }
+
+    const providerRaw = readString(body.provider);
+    const provider =
+      providerRaw || (sourcePath.includes("/mail/nylas/") ? "nylas" : providerRaw);
+    const from = readString(body.from);
+    const owners = resolveOwnerEmails(opts.projectRoot);
+    const gate = isOwnerReplyEligible({
+      provider,
+      agentInbox: provider === "nylas" || sourcePath.includes("/mail/nylas/"),
+      from,
+      ownerEmails: owners,
+    });
+    if (!gate.eligible) {
+      res.status(403).json({
+        error: "owner_reply_not_eligible",
+        reason: gate.reason,
+      });
+      return;
+    }
+
+    try {
+      const result = await queueOwnerReplyTask({
+        filesRoot,
+        messageId,
+        sourcePath,
+        subject: readString(body.subject) || undefined,
+        from: from || undefined,
+        title: readString(body.title) || undefined,
+        body: readString(body.body) || readString(body.taskBody) || undefined,
+        threadId: readString(body.threadId) || readString(body.thread_id) || undefined,
+        provider: provider || undefined,
+      });
+      if (!result.taskId) {
+        res.status(502).json({ ok: false, error: result.reason });
+        return;
+      }
+      res.json({
+        ok: true,
+        board: "ea-owner-reply",
+        task_id: result.taskId,
+        action: result.reason,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.post("/api/ea/owner-reply/tasks/:taskId/handoff", async (req: Request, res: Response) => {
+    const filesRoot = filesRootFromProject(opts.projectRoot);
+    if (!filesRoot) {
+      res.status(503).json({ error: "JOSHU_FILES_ROOT unavailable" });
+      return;
+    }
+    const taskId = readString(req.params.taskId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const sourcePath = readString(body.sourcePath) || readString(body.source_path);
+    const messageId = readString(body.messageId) || readString(body.message_id);
+    const summary = readString(body.summary);
+    if (!taskId || !sourcePath || !messageId || !summary) {
+      res.status(400).json({ error: "taskId, sourcePath, messageId, summary required" });
+      return;
+    }
+    try {
+      const result = await handoffOwnerReplyTask({
+        filesRoot,
+        taskId,
+        sourcePath,
+        messageId,
+        from: readString(body.from) || undefined,
+        summary,
+      });
+      if (!result.ok) {
+        res.status(502).json({ ok: false, error: result.error });
+        return;
+      }
+      res.json({
+        ok: true,
+        task_id: taskId,
+        evaluation_queued: result.evaluation_queued === true,
+        ...(result.error ? { warning: result.error } : {}),
+      });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

@@ -23,7 +23,8 @@ import {
   lookupMailIngestAuthorization,
 } from "./mailDedup.js";
 import type { MailAgentAuthorization } from "./agentAuthorization.js";
-import { resolveAuthorizationFromSourcePath } from "./agentAuthorization.js";
+import { resolveAuthorizationFromSourcePath, resolveOwnerEmails } from "./agentAuthorization.js";
+import { isOwnerReplyEligible, ownerReplyIngressPlaybookLines } from "./ownerReplyEligibility.js";
 
 export type QueueMailIngressTaskResult = {
   queued: boolean;
@@ -60,7 +61,7 @@ async function ensureProjectBoard(
   return boardSlug;
 }
 
-function buildMailIngressTaskBody(
+export function buildMailIngressTaskBody(
   input: AfterMirrorThreadInput & {
     messageId: string;
     classification: {
@@ -79,7 +80,21 @@ function buildMailIngressTaskBody(
   const slug = normalizeProjectSlug(input.classification.project_slug);
   const auth = input.classification.authorization;
   const schedulingEligible = auth.scheduling_eligible && input.classification.scheduling_hint === true;
-  const allowedActions = schedulingEligible ? "file,schedule" : "file";
+  const ownerReplyGate = isOwnerReplyEligible({
+    provider: input.provider,
+    agentInbox: input.provider === "nylas",
+    from: input.from,
+    ownerEmails: resolveOwnerEmails(input.projectRoot ?? process.cwd(), input.accountEmail),
+    disposition: "track",
+    category: input.classification.category,
+    schedulingPathA: schedulingEligible,
+  });
+  const ownerReplyEligible = ownerReplyGate.eligible;
+  const allowedActions = schedulingEligible
+    ? "file,schedule"
+    : ownerReplyEligible
+      ? "file,reply"
+      : "file";
   const lines = [
     "kind: mail_ingress",
     `board: ${EA_MAIL_INGRESS_BOARD}`,
@@ -96,9 +111,10 @@ function buildMailIngressTaskBody(
     ...(input.accountKey ? [`account_key: ${input.accountKey}`] : []),
     `agent_authorized: ${auth.agent_authorized}`,
     `scheduling_eligible: ${schedulingEligible}`,
+    `owner_reply_eligible: ${ownerReplyEligible}`,
     `allowed_actions: ${allowedActions}`,
     `authorization_reason: ${JSON.stringify(auth.reason)}`,
-    "Order: (1) skill_view ea-playbook (2) read_file source_path (3) file Projects/<slug>/ (4) mail_list_track_tasks(projectSlug=…) then handoff|create (5) schedule only if allowed_actions includes schedule (6) Triage stub state:done → _done/ (7) kanban_complete.",
+    "Order: (1) skill_view ea-playbook (2) read_file source_path (3) file Projects/<slug>/ (4) mail_list_track_tasks(projectSlug=…) then handoff|create (5) schedule only if allowed_actions includes schedule (5b) owner_reply spawn if owner_reply_eligible (6) Triage stub state:done → _done/ (7) kanban_complete.",
     "MCP args: projectSlug = folder slug (not board id, not nested tool_call). Stub = Triage/gmail-<account_key>-<thread_id>.stub.md (or <provider>-<thread_id>.stub.md).",
     "Job: FILE this email — match or create Projects/<slug>/ and project track.",
     "Standalone scheduling with no project → Projects/other/.",
@@ -112,6 +128,7 @@ function buildMailIngressTaskBody(
           "After filing: scheduling_list_meeting_tasks by thread_id; handoff or scheduling_create_meeting_task (pass threadId) on ea-scheduling.",
         ]
       : []),
+    ...ownerReplyIngressPlaybookLines(ownerReplyEligible),
     "Route: match open track on project board or create blocked track via mail_* MCP.",
     "Use mail_* MCP — not Hermes kanban_create cross-board. Do not load ea-project-kanban.",
     ...formatKanbanProfileBlock(profile, assistantEmail),

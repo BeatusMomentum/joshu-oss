@@ -76,6 +76,8 @@ platforms:
 
 Messages already inside a thread still get in-thread replies. Upstream: [Hermes Slack messaging](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack).
 
+**Session timeout:** Joshu idle-resets Slack and Telegram after **30 minutes** (`JOSHU_HERMES_MESSAGING_IDLE_MINUTES`). jChat stays continuous. Past chats remain in `session_search`.
+
 **Verify:** DM the bot or `@mention` it; gateway log should show `inbound message: platform=slack` in `~/.hermes/logs/gateway.log`. UI details: [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md#hermes-slack-chat). Full steps: [`hermes-integration.md` — Slack](hermes-integration.md#slack-chat-hermes-messaging-gateway).
 
 ## Hindsight memory

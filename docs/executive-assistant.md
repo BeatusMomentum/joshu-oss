@@ -24,6 +24,7 @@ See [`templates/ea/FILING.md`](../templates/ea/FILING.md) for filing rules the c
 | Next actions | `Projects/<slug>/todo.md` | `ea-playbook` |
 | Multi-step / HITL | Kanban + project board | `ea-project-kanban` |
 | Calendar / meetings | Live Google/Nylas + scheduling tasks | `ea-scheduling` |
+| Owner→agent asks | Ready Kanban on `ea-owner-reply` | `ea-owner-reply` |
 | Daily plan | `Planning/time-block-*.excalidraw` | `ea-time-block` |
 | Morning / shutdown | `Planning/daily-review-*.md` | `ea-morning-review`, `ea-shutdown` |
 
@@ -67,5 +68,5 @@ On VPS, run scripts at `/opt/joshu/scripts/…` (not relative to Hermes Desktop 
 
 Enabled in [`integrations/hermes/skills-enabled.yaml`](../integrations/hermes/skills-enabled.yaml):
 
-- `ea-playbook`, `ea-scheduling`, `ea-time-block`, `ea-morning-review`, `ea-shutdown`, `ea-project-kanban`
+- `ea-playbook`, `ea-scheduling`, `ea-owner-reply`, `ea-time-block`, `ea-morning-review`, `ea-shutdown`, `ea-project-kanban`
 - `joshu-brain`, `joshu-mail`, `excalidraw`, kanban tools

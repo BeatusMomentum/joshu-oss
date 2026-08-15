@@ -260,3 +260,7 @@ export function schedulingIngressTaskIdempotencyKey(canonicalId: string): string
 export function schedulingMeetingTaskIdempotencyKeyFromMessage(canonicalId: string): string {
   return `ea-meet-msg-${safeIdempotencySegment(canonicalId)}`;
 }
+
+export function ownerReplyTaskIdempotencyKeyFromMessage(canonicalId: string): string {
+  return `ea-owner-reply-msg-${safeIdempotencySegment(canonicalId)}`;
+}

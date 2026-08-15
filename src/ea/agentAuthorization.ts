@@ -62,7 +62,8 @@ function normalizeEmailList(values?: string[]): string[] {
   return [...out];
 }
 
-function resolveOwnerEmails(projectRoot: string, accountEmail?: string): Set<string> {
+/** Owner addresses used for authorization and owner-reply eligibility. */
+export function resolveOwnerEmails(projectRoot: string, accountEmail?: string): Set<string> {
   const emails = new Set<string>();
   const profile = readAgentProfile(projectRoot);
   for (const raw of [
@@ -281,6 +282,32 @@ export async function resolveOutboundMailAuthorization(opts: {
     const { lookupMailIngestAuthorization } = await import("./mailDedup.js");
     cachedAuth = await lookupMailIngestAuthorization(opts.filesRoot, messageId);
     if (cachedAuth?.agent_authorized) return cachedAuth;
+  }
+
+  // Mirror missing (e.g. Nylas sync failed): authorize replies from live parent message.
+  if (messageId) {
+    try {
+      const { readAgentGrant } = await import("../nylas/store.js");
+      const { getMessage } = await import("../nylas/client.js");
+      const agent = readAgentGrant(opts.projectRoot);
+      if (agent) {
+        const parent = await getMessage(agent.grantId, messageId);
+        const liveAuth = resolveAgentAuthorization({
+          provider: "nylas",
+          from: parent.from,
+          to: parent.to,
+          cc: parent.cc,
+          triggerBodyPreview: (parent.body ?? parent.snippet ?? "").slice(0, 2000),
+          projectRoot: opts.projectRoot,
+          agentInbox: true,
+        });
+        if (liveAuth.agent_authorized) return liveAuth;
+      }
+    } catch (err) {
+      console.warn(
+        `[ea-auth] live parent lookup for reply ${messageId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   // Prefer live thread mirror over stale per-message ingest cache (e.g. Te'riel msg

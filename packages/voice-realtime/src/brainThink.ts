@@ -34,6 +34,35 @@ const identity = resolveJoshuIdentity();
 
 const JOSHU_API_BASE = (process.env.JOSHU_API_BASE_URL ?? "http://127.0.0.1:8788/joshu").replace(/\/+$/, "");
 
+/** First non-empty trimmed quote from Realtime tool args, STT pending, or transcript. */
+export function resolveThinkUserQuote(...candidates: Array<string | undefined | null>): string | undefined {
+  for (const c of candidates) {
+    const t = typeof c === "string" ? c.trim() : "";
+    if (t) return t;
+  }
+  return undefined;
+}
+
+/**
+ * Hermes user message for a voice `think` turn.
+ * Always includes Intent + Conversation summary; includes `User said:` whenever we have a
+ * verbatim STT / tool quote so Langfuse trace roots show the owner's words (not only the
+ * Realtime paraphrase).
+ */
+export function buildThinkUserMessage(params: {
+  intent: string;
+  summary: string;
+  userQuote?: string;
+}): string {
+  const lines = [
+    `Intent: ${params.intent}`,
+    `Conversation summary: ${params.summary}`,
+  ];
+  const quote = resolveThinkUserQuote(params.userQuote);
+  if (quote) lines.push(`User said: ${quote}`);
+  return lines.join("\n");
+}
+
 async function drainDesktopActionsFromJoshu(sessionKey: string): Promise<DesktopSurfaceAction[]> {
   try {
     const url = `${JOSHU_API_BASE}/api/desktop-actions/drain?sessionKey=${encodeURIComponent(sessionKey)}`;
@@ -74,13 +103,11 @@ export async function runJoshuThink(params: ThinkParams): Promise<string> {
     ...(appCtx ? buildEmbeddedAppThinkMessages(appCtx) : []),
     {
       role: "user",
-      content: [
-        `Intent: ${params.intent}`,
-        `Conversation summary: ${params.summary}`,
-        params.userQuote ? `User said: ${params.userQuote}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
+      content: buildThinkUserMessage({
+        intent: params.intent,
+        summary: params.summary,
+        userQuote: params.userQuote,
+      }),
     },
   ];
 

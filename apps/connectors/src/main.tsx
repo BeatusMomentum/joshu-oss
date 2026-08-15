@@ -126,6 +126,11 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  /** Row waiting on OAuth popup close + toolkit list refresh. */
+  const [pendingConnect, setPendingConnect] = useState<{
+    slug: string;
+    phase: "oauth" | "refresh";
+  } | null>(null);
   const [composioEnabled, setComposioEnabled] = useState<boolean | null>(null);
   const [day0Status, setDay0Status] = useState<Day0StatusPayload | null>(null);
   const [day0Running, setDay0Running] = useState(false);
@@ -176,7 +181,8 @@ function App() {
       }).catch(() => undefined);
       const params = new URLSearchParams();
       const q = search.trim();
-      if (q) params.set("search", q);
+      // Composio requires 3+ characters; shorter queries stay on the featured list.
+      if (q.length >= 3) params.set("search", q);
       const listRes = await fetch(`${COMPOSIO_API}/toolkits?${params}`, { cache: "no-store" });
       if (!listRes.ok) throw new Error(await listRes.text());
       const listJson = (await listRes.json()) as { toolkits?: ComposioToolkitRow[] };
@@ -257,16 +263,24 @@ function App() {
   const openOAuthPopup = (redirectUrl: string, slug: string) => {
     const popup = window.open(redirectUrl, "_blank", "noopener,noreferrer");
     if (!popup) throw new Error("Pop-up blocked — allow pop-ups and try again.");
+    setPendingConnect({ slug, phase: "oauth" });
     const poll = window.setInterval(() => {
       if (!popup.closed) return;
       window.clearInterval(poll);
+      setPendingConnect({ slug, phase: "refresh" });
       void (async () => {
-        await fetch(`${COMPOSIO_API}/post-connect`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ toolkit: slug, restartGateway: true }),
-        });
-        await refreshAll();
+        try {
+          await fetch(`${COMPOSIO_API}/post-connect`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ toolkit: slug, restartGateway: true }),
+          });
+          await refreshAll();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setPendingConnect(null);
+        }
       })();
     }, 500);
   };
@@ -744,7 +758,7 @@ function App() {
                   type="search"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search providers (gmail, github, …)"
+                  placeholder="Search providers (3+ characters)"
                   aria-label="Search providers"
                   disabled={loading && toolkits.length === 0}
                 />
@@ -780,9 +794,16 @@ function App() {
                     }
                   }
                   const connectBusyKey = `connect-${row.slug}`;
+                  const pendingThis = pendingConnect?.slug.toLowerCase() === slugLower;
+                  const pendingPhase = pendingThis ? pendingConnect.phase : null;
 
                   return (
-                    <li key={row.slug} className="composio-toolkit" id={slugLower === "slackbot" ? "slackbot" : undefined}>
+                    <li
+                      key={row.slug}
+                      className={`composio-toolkit${pendingThis ? " is-connecting" : ""}`}
+                      id={slugLower === "slackbot" ? "slackbot" : undefined}
+                      aria-busy={pendingThis || undefined}
+                    >
                       <div className="composio-row">
                         <div className="composio-row-main">
                           {row.logo ? (
@@ -794,6 +815,14 @@ function App() {
                           )}
                           <div>
                             <strong>{row.name}</strong>
+                            {pendingThis ? (
+                              <small className="composio-status-pending">
+                                <span className="loading-spinner loading-spinner-inline" aria-hidden />
+                                {pendingPhase === "refresh"
+                                  ? "Refreshing connection…"
+                                  : "Waiting for sign-in…"}
+                              </small>
+                            ) : (
                             <small>
                               {slugLower === "slackbot"
                                 ? accounts.length === 0
@@ -803,6 +832,7 @@ function App() {
                                   ? "Not connected"
                                   : `${accounts.length} account${accounts.length === 1 ? "" : "s"} connected`}
                             </small>
+                            )}
                           </div>
                         </div>
                         <div className="composio-account-actions">
@@ -828,7 +858,7 @@ function App() {
                           <button
                             type="button"
                             className="btn btn-primary"
-                            disabled={busy === connectBusyKey}
+                            disabled={busy === connectBusyKey || pendingThis}
                             onClick={() => {
                               if (slugLower === "slackbot") {
                                 setSlackbotWizardOpen(true);
@@ -837,7 +867,11 @@ function App() {
                               void connectToolkit(row.slug);
                             }}
                           >
-                            {busy === connectBusyKey
+                            {pendingThis
+                              ? pendingPhase === "refresh"
+                                ? "Refreshing…"
+                                : "Connecting…"
+                              : busy === connectBusyKey
                               ? "Opening…"
                               : slugLower === "slackbot" && slackbotSetup?.setupRequired
                                 ? accounts.length > 0
@@ -1067,8 +1101,19 @@ function App() {
                           {slackbotMsg && <p className="hint">{slackbotMsg}</p>}
                         </div>
                       )}
-                      {accounts.length > 0 && (
+                      {(accounts.length > 0 || pendingThis) && (
                         <ul className="composio-accounts">
+                          {pendingThis && (
+                            <li className="composio-account-row composio-account-skeleton" aria-hidden>
+                              <div>
+                                <span className="skeleton-bar skeleton-bar-wide" />
+                                <span className="skeleton-bar skeleton-bar-narrow" />
+                              </div>
+                              <div className="composio-account-actions">
+                                <span className="skeleton-bar skeleton-bar-btn" />
+                              </div>
+                            </li>
+                          )}
                           {accounts.map((acct) => {
                             const gmailMeta =
                               slugLower === "gmail"

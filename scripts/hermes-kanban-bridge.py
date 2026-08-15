@@ -118,7 +118,7 @@ def _create_task(conn: Any, board: str, **kwargs: Any) -> str:
 
 
 # EA scheduling + mail ingress boards: tasks must be created with assignee → ready (never triage).
-EA_KANBAN_BOARDS = frozenset({"ea-scheduling", "ea-sched-ingress", "ea-mail-ingress"})
+EA_KANBAN_BOARDS = frozenset({"ea-scheduling", "ea-sched-ingress", "ea-mail-ingress", "ea-owner-reply"})
 
 
 def _parse_parents(raw: Any) -> Optional[List[str]]:

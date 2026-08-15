@@ -38,6 +38,7 @@ import {
   toOpenAiChatTools,
 } from "./agUiFrontendTools.js";
 import { loadAppManifests } from "./appRegistry.js";
+import { SSE_HEADERS, sseData, startSseHeartbeat } from "./httpSse.js";
 
 type RunAgentInput = {
   threadId?: string;
@@ -73,7 +74,7 @@ function readString(value: unknown): string {
 }
 
 function agUiSseSend(res: Response, event: AgUiEvent): void {
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
+  sseData(res, event);
 }
 
 /** Deliver a manifest guiAction to CopilotKit frontend tools (and CUSTOM app_action fallback). */
@@ -282,16 +283,12 @@ export function registerAgUiRoutes(
         ` selectionSource=${String(appState.gui?.selectionSource ?? "n/a")}`,
     );
 
-    res.set({
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
+    res.set(SSE_HEADERS);
     res.flushHeaders?.();
 
     const controller = new AbortController();
     res.on("close", () => controller.abort());
+    const stopHeartbeat = startSseHeartbeat(res);
 
     agUiSseSend(res, { type: EVENT.RUN_STARTED, threadId, runId });
 
@@ -486,6 +483,7 @@ export function registerAgUiRoutes(
       const msg = err instanceof Error ? err.message : String(err);
       agUiSseSend(res, { type: EVENT.RUN_ERROR, threadId, runId, message: msg });
     } finally {
+      stopHeartbeat();
       res.end();
     }
   });

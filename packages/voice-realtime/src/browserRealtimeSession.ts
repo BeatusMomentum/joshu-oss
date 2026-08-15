@@ -10,7 +10,7 @@ import {
   WEB_SYSTEM_PROMPT,
   JOSHU_IDENTITY,
 } from "./config.js";
-import { runJoshuThink } from "./brainThink.js";
+import { runJoshuThink, resolveThinkUserQuote } from "./brainThink.js";
 import { resolveDesktopModule } from "./desktopModules.js";
 import { buildEmbeddedAppVoicePromptAddendum } from "./joshuIdentity.js";
 import { createVoiceS2sClient } from "./createVoiceS2sClient.js";
@@ -523,7 +523,11 @@ export class BrowserRealtimeSession {
 
     const intent = String(args.intent ?? "task");
     const summary = String(args.summary ?? this.conversationSummary());
-    const userQuote = typeof args.user_quote === "string" ? args.user_quote : undefined;
+    // Prefer Realtime's user_quote; fall back to STT pending (often arrives just before/after the tool call).
+    const userQuote = resolveThinkUserQuote(
+      typeof args.user_quote === "string" ? args.user_quote : undefined,
+      this.pendingUserQuote,
+    );
 
     s2s.sendFunctionOutput(
       call.callId,
@@ -541,6 +545,13 @@ export class BrowserRealtimeSession {
     if (this.brainJob) {
       voiceLog(this.sessionId, "think", `think reuse job=${this.brainJob.jobId}`);
       this.brainJob.voiceInject = true;
+      // Late STT / late user_quote — backfill so Hermes still gets User said:
+      if (userQuote && !this.brainJob.userQuote) {
+        this.brainJob.userQuote = userQuote;
+        voiceLog(this.sessionId, "think", "backfilled userQuote onto in-flight job", {
+          preview: userQuote.slice(0, 120),
+        });
+      }
       this.brainJob.progress = {
         tick: 0,
         phase: "awaiting_ack",
@@ -556,7 +567,7 @@ export class BrowserRealtimeSession {
     this.startBrainJob({
       intent,
       summary,
-      userQuote: userQuote ?? this.pendingUserQuote ?? undefined,
+      userQuote,
       voiceInject: true,
       withProgress: true,
       source: "think",
@@ -578,6 +589,15 @@ export class BrowserRealtimeSession {
 
     const job = this.brainJob;
     if (job) {
+      // STT often arrives after Realtime already called think — backfill verbatim quote
+      // onto the in-flight job so Hermes/Langfuse still get `User said:`.
+      if (!job.userQuote && userQuote.trim()) {
+        job.userQuote = userQuote.trim();
+        voiceLog(this.sessionId, "think", "late STT backfilled onto in-flight job", {
+          jobId: job.jobId,
+          preview: userQuote.slice(0, 120),
+        });
+      }
       if (this.turnThinkRequested || !job.userQuote || job.userQuote === userQuote) {
         voiceLog(this.sessionId, "think", "skip duplicate brain trigger (transcript after think)", {
           jobId: job.jobId,
@@ -668,15 +688,18 @@ export class BrowserRealtimeSession {
   }): void {
     this.cancelBrainJob(true);
     const jobId = randomUUID().slice(0, 8);
+    const resolvedQuote = resolveThinkUserQuote(params.userQuote, this.pendingUserQuote);
     voiceLog(this.sessionId, "think", `start job=${jobId} source=${params.source ?? "unknown"}`, {
       intent: params.intent ?? "task",
       voiceInject: params.voiceInject,
+      hasUserQuote: Boolean(resolvedQuote),
+      quotePreview: resolvedQuote?.slice(0, 120),
     });
     const abort = new AbortController();
     this.brainJob = {
       abort,
       jobId,
-      userQuote: params.userQuote ?? this.pendingUserQuote ?? undefined,
+      userQuote: resolvedQuote,
       voiceInject: params.voiceInject,
       progress: params.withProgress
         ? { tick: 0, phase: "awaiting_ack", timer: null, longWaitSent: false }
@@ -686,13 +709,28 @@ export class BrowserRealtimeSession {
     this.setState("thinking");
     this.emitSurface(surfaceBrainJobStart());
 
+    // enrichAppSurface is async — STT may land while we wait; re-resolve quote at Hermes start.
     void this.enrichAppSurfaceFromAgUi().then(() => {
+      const job = this.brainJob;
+      if (!job || job.jobId !== jobId) return;
+      const quoteAtStart = resolveThinkUserQuote(
+        job.userQuote,
+        params.userQuote,
+        this.pendingUserQuote,
+      );
+      if (quoteAtStart && job.userQuote !== quoteAtStart) {
+        job.userQuote = quoteAtStart;
+        voiceLog(this.sessionId, "think", "resolved userQuote just before Hermes", {
+          jobId,
+          preview: quoteAtStart.slice(0, 120),
+        });
+      }
       void this.runBrainJob({
         jobId,
         abort,
         intent: params.intent ?? "task",
         summary: params.summary ?? this.conversationSummary(),
-        userQuote: params.userQuote,
+        userQuote: quoteAtStart,
       });
     });
   }
@@ -705,13 +743,22 @@ export class BrowserRealtimeSession {
     userQuote?: string;
   }): Promise<void> {
     const t0 = performance.now();
+    // Final backfill: STT may have arrived during enrichAppSurface.
+    const userQuote = resolveThinkUserQuote(
+      params.userQuote,
+      this.brainJob?.jobId === params.jobId ? this.brainJob.userQuote : undefined,
+      this.pendingUserQuote,
+    );
+    if (userQuote && this.brainJob?.jobId === params.jobId) {
+      this.brainJob.userQuote = userQuote;
+    }
     try {
       const hermesText = await runJoshuThink({
         callSid: this.surfaceSessionId,
         jobId: params.jobId,
         intent: params.intent,
         summary: params.summary,
-        userQuote: params.userQuote,
+        userQuote,
         signal: params.abort.signal,
         presentation: "screen",
         appContext: this.appSurface ?? undefined,
@@ -759,7 +806,7 @@ export class BrowserRealtimeSession {
       const job = this.brainJob;
       if (job?.jobId === params.jobId) {
         this.finishHermesProgress(job);
-        const handledQuote = params.userQuote ?? job.userQuote;
+        const handledQuote = userQuote ?? job.userQuote;
         if (handledQuote) this.lastBrainHandledQuote = handledQuote;
         this.turnThinkRequested = false;
         this.brainJob = null;

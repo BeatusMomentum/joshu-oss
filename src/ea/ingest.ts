@@ -58,6 +58,16 @@ export {
   projectBoardSlug,
   normalizeProjectSlug,
 } from "./mailTypes.js";
+export {
+  queueOwnerReplyTask,
+  listOwnerReplyTasks,
+  handoffOwnerReplyTask,
+  queueOwnerReplyTaskHandler,
+} from "./ownerReplyCron.js";
+export {
+  EA_OWNER_REPLY_BOARD,
+  EA_OWNER_REPLY_SKILL,
+} from "./ownerReplyTypes.js";
 export { readMeetingSidecar, writeMeetingSidecar, type MeetingSidecar } from "./schedulingMeetingSidecar.js";
 
 /** @deprecated Legacy MD scheduling cases — read-only. */

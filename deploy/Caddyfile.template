@@ -9,7 +9,10 @@
 #
 #   {CUSTOMER_DOMAIN} {
 #       encode gzip
-#       reverse_proxy /joshu/*   127.0.0.1:8788
+#       reverse_proxy /joshu/*   127.0.0.1:8788 {
+#           flush_interval -1
+#           transport http { read_timeout 1h write_timeout 1h }
+#       }
 #       reverse_proxy /voice/*   127.0.0.1:8791
 #       reverse_proxy /voice-rt/* 127.0.0.1:8792
 #       reverse_proxy            127.0.0.1:8787   # ArozOS desktop

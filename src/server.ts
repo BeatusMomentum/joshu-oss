@@ -34,6 +34,7 @@ import { registerOnboardingRoutes } from "./onboardingApi.js";
 import { registerDay0Routes } from "./day0/day0Api.js";
 import { registerHermesCronRoutes } from "./hermesCronApi.js";
 import { registerHermesChatSessionListener } from "./hermesChatSessionPush.js";
+import { SSE_HEADERS, sseSend, startSseHeartbeat } from "./httpSse.js";
 import { registerLast30DaysRoutes } from "./last30days/routes.js";
 import {
   handleHermesDashboardUpgrade,
@@ -862,16 +863,12 @@ function buildAppRouter(): {
       return res.status(400).json({ error: "messages must contain valid Hermes chat messages" });
     }
 
-    res.set({
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
+    res.set(SSE_HEADERS);
     res.flushHeaders?.();
 
     const controller = new AbortController();
     res.on("close", () => controller.abort());
+    const stopHeartbeat = startSseHeartbeat(res);
 
     try {
       sseSend(res, "status", { status: "running" });
@@ -968,6 +965,7 @@ function buildAppRouter(): {
         sseSend(res, "error", { error: error instanceof Error ? error.message : String(error) });
       }
     } finally {
+      stopHeartbeat();
       res.end();
     }
   });
@@ -1044,12 +1042,7 @@ function buildAppRouter(): {
     const run = runner.getRun(req.params.id ?? "");
     if (!run) return res.status(404).end();
 
-    res.set({
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
+    res.set(SSE_HEADERS);
     res.flushHeaders?.();
 
     for (const event of run.events) sseSend(res, "log", event);
@@ -1156,11 +1149,6 @@ if (PUBLIC_BASE_PATH) {
 function summarize(r: RunRecord): Omit<RunRecord, "events"> & { eventCount: number } {
   const { events, ...rest } = r;
   return { ...rest, eventCount: events.length };
-}
-
-function sseSend(res: Response, event: string, data: unknown): void {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
 function isTerminal(status: string): boolean {

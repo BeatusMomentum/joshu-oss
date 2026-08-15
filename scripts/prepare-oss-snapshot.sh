@@ -73,7 +73,6 @@ rsync -a "${RSYNC_DELETE[@]}" \
   --exclude 'scripts/refresh-vps-ghcr-login.sh' \
   --exclude 'scripts/diff-factory-skill-with-learning.sh' \
   --exclude 'scripts/lib/ensure-hermes-learning-git.sh' \
-  --exclude 'src/hermesLearningGitCron.ts' \
   --exclude '.github/workflows/fleet-sync-check.yml' \
   --exclude '.github/workflows/joshu-sandbox-image.yml' \
   --exclude 'deploy/.env.vps.example.oss' \

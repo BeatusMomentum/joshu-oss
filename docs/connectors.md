@@ -134,6 +134,9 @@ Thin MCP server: [`scripts/joshu-connectors-mcp-http-server.mjs`](../scripts/jos
 | `mcp_joshu_connectors_scheduling_list_meeting_tasks` | `scheduling_list_meeting_tasks` | `GET …/ea/scheduling/meetings` — includes `block_reason` + `recent_comments` per task |
 | `mcp_joshu_connectors_scheduling_create_meeting_task` | `scheduling_create_meeting_task` | `POST …/ea/scheduling/meetings` |
 | `mcp_joshu_connectors_scheduling_handoff_meeting_task` | `scheduling_handoff_meeting_task` | `POST …/ea/scheduling/meetings/:taskId/handoff` |
+| `mcp_joshu_connectors_owner_reply_list_tasks` | `owner_reply_list_tasks` | `GET …/ea/owner-reply/tasks` |
+| `mcp_joshu_connectors_owner_reply_create_task` | `owner_reply_create_task` | `POST …/ea/owner-reply/tasks` |
+| `mcp_joshu_connectors_owner_reply_handoff_task` | `owner_reply_handoff_task` | `POST …/ea/owner-reply/tasks/:taskId/handoff` |
 | `mcp_joshu_connectors_mail_list_track_tasks` | `mail_list_track_tasks` | `GET …/ea/mail/tracks?projectSlug=` |
 | `mcp_joshu_connectors_mail_create_track_task` | `mail_create_track_task` | `POST …/ea/mail/tracks` |
 | `mcp_joshu_connectors_mail_handoff_track_task` | `mail_handoff_track_task` | `POST …/ea/mail/tracks/:taskId/handoff` |
@@ -148,7 +151,7 @@ Thin MCP server: [`scripts/joshu-connectors-mcp-http-server.mjs`](../scripts/jos
 | `mcp_joshu_connectors_project_kanban_ensure_board` | `project_kanban_ensure_board` | `POST …/ea/project-kanban/boards` |
 | `mcp_joshu_connectors_project_kanban_create_triage_root` | `project_kanban_create_triage_root` | `POST …/ea/project-kanban/triage-root` |
 
-**EA scheduling (v4.19+):** Universal mail ingress → file project, then **`scheduling_*`** child on `ea-scheduling`. Owner availability → **`google_calendar_find_free_slots`** (default: `primary` + personal Gmail calendars; **`calendars.combined.free`**; respects transparent events). Book on owner Google via Composio `GOOGLECALENDAR_CREATE_EVENT`. Cross-board → **`scheduling_*`** / **`mail_*`** MCP (not Hermes `kanban_create`). See [`ea-for-joshu.md`](executive-assistant.md#ea-scheduling--calendar-source-of-truth) and skills [`ea-scheduling`](../integrations/hermes/skills/executive-assistant/ea-scheduling/SKILL.md), [`ea-playbook`](../integrations/hermes/skills/executive-assistant/ea-playbook/SKILL.md).
+**EA scheduling (v4.19+):** Universal mail ingress → file project, then **`scheduling_*`** child on `ea-scheduling`. **Owner→agent asks:** **`owner_reply_*`** child on `ea-owner-reply` (ready; worker sends). Owner availability → **`google_calendar_find_free_slots`** (default: `primary` + personal Gmail calendars; **`calendars.combined.free`**; respects transparent events). Book on owner Google via Composio `GOOGLECALENDAR_CREATE_EVENT`. Cross-board → **`scheduling_*`** / **`mail_*`** / **`owner_reply_*`** MCP (not Hermes `kanban_create`). See [`ea-for-joshu.md`](executive-assistant.md#ea-scheduling--calendar-source-of-truth) and skills [`ea-scheduling`](../integrations/hermes/skills/executive-assistant/ea-scheduling/SKILL.md), [`ea-owner-reply`](../integrations/hermes/skills/executive-assistant/ea-owner-reply/SKILL.md), [`ea-playbook`](../integrations/hermes/skills/executive-assistant/ea-playbook/SKILL.md).
 
 #### `GET /api/connectors/calendar/google/free-slots`
 

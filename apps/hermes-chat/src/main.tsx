@@ -341,6 +341,7 @@ function App() {
 
         if (!response.ok) throw new Error(await response.text());
 
+        let streamCompleted = false;
         await parseSseStream(response, (event) => {
           const parsed = safeJson(event.data) as Record<string, unknown> | undefined;
           if (event.event === "session" && typeof parsed?.sessionId === "string") {
@@ -399,15 +400,30 @@ function App() {
             return;
           }
           if (event.event === "error") {
+            streamCompleted = true;
             updateAssistant(assistantId, (message) => ({
               ...message,
               content: message.content || String(parsed?.error || "Hermes stream failed"),
               status: "error",
             }));
+            return;
+          }
+          if (event.event === "done") {
+            streamCompleted = true;
           }
         });
 
-        updateAssistant(assistantId, (message) => ({ ...message, status: "done" }));
+        if (!streamCompleted) {
+          updateAssistant(assistantId, (message) => ({
+            ...message,
+            content:
+              message.content ||
+              "The chat connection dropped before the reply arrived. Hermes may still have finished the turn — send “continue” or open a new message to pick up.",
+            status: "error",
+          }));
+        } else {
+          updateAssistant(assistantId, (message) => ({ ...message, status: "done" }));
+        }
         if (historyOpen) void refreshChatSessions();
       } catch (error) {
         updateAssistant(assistantId, (message) => ({

@@ -36,10 +36,11 @@ export const REALTIME_TOOL_DEFINITIONS = [
         },
         user_quote: {
           type: "string",
-          description: "Exact user request if helpful",
+          description:
+            "Verbatim latest user utterance (required whenever you heard them speak). Prefer exact words over paraphrase — Joshu logs this into Hermes/Langfuse.",
         },
       },
-      required: ["intent", "summary"],
+      required: ["intent", "summary", "user_quote"],
     },
   },
 ];

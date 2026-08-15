@@ -4,12 +4,12 @@ description: Triage mail to Projects. Not drips—use ea-project-kanban.
 metadata:
   hermes:
     category: executive-assistant
-    version: "2.19.0"
+    version: "2.20.0"
 ---
 
 # EA Playbook — Triage & rollups
 
-Joshu mirrors mail every **10 minutes** (`connectors/mail/…`) and creates **`Triage/*.stub.md`** stubs plus one **`ea-mail-ingress`** Kanban task per actionable message. Your job on ingress is **filing** — match or create `Projects/<slug>/`, update docs, project track via `mail_*` MCP. **Scheduling** is a **child workflow** after filing (`ea-scheduling` + `scheduling_*` MCP on board `ea-scheduling`) — ingest no longer opens `ea-sched-ingress`.
+Joshu mirrors mail every **10 minutes** (`connectors/mail/…`) and creates **`Triage/*.stub.md`** stubs plus one **`ea-mail-ingress`** Kanban task per actionable message. Your job on ingress is **filing** — match or create `Projects/<slug>/`, update docs, project track via `mail_*` MCP. **Scheduling** is a **child workflow** after filing (`ea-scheduling` + `scheduling_*` MCP). **Owner→agent asks** (non-meeting) spawn **`ea-owner-reply`** via **`owner_reply_*` MCP** — ingest no longer opens `ea-sched-ingress`.
 
 Layout: `docs/executive-assistant.md` · `docs/executive-assistant.md#gtd-workspace` · `${JOSHU_FILES_ROOT}/FILING.md`
 
@@ -19,7 +19,7 @@ Layout: `docs/executive-assistant.md` · `docs/executive-assistant.md#gtd-worksp
 
 | Trigger | Source | This skill |
 |---------|--------|------------|
-| **Mail ingress Kanban** | `ea-mail-ingress` task (`kind: mail_ingress`) | **MAIL INGRESS mode** — file to `Projects/<slug>/`, `mail_*` track, optional scheduling child |
+| **Mail ingress Kanban** | `ea-mail-ingress` task (`kind: mail_ingress`) | **MAIL INGRESS mode** — file to `Projects/<slug>/`, `mail_*` track, optional scheduling or owner-reply child |
 | **Triage stub** | Thin stub (`source_path`, headers only) | Same filing loop; policy flags on ingress Kanban task |
 | **Morning / evening / weekly cron** | Hermes jobs with `skills: ["ea-playbook"]` | Summary email + journals — **not** batch triage drain |
 | **On demand** | jChat user message | Rollup, situation report, or in-chat capture |
@@ -69,7 +69,7 @@ When your Kanban task body includes `kind: mail_ingress`, run this **short-circu
 ### Required order (do not reorder)
 
 1. **`skill_view('ea-playbook')`** — this section (required; do **not** load `ea-project-kanban`).
-2. **Read ingress body fields:** `agent_authorized`, `scheduling_eligible`, `allowed_actions`, `source_path`, `thread_id`, `message_id`, `account_key`, `provider`. Triage stub is a pointer only.
+2. **Read ingress body fields:** `agent_authorized`, `scheduling_eligible`, `owner_reply_eligible`, `allowed_actions`, `source_path`, `thread_id`, `message_id`, `account_key`, `provider`. Triage stub is a pointer only.
 3. **`read_file` the mail mirror** at `${JOSHU_FILES_ROOT}/<source_path>` (once). Then file:
    - Match existing `Projects/<slug>/` (thread, gbrain, `about.md`) **or** create minimal `about.md` / `todo.md` / `journal_*` from `_template/`.
    - Prefer known slug from gbrain / prior tracks over inventing new folders.
@@ -79,6 +79,7 @@ When your Kanban task body includes `kind: mail_ingress`, run this **short-circu
    - **Match** → `mail_handoff_track_task(taskId=…, projectSlug=…, sourcePath=…, messageId=…, summary=…)`.
    - **No match** → `mail_create_track_task(…, projectSlug=…, threadId=…, messageId=…, sourcePath=…)` (**blocked**).
 5. **Scheduling decision** — only when **`scheduling_eligible: true`** (see [Scheduling decision gate](#scheduling-decision-gate-mail-ingress-step-5)). If **`agent_authorized: false`** or **`allowed_actions: file`** — **stop after step 4**; no scheduling child, no outbound mail, no calendar probes.
+5b. **Owner-reply (path D)** — when **`owner_reply_eligible: true`** (owner mailed **agent Nylas** with a non-meeting ask). After filing: **`owner_reply_list_tasks`** by `thread_id` → match → **`owner_reply_handoff_task`**; else **`owner_reply_create_task`** (pass **`threadId`** + **`provider`** + **`from`**). If Joshu returns `existing_thread`, handoff. **Do not** research or **`nylas_send_message`** on this ingress card — the **`ea-owner-reply`** worker does that. Skip path D when you took scheduling **path A** (meeting worker owns outbound).
 6. **Stub done:** open `Triage/gmail-<account_key>-<thread_id>.stub.md` (or `Triage/<provider>-<thread_id>.stub.md` when no account_key) — set `state: done`, move to `Triage/_done/`. Prefer that path; do not recursive-search for stubs.
 7. **`kanban_complete`** the ingress card.
 
@@ -86,7 +87,7 @@ Stop when the short-circuit is done. Do **not** spend turns on directory explore
 
 ### MCP / Joshu API failures
 
-If **`connectors_status`**, **`mail_*`**, or **`scheduling_*`** MCP calls fail (HTML 404, "Joshu API unreachable", or "MCP server unreachable"):
+If **`connectors_status`**, **`mail_*`**, **`scheduling_*`**, or **`owner_reply_*`** MCP calls fail (HTML 404, "Joshu API unreachable", or "MCP server unreachable"):
 
 1. **`kanban_block(reason="connectors-mcp-down: …")`** — do **not** `kanban_complete`.
 2. You may still file project docs from the mail mirror (`read_file` on `source_path`) if not done yet.
@@ -97,7 +98,7 @@ If **`connectors_status`**, **`mail_*`**, or **`scheduling_*`** MCP calls fail (
 
 The dispatcher will retry after Joshu/MCP recovers (supervisor + gateway reload).
 
-Use **`mail_*` MCP** for project tracks. Use **`scheduling_*` MCP** for meeting tasks on `ea-scheduling`.
+Use **`mail_*` MCP** for project tracks. Use **`scheduling_*` MCP** for meeting tasks on `ea-scheduling`. Use **`owner_reply_*` MCP** for owner→agent deliverable replies on `ea-owner-reply`.
 
 **Do not** load `ea-project-kanban` on mail ingress — that skill is for user-initiated multi-step / HITL campaigns only.
 
@@ -106,10 +107,11 @@ Use **`mail_*` MCP** for project tracks. Use **`scheduling_*` MCP** for meeting 
 Workers on **`project-<slug>`** boards (including **`kind: mail_track`** cards and auto-decomposed children) **must not**:
 
 - Call **`nylas_send_message`** to negotiate meetings or offer calendar slots
+- Call **`nylas_send_message`** to answer owner asks (that is **`ea-owner-reply`**)
 - Call **`google_calendar_find_free_slots`** for counterparty scheduling
 - Create parallel "Schedule … call" work that duplicates **`ea-scheduling`**
 
-**Scheduling execution lives only on board `ea-scheduling`.** Project workers file docs, update `todo.md` / journal, and **`mail_*` track** state. If scheduling is needed, ingress should already have spawned **`scheduling_create_meeting_task`** (or owner review path C). If you discover missing scheduling on a project card, **`scheduling_list_meeting_tasks`** by `thread_id` — hand off or comment on the existing meeting task; do **not** send from the project board.
+**Scheduling execution lives only on board `ea-scheduling`.** **Owner replies live only on `ea-owner-reply`.** Project workers file docs, update `todo.md` / journal, and **`mail_*` track** state. If scheduling is needed, ingress should already have spawned **`scheduling_create_meeting_task`** (or owner review path C). If the owner asked the companion (path D), ingress should have spawned **`owner_reply_create_task`**. If you discover missing owner-reply on a project card, **`owner_reply_list_tasks`** by `thread_id` — hand off; do **not** send from the project board.
 
 If a project card title looks like scheduling but **`ea-scheduling`** already has an open/blocked meeting for that thread → **`kanban_complete`** with metadata `duplicate_of: <meeting task_id>` and a comment — do not compete with the meeting worker.
 
@@ -122,6 +124,7 @@ If a project card title looks like scheduling but **`ea-scheduling`** already ha
 | **A — Proceed** | Clear **new** scheduling ask; counterparty expects times; no booking on calendar yet; you are confident | **`scheduling_list_meeting_tasks`** by `thread_id` from ingress body → match → **`scheduling_handoff_meeting_task`**; else **`scheduling_create_meeting_task`** with **`threadId`** + **`provider`** (if Joshu returns `existing_thread`, handoff to that task) |
 | **B — Closed (file only)** | Confirmation / "you're all set" / owner booked via Calendly / matching event already on owner Google Calendar | File + track; **no** scheduling child, **no** `find_free_slots`, **no** mail |
 | **C — HITL defer (owner review)** | **Any doubt** — see triggers below | File + [owner-review notes](#hitl-defer-owner-review-notes); **no** scheduling child, **no** calendar negotiation, **no** mail |
+| **D — Owner reply** | Owner mailed **agent Nylas**; ask/deliverable for the companion; **not** a meeting (or meeting already owned by `ea-scheduling`); **`owner_reply_eligible: true`** | **`owner_reply_list_tasks`** by `thread_id` → **`owner_reply_handoff_task`** or **`owner_reply_create_task`**. **No** research/send on ingress. |
 
 **Prefer B or C over A** when the latest message is status-only on a thread where scheduling already happened.
 
@@ -222,6 +225,7 @@ owner's Gmail produces SENT-labeled stubs when he replies in an ongoing thread �
 1. **Larger projects/strategic** — 2+ related threads, multi-step work, product/infra decisions → `joshu-product-development` (or analogous named project)
 2. **Isolated to-dos** — single action, time-bound → `personal-appointments-health` or directly onto calendar
 3. **Scheduling** — meeting setup with specific people → `ea-scheduling`
+3b. **Owner asked the companion** (agent Nylas, non-meeting) → `ea-owner-reply` after filing
 4. **One-off noise** — forwarded marketing, automated alerts → `other` with `info` status
 
 After categorizing, update the project's `todo.md` (add/refresh task rows + Waiting on columns) and `about.md` (add to Active threads list). Mark owner-sent stubs as done when processed.

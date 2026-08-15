@@ -45,7 +45,13 @@ Slack DM / @mention
 | **Telegram chat bot** | `TELEGRAM_BOT_TOKEN` adapter | `agent:main:telegram:dm:<chat_id>` |
 | **Slack chat bot** | `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` (Socket Mode) | `agent:main:slack:…` (Hermes session naming) |
 
-All three share toolsets, MCP catalog, SOUL.md, and Hindsight auto-recall. They do **not** share transcript history unless you explicitly hand off sessions (`/handoff` on gateway platforms). Slack setup: [hermes-integration — Slack chat](hermes-integration.md#slack-chat-hermes-messaging-gateway). Telegram: [hermes-integration — Telegram & jChat](hermes-integration.md#telegram-11-chat-hermes-messaging-gateway).
+All three share toolsets, MCP catalog, SOUL.md, and Hindsight auto-recall. They do **not** share transcript history unless you explicitly hand off sessions (`/handoff` on gateway platforms). Slack and Telegram **idle-reset after 30 minutes**; jChat does not. Use `session_search` from Slack to recall a jChat session. Slack setup: [hermes-integration — Slack chat](hermes-integration.md#slack-chat-hermes-messaging-gateway). Telegram: [hermes-integration — Telegram & jChat](hermes-integration.md#telegram-11-chat-hermes-messaging-gateway).
+
+### Long turns and empty replies
+
+Hermes can keep calling tools for up to **90 iterations** on one user message (tens of minutes). jChat is an SSE stream through Caddy. If that stream goes idle for ~100s (Cloudflare / some proxies), the browser connection dies while Hermes keeps working. Langfuse then shows a finished turn and jChat shows nothing.
+
+Joshu sends SSE comment heartbeats every 15s on `/api/hermes-chat/stream` (and AG-UI), and Caddy `reverse_proxy /joshu/*` uses `flush_interval -1` plus 1h read/write timeouts. Recreate **caddy** after image/dist so the Caddyfile regenerates. If a drop still happens, jChat marks the bubble as an error instead of a successful empty reply — send **continue** to pick up Hermes session history.
 
 ### System prompt layers
 

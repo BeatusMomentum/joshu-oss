@@ -71,6 +71,14 @@ header h1 {
   animation: connectors-spin 0.7s linear infinite;
 }
 
+.loading-spinner-inline {
+  width: 0.85rem;
+  height: 0.85rem;
+  display: inline-block;
+  vertical-align: -0.1rem;
+  margin-right: 0.35rem;
+}
+
 @keyframes connectors-spin {
   to {
     transform: rotate(360deg);
@@ -165,6 +173,63 @@ header h1 {
 
 .composio-toolkit:last-child {
   border-bottom: none;
+}
+
+.composio-toolkit.is-connecting {
+  border-radius: 8px;
+  margin: 0 -0.45rem;
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
+  background: rgba(45, 90, 74, 0.06);
+}
+
+.composio-status-pending {
+  display: flex !important;
+  align-items: center;
+  color: var(--accent, #2d5a4a);
+  opacity: 1;
+}
+
+.composio-account-skeleton {
+  pointer-events: none;
+}
+
+.skeleton-bar {
+  display: block;
+  height: 0.7rem;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    rgba(26, 26, 26, 0.08) 0%,
+    rgba(26, 26, 26, 0.16) 50%,
+    rgba(26, 26, 26, 0.08) 100%
+  );
+  background-size: 200% 100%;
+  animation: connectors-skeleton 1.1s ease-in-out infinite;
+}
+
+.skeleton-bar-wide {
+  width: 9.5rem;
+}
+
+.skeleton-bar-narrow {
+  width: 6.5rem;
+  margin-top: 0.4rem;
+  opacity: 0.85;
+}
+
+.skeleton-bar-btn {
+  width: 5.25rem;
+  height: 1.7rem;
+}
+
+@keyframes connectors-skeleton {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
 }
 
 .composio-row {

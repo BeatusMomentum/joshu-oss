@@ -597,6 +597,55 @@ const TOOLS = [
     },
   },
   {
+    name: "owner_reply_list_tasks",
+    description:
+      "List open owner_reply tasks on Kanban board ea-owner-reply (ready, running, blocked, todo). Optional threadId filter.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string", description: "Mail thread id" },
+      },
+    },
+  },
+  {
+    name: "owner_reply_create_task",
+    description:
+      "Create a ready owner_reply task on ea-owner-reply (Joshu bridge). Required from ingress after filing an owner→agent ask — never use kanban_create. Idempotent per thread_id (returns existing_thread).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        messageId: { type: "string", description: "Ingress message_id (idempotency)" },
+        sourcePath: { type: "string", description: "Relative mail mirror path under JOSHU_FILES_ROOT" },
+        threadId: {
+          type: "string",
+          description: "Mail thread id — Joshu returns existing open owner_reply on same thread",
+        },
+        provider: { type: "string", description: "nylas (agent inbox)" },
+        subject: { type: "string" },
+        from: { type: "string", description: "From header — must be the owner" },
+        title: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["messageId", "sourcePath"],
+    },
+  },
+  {
+    name: "owner_reply_handoff_task",
+    description:
+      "Ingress match: deliver new mail to an owner_reply task — append source_path, comment, unblock if blocked.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string" },
+        sourcePath: { type: "string" },
+        messageId: { type: "string" },
+        from: { type: "string" },
+        summary: { type: "string", description: "Neutral summary of this mail" },
+      },
+      required: ["taskId", "sourcePath", "messageId", "summary"],
+    },
+  },
+  {
     name: "scheduling_ingress_pending",
     description:
       "@deprecated v4 — use per-email ingress Kanban tasks. List pending JSONL ingress events.",
@@ -956,6 +1005,39 @@ async function handleTool(name, args) {
     const out = await joshuPost(
       `/api/ea/scheduling/meetings/${encodeURIComponent(String(taskId))}/unblock`,
       {},
+    );
+    return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+  }
+  if (name === "owner_reply_list_tasks") {
+    const threadId = args?.threadId ?? args?.thread_id;
+    const qs = threadId ? `?threadId=${encodeURIComponent(String(threadId))}` : "";
+    const out = await joshuGet(`/api/ea/owner-reply/tasks${qs}`);
+    return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+  }
+  if (name === "owner_reply_create_task") {
+    const out = await joshuPost("/api/ea/owner-reply/tasks", {
+      messageId: args?.messageId ?? args?.message_id,
+      sourcePath: args?.sourcePath ?? args?.source_path,
+      threadId: args?.threadId ?? args?.thread_id,
+      provider: args?.provider,
+      subject: args?.subject,
+      from: args?.from,
+      title: args?.title,
+      body: args?.body,
+    });
+    return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+  }
+  if (name === "owner_reply_handoff_task") {
+    const taskId = args?.taskId ?? args?.task_id;
+    if (!taskId) throw new Error("taskId required");
+    const out = await joshuPost(
+      `/api/ea/owner-reply/tasks/${encodeURIComponent(String(taskId))}/handoff`,
+      {
+        sourcePath: args?.sourcePath ?? args?.source_path,
+        messageId: args?.messageId ?? args?.message_id,
+        from: args?.from,
+        summary: args?.summary,
+      },
     );
     return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
   }

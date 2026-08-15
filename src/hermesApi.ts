@@ -32,6 +32,10 @@ import { isActionGuardEnabled, loadActionGuardPolicy, resolveComposioMcpGuardPro
 import { resolveEnvWithLocalFallback } from "./safetySettings/localEnv.js";
 import { buildHermesMessagingDotenvEntries } from "./hermesMessagingEnv.js";
 import {
+  mergeHermesGatewayJsonMessagingReset,
+  syncJoshuMessagingSessionReset,
+} from "./hermesMessagingSessionReset.js";
+import {
   probeMcpHttpHealth,
   resolveConnectorsMcpHealthUrl,
   waitForJoshuMcpDependencies,
@@ -1727,9 +1731,10 @@ export class HermesApiRunner extends EventEmitter {
       changed = true;
     }
 
-    // Ad-hoc project boards use triage + auto_decompose. EA scheduling stays safe:
-    // ingress/meeting tasks are created with assignee → ready (never triage); bridge
-    // rejects triage creates on ea-sched-* boards.
+    // Ad-hoc project boards use triage + auto_decompose. EA scheduling is
+    // single-worker: bridge rejects triage creates on ea-sched-* boards, and
+    // scripts/patch-hermes-ea-kanban-no-autodecompose.py skips those boards in
+    // Hermes auto_decompose + keeps block_loop off triage (ingress re-block is normal).
     const kanban = asRecord(config.kanban);
     if (kanban.auto_decompose !== true) {
       kanban.auto_decompose = true;
@@ -1770,6 +1775,20 @@ export class HermesApiRunner extends EventEmitter {
     }
     auxiliary.session_search = sessionSearch;
     config.auxiliary = auxiliary;
+
+    // Slack + Telegram: idle-reset after 30m (override with JOSHU_HERMES_MESSAGING_IDLE_MINUTES).
+    // jChat stays on session_reset.mode none. Per-platform policy is also merged into
+    // gateway.json because current Hermes yaml only maps session_reset → default policy.
+    const messagingResetChanged = syncJoshuMessagingSessionReset(config);
+    if (messagingResetChanged) changed = true;
+    let gatewayJsonResetChanged = false;
+    try {
+      gatewayJsonResetChanged = await mergeHermesGatewayJsonMessagingReset(hermesHome);
+    } catch (err) {
+      console.warn(
+        `[hermes-api] gateway.json messaging reset merge skipped: ${(err as Error).message}`,
+      );
+    }
 
     const memory = asRecord(config.memory);
     const hindsightEnabled = isJoshuHindsightEnabled();
@@ -1817,8 +1836,12 @@ export class HermesApiRunner extends EventEmitter {
     }
     await this.learningBootstrapPromise;
 
-    if (pluginsChanged || skillsDisabledChanged) {
-      const reason = pluginsChanged ? "Langfuse hooks" : "skills denylist";
+    if (pluginsChanged || skillsDisabledChanged || messagingResetChanged || gatewayJsonResetChanged) {
+      const reason = pluginsChanged
+        ? "Langfuse hooks"
+        : skillsDisabledChanged
+          ? "skills denylist"
+          : "Slack/Telegram session reset";
       console.log(`[hermes-api] Hermes ${reason} changed; restarting gateway`);
       await this.stopGatewayDaemon();
       this.gateway = undefined;
