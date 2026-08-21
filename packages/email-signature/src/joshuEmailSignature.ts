@@ -93,22 +93,141 @@ export function buildJoshuEmailSignatureHtml(input: JoshuEmailSignatureInput): s
   </table>`;
 }
 
-/** Convert plain text to simple email-safe HTML (inline styles, paragraph breaks). */
+const BODY_FONT =
+  "font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:" + INK;
+const LINK_STYLE = `color:${ACTION};text-decoration:underline;`;
+const P_STYLE = "margin:0 0 16px;";
+
+/**
+ * Peel trailing sentence punctuation that clients often leave glued to a URL.
+ * Keeps balanced closing parens that belong to the URL path.
+ */
+function splitTrailingUrlPunct(raw: string): { url: string; trail: string } {
+  let url = raw;
+  let trail = "";
+  while (url.length > 1) {
+    const last = url.slice(-1);
+    if (!/[.,;:!?)]$/.test(last)) break;
+    if (last === ")") {
+      const opens = (url.match(/\(/g) ?? []).length;
+      const closes = (url.match(/\)/g) ?? []).length;
+      if (opens >= closes) break;
+    }
+    trail = last + trail;
+    url = url.slice(0, -1);
+  }
+  return { url, trail };
+}
+
+function hrefForBareUrl(url: string): string {
+  return url.startsWith("www.") ? `https://${url}` : url;
+}
+
+function linkHtml(href: string, label: string): string {
+  return `<a href="${escapeHtml(href)}" style="${LINK_STYLE}">${escapeHtml(label)}</a>`;
+}
+
+/**
+ * Inline markdown subset for agent mail: [label](url), bare URLs, **bold**, *italic*, `code`.
+ * Placeholders protect links across escapeHtml so URLs stay clickable in HTML clients.
+ */
+function formatInlineEmailText(text: string): string {
+  const stashed: string[] = [];
+  const stash = (html: string): string => {
+    const i = stashed.length;
+    stashed.push(html);
+    return `@@JOSHU_EMAIL_TOKEN_${i}@@`;
+  };
+
+  let s = text;
+
+  // Markdown links first so the URL inside is not double-linkified.
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+|www\.[^)\s]+)\)/gi, (_m, label: string, rawHref: string) => {
+    const { url, trail } = splitTrailingUrlPunct(rawHref);
+    return stash(linkHtml(hrefForBareUrl(url), label)) + trail;
+  });
+
+  // Bare http(s) / www URLs (common in agent drafts that skip markdown links).
+  s = s.replace(/\bhttps?:\/\/[^\s<>"']+|\bwww\.[^\s<>"']+/gi, (raw) => {
+    const { url, trail } = splitTrailingUrlPunct(raw);
+    return stash(linkHtml(hrefForBareUrl(url), url)) + trail;
+  });
+
+  s = escapeHtml(s);
+
+  // Inline code (already escaped).
+  s = s.replace(/`([^`]+)`/g, '<code style="font-family:Menlo,Consolas,monospace;font-size:13px;">$1</code>');
+
+  // Bold then italic (avoid matching the inner stars of **bold**).
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  s = s.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
+  s = s.replace(/(?<![A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "<em>$1</em>");
+
+  s = s.replace(/@@JOSHU_EMAIL_TOKEN_(\d+)@@/g, (_m, idx: string) => stashed[Number(idx)] ?? "");
+  return s;
+}
+
+function isUnorderedListBlock(lines: string[]): boolean {
+  const nonempty = lines.filter((l) => l.trim());
+  return nonempty.length > 0 && nonempty.every((l) => /^\s*[-*]\s+\S/.test(l));
+}
+
+function isOrderedListBlock(lines: string[]): boolean {
+  const nonempty = lines.filter((l) => l.trim());
+  return nonempty.length > 0 && nonempty.every((l) => /^\s*\d+\.\s+\S/.test(l));
+}
+
+/** One blank-line-delimited block → paragraph, list, or soft heading. */
+function renderEmailBlock(paragraph: string): string {
+  const lines = paragraph.split("\n");
+
+  if (isUnorderedListBlock(lines)) {
+    const items = lines
+      .filter((l) => l.trim())
+      .map((l) => {
+        const content = l.replace(/^\s*[-*]\s+/, "");
+        return `<li style="margin:0 0 4px;">${formatInlineEmailText(content)}</li>`;
+      })
+      .join("");
+    return `<ul style="${P_STYLE}padding-left:24px;">${items}</ul>`;
+  }
+
+  if (isOrderedListBlock(lines)) {
+    const items = lines
+      .filter((l) => l.trim())
+      .map((l) => {
+        const content = l.replace(/^\s*\d+\.\s+/, "");
+        return `<li style="margin:0 0 4px;">${formatInlineEmailText(content)}</li>`;
+      })
+      .join("");
+    return `<ol style="${P_STYLE}padding-left:24px;">${items}</ol>`;
+  }
+
+  // Soft headings: "# Title" on its own line (agents often draft in markdown).
+  const heading = paragraph.trim().match(/^(#{1,3})\s+(.+)$/);
+  if (heading && !paragraph.includes("\n")) {
+    const level = heading[1]?.length ?? 1;
+    const size = level === 1 ? 18 : level === 2 ? 16 : 15;
+    return `<p style="${P_STYLE}font-size:${size}px;font-weight:600;">${formatInlineEmailText(heading[2] ?? "")}</p>`;
+  }
+
+  const withBreaks = lines.map((line) => formatInlineEmailText(line)).join("<br>");
+  return `<p style="${P_STYLE}">${withBreaks}</p>`;
+}
+
+/**
+ * Convert plain text / light markdown to email-safe HTML.
+ * Agents often pass markdown in Nylas `body`; without this, clients show raw `**` / bare URLs.
+ */
 export function plainTextToSimpleEmailHtml(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) {
-    return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:${INK};"></div>`;
+    return `<div style="${BODY_FONT};"></div>`;
   }
 
-  const paragraphs = trimmed.split(/\n{2,}/);
-  const inner = paragraphs
-    .map((paragraph) => {
-      const lines = escapeHtml(paragraph).split("\n").join("<br>");
-      return `<p style="margin:0 0 16px;">${lines}</p>`;
-    })
-    .join("");
-
-  return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:${INK};">${inner}</div>`;
+  const inner = trimmed.split(/\n{2,}/).map(renderEmailBlock).join("");
+  return `<div style="${BODY_FONT};">${inner}</div>`;
 }
 
 /** Append the joshu signature below the message body (HTML). */
