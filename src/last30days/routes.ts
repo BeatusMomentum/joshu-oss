@@ -5,23 +5,22 @@
 import type { Request, Response, Router } from "express";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import {
   EVERYTHING_INCLUDE_SOURCES,
   RECOMMENDED_INCLUDE_SOURCES,
+  defaultMemoryDir,
   publicConfigView,
   readConfigFile,
-  resolveCompanionScript,
   resolveConfigDir,
   resolveEngineScript,
   resolvePythonBin,
   resolveWebBackendChoice,
   scrapeCreatorsRelayConfigured,
+  xquikRelayConfigured,
   writeConfigFile,
 } from "./config.js";
 import {
   attachHermesSessionToRun,
-  buildHardenedEnv,
   cancelRun,
   findActiveRunForTopic,
   getRun,
@@ -33,6 +32,25 @@ import {
   waitForRun,
   type ResearchRequest,
 } from "./runner.js";
+import {
+  deletePersistedQueryPlan,
+  enrichResearchRequest,
+  ensureQueryPlanForWatch,
+} from "./queryPlan.js";
+import { runCompanion } from "./companions.js";
+import {
+  addWatch,
+  buildWatchReport,
+  filterWatchingForCadence,
+  listWatching,
+  removeWatch,
+  type WatchCadence,
+} from "./watching.js";
+import {
+  appendWatchSnapshot,
+  snapshotFromStdout,
+  WATCH_WINDOW_DAYS,
+} from "./watchSnapshots.js";
 
 function readHermesSession(
   req: Request,
@@ -56,43 +74,20 @@ function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function readWatchCadence(body: Record<string, unknown>): WatchCadence | undefined {
+  const nested = body.args && typeof body.args === "object" && !Array.isArray(body.args)
+    ? (body.args as Record<string, unknown>)
+    : undefined;
+  const raw = readString(body.cadence) || readString(nested?.cadence);
+  if (raw === "weekly" || raw === "daily") return raw;
+  return undefined;
+}
+
 function projectRootFrom(req: Request, fallback: string): string {
   const fromApp = typeof (req as { joshuProjectRoot?: string }).joshuProjectRoot === "string"
     ? (req as { joshuProjectRoot?: string }).joshuProjectRoot
     : undefined;
   return fromApp || fallback;
-}
-
-async function runCompanion(
-  projectRoot: string,
-  scriptName: "watchlist.py" | "store.py" | "briefing.py",
-  args: string[],
-): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
-  const script = resolveCompanionScript(projectRoot, scriptName);
-  if (!fs.existsSync(script)) {
-    throw new Error(`Companion script missing: ${script}`);
-  }
-  const python = resolvePythonBin();
-  const env = buildHardenedEnv(projectRoot);
-  return new Promise((resolve, reject) => {
-    const child = spawn(python, [script, ...args], {
-      cwd: path.dirname(script),
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (c: string) => {
-      stdout += c;
-    });
-    child.stderr.on("data", (c: string) => {
-      stderr += c;
-    });
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ exitCode: code, stdout, stderr }));
-  });
 }
 
 export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: string }): void {
@@ -101,7 +96,7 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
 
   router.get("/api/last30days/status", (_req: Request, res: Response) => {
     const script = resolveEngineScript(projectRoot);
-    const configDir = resolveConfigDir();
+    const configDir = resolveConfigDir(undefined, projectRoot);
     const entries = readConfigFile(configDir);
     const webBackend = resolveWebBackendChoice(projectRoot, entries);
     res.json({
@@ -116,13 +111,15 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
         cookies: false,
         ytdlp: false,
         web: webBackend,
-        x: "disabled (no cookies / XAI / Xquik in Joshu SC-only mode)",
+        x: xquikRelayConfigured()
+          ? "xquik (fleet relay)"
+          : "xquik when XQUIK_API_KEY is set (self-host)",
       },
     });
   });
 
   router.get("/api/last30days/config", (_req: Request, res: Response) => {
-    const entries = readConfigFile();
+    const entries = readConfigFile(resolveConfigDir(undefined, projectRoot));
     res.json({ ok: true, config: publicConfigView(entries, projectRoot) });
   });
 
@@ -136,9 +133,17 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
         });
         return;
       }
+      if (xquikRelayConfigured() && readString(body.xquikApiKey)) {
+        res.status(400).json({
+          ok: false,
+          error: "Xquik API keys cannot be stored on fleet boxes (CP relay mode).",
+        });
+        return;
+      }
       const updates: Record<string, string | null> = {};
       const map: Record<string, string> = {
         scrapecreatorsApiKey: "SCRAPECREATORS_API_KEY",
+        xquikApiKey: "XQUIK_API_KEY",
         includeSources: "INCLUDE_SOURCES",
         excludeSources: "EXCLUDE_SOURCES",
         memoryDir: "LAST30DAYS_MEMORY_DIR",
@@ -166,7 +171,7 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
         }
         updates[envKey] = String(raw);
       }
-      const next = writeConfigFile(updates);
+      const next = writeConfigFile(updates, resolveConfigDir(undefined, projectRoot));
       res.json({ ok: true, config: publicConfigView(next, projectRoot) });
     } catch (err) {
       res.status(400).json({ ok: false, error: (err as Error).message });
@@ -215,7 +220,7 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
       if (body.markComplete !== false) {
         updates.SETUP_COMPLETE = "1";
       }
-      const next = writeConfigFile(updates);
+      const next = writeConfigFile(updates, resolveConfigDir(undefined, projectRoot));
       res.json({ ok: true, config: publicConfigView(next, projectRoot) });
     } catch (err) {
       res.status(400).json({ ok: false, error: (err as Error).message });
@@ -223,7 +228,10 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
   });
 
   router.get("/api/last30days/sources", (_req: Request, res: Response) => {
-    const webBackend = resolveWebBackendChoice(projectRoot, readConfigFile());
+    const webBackend = resolveWebBackendChoice(
+      projectRoot,
+      readConfigFile(resolveConfigDir(undefined, projectRoot)),
+    );
     const scRelay = scrapeCreatorsRelayConfigured();
     const scNeeds = scRelay ? "JOSHU_SCRAPECREATORS_MODE=relay" : "SCRAPECREATORS_API_KEY";
     const scNote = scRelay ? "Fleet CP relay (no key on box)" : undefined;
@@ -247,7 +255,14 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
           via: webBackend,
           note: webBackend === "exa" ? "Exa (fleet EXA_API_KEY)" : "DuckDuckGo keyless",
         },
-        { id: "x", label: "X / Twitter", via: "disabled", note: "Cookies / XAI / Xquik disabled in this app" },
+        {
+          id: "x",
+          label: "X / Twitter",
+          via: xquikRelayConfigured() ? "xquik-relay" : "xquik",
+          note: xquikRelayConfigured()
+            ? "Fleet CP relay (no key on box)"
+            : "Paste XQUIK_API_KEY in Settings (self-host)",
+        },
         { id: "digg", label: "Digg", via: "cli", note: "digg-pp-cli on PATH" },
         { id: "arxiv", label: "arXiv", via: "cli", note: "arxiv-pp-cli on PATH" },
         { id: "techmeme", label: "Techmeme", via: "cli", note: "techmeme-pp-cli on PATH" },
@@ -259,7 +274,7 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
     });
   });
 
-  const startRun = (req: Request, res: Response, research: ResearchRequest) => {
+  const startRun = async (req: Request, res: Response, research: ResearchRequest) => {
     try {
       const body = (req.body || {}) as ResearchRequest & Record<string, unknown>;
       const topic = readString(research.topic);
@@ -276,9 +291,11 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
           return;
         }
       }
-      const args = researchRequestToArgs(research);
+      const root = projectRootFrom(req, projectRoot);
+      const enriched = await enrichResearchRequest(root, research);
+      const args = researchRequestToArgs(enriched);
       const run = spawnEngine({
-        projectRoot: projectRootFrom(req, projectRoot),
+        projectRoot: root,
         args,
         meta: {
           topic: topic || undefined,
@@ -498,10 +515,8 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
 
   // Library listing (memory dir briefs)
   router.get("/api/last30days/library", (_req: Request, res: Response) => {
-    const entries = readConfigFile();
-    const memoryDir =
-      entries.LAST30DAYS_MEMORY_DIR ||
-      path.join(process.env.HOME || "", "Documents", "Last30Days");
+    const entries = readConfigFile(resolveConfigDir(undefined, projectRoot));
+    const memoryDir = entries.LAST30DAYS_MEMORY_DIR || defaultMemoryDir(projectRoot);
     if (!fs.existsSync(memoryDir)) {
       res.json({ ok: true, memoryDir, files: [] });
       return;
@@ -520,10 +535,9 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
 
   router.get("/api/last30days/library/file", (req: Request, res: Response) => {
     const filePath = readString(req.query.path);
-    const entries = readConfigFile();
+    const entries = readConfigFile(resolveConfigDir(undefined, projectRoot));
     const memoryDir = path.resolve(
-      entries.LAST30DAYS_MEMORY_DIR ||
-        path.join(process.env.HOME || "", "Documents", "Last30Days"),
+      entries.LAST30DAYS_MEMORY_DIR || defaultMemoryDir(projectRoot),
     );
     if (!filePath) {
       res.status(400).json({ ok: false, error: "path required" });
@@ -568,6 +582,140 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
     startRun(req, res, { queue: { action: "cover", topic } });
   });
 
+  const spawnWatchRun = async (
+    topic: string,
+    hermes?: { hermesSessionKey?: string; hermesSessionId?: string },
+  ) => {
+    const enriched = await enrichResearchRequest(
+      projectRoot,
+      {
+        topic,
+        emit: "json",
+        jsonProfile: "agent",
+        days: WATCH_WINDOW_DAYS,
+        store: true,
+      },
+      { preferPersisted: true },
+    );
+    return spawnEngine({
+      projectRoot,
+      args: researchRequestToArgs(enriched),
+      meta: { topic, watchTopic: topic, ...hermes },
+    });
+  };
+
+  // JSON Watching API used by the GUI. CamelCase aliases exist so
+  // POST /joshu/api/apps/last30days/invoke can proxy agent.actions[] by name
+  // (see appInvokeRegistry.ts). DELETE is GUI-only; Hermes invoke uses POST watchingRemove.
+  const watchingList = async (_req: Request, res: Response) => {
+    try {
+      const topics = await listWatching(projectRoot);
+      res.json({ ok: true, topics, windowDays: WATCH_WINDOW_DAYS });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+  };
+  router.get("/api/last30days/watching", watchingList);
+  router.get("/api/last30days/watchingList", watchingList);
+
+  const watchingAdd = async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as { topic?: string; cadence?: string; stdout?: string; runId?: string };
+      const topic = readString(body.topic);
+      if (!topic) {
+        res.status(400).json({ ok: false, error: "topic required" });
+        return;
+      }
+      const cadence = body.cadence === "weekly" ? "weekly" : "daily";
+      await ensureQueryPlanForWatch(projectRoot, topic);
+      const added = await addWatch(projectRoot, topic, cadence);
+      if (body.stdout && body.runId) {
+        const snap = snapshotFromStdout(body.stdout, {
+          topic,
+          runId: readString(body.runId) || `adopt-${Date.now()}`,
+          windowDays: WATCH_WINDOW_DAYS,
+        });
+        if (snap) appendWatchSnapshot(projectRoot, snap);
+      }
+      res.json({ ...added, topics: await listWatching(projectRoot) });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: (err as Error).message });
+    }
+  };
+  router.post("/api/last30days/watching", watchingAdd);
+  router.post("/api/last30days/watchingAdd", watchingAdd);
+
+  const watchingRemove = async (req: Request, res: Response) => {
+    try {
+      const topic = readString((req.body as { topic?: string })?.topic) || readString(req.query.topic);
+      if (!topic) {
+        res.status(400).json({ ok: false, error: "topic required" });
+        return;
+      }
+      await removeWatch(projectRoot, topic);
+      deletePersistedQueryPlan(projectRoot, topic);
+      res.json({ ok: true, topics: await listWatching(projectRoot) });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: (err as Error).message });
+    }
+  };
+  router.delete("/api/last30days/watching", watchingRemove);
+  router.post("/api/last30days/watchingRemove", watchingRemove);
+
+  const watchingReport = (req: Request, res: Response) => {
+    const topic = readString(req.query.topic) || readString((req.body as { topic?: string } | undefined)?.topic);
+    if (!topic) {
+      res.status(400).json({ ok: false, error: "topic required" });
+      return;
+    }
+    const report = buildWatchReport(projectRoot, topic);
+    const lastRunId = report.snapshots[report.snapshots.length - 1]?.runId;
+    const run = lastRunId ? getRun(lastRunId) : undefined;
+    res.json({
+      ok: true,
+      ...report,
+      stdout: run?.stdout || "",
+    });
+  };
+  router.get("/api/last30days/watching/report", watchingReport);
+  router.get("/api/last30days/watchingReport", watchingReport);
+
+  const watchingRun = async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as Record<string, unknown>;
+      const topic = readString(body.topic);
+      if (!topic) {
+        res.status(400).json({ ok: false, error: "topic required" });
+        return;
+      }
+      const run = await spawnWatchRun(topic, readHermesSession(req, body));
+      res.status(202).json({ ok: true, runId: run.id, status: run.status, argv: run.argv });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: (err as Error).message });
+    }
+  };
+  router.post("/api/last30days/watching/run", watchingRun);
+  router.post("/api/last30days/watchingRun", watchingRun);
+
+  /** Async (202) — jChat / plugin. Cron uses blocking watchlistRunAll instead. */
+  const watchingRunAllAsync = async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as Record<string, unknown>;
+      const cadence = readWatchCadence(body);
+      const topics = filterWatchingForCadence(await listWatching(projectRoot), cadence);
+      const runIds: string[] = [];
+      for (const row of topics) {
+        const run = await spawnWatchRun(row.name, readHermesSession(req, body));
+        runIds.push(run.id);
+      }
+      res.status(202).json({ ok: true, runIds, count: runIds.length, cadence: cadence || "all" });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+  };
+  router.post("/api/last30days/watching/run-all", watchingRunAllAsync);
+  router.post("/api/last30days/watchingRunAll", watchingRunAllAsync);
+
   router.post("/api/last30days/watchlist", async (req: Request, res: Response) => {
     try {
       const body = (req.body || {}) as { args?: string[] };
@@ -601,11 +749,19 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
     }
   });
 
-  /** Invoke-friendly alias — headless watchlist run-all */
-  router.post("/api/last30days/watchlistRunAll", async (_req: Request, res: Response) => {
+  /** Invoke-friendly alias — re-research enabled watches (optional cadence) with a 7d window. */
+  router.post("/api/last30days/watchlistRunAll", async (req: Request, res: Response) => {
     try {
-      const result = await runCompanion(projectRoot, "watchlist.py", ["run-all"]);
-      res.json({ ok: result.exitCode === 0, ...result });
+      const body = (req.body || {}) as Record<string, unknown>;
+      const cadence = readWatchCadence(body);
+      const topics = filterWatchingForCadence(await listWatching(projectRoot), cadence);
+      const runIds: string[] = [];
+      for (const row of topics) {
+        const run = await spawnWatchRun(row.name, readHermesSession(req, body));
+        runIds.push(run.id);
+        await waitForRun(run.id, 600_000);
+      }
+      res.json({ ok: true, runIds, count: runIds.length, cadence: cadence || "all" });
     } catch (err) {
       res.status(500).json({ ok: false, error: (err as Error).message });
     }

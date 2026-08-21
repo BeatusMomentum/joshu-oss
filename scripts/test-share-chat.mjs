@@ -444,4 +444,66 @@ function makeScope(partial) {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// --- Email Q&A allowlist + registry ---
+{
+  const {
+    normalizeAllowedSender,
+    parseAllowedSendersList,
+    parseCcList,
+    senderMatchesAllowed,
+    upsertShareEmailBinding,
+    findShareForEmailSender,
+    getShareEmailBinding,
+    markEmailMessageProcessed,
+    isEmailMessageProcessed,
+    unlinkShareEmailBinding,
+    publicEmailBindingStatus,
+  } = await import("../src/shareChat/emailBindings.ts");
+
+  assert(normalizeAllowedSender("@TheJoint.com") === "@thejoint.com", "domain normalize");
+  assert(normalizeAllowedSender("Adam Hua <adam@four8.co>") === "adam@four8.co", "email normalize");
+  const list = parseAllowedSendersList("@a.com, b@c.com\n@c.com");
+  assert(list.includes("@a.com") && list.includes("b@c.com") && list.includes("@c.com") && list.length === 3, "parse list");
+  assert(parseCcList("x@y.com, @skip.com").join(",") === "x@y.com", "cc skips domains");
+  assert(senderMatchesAllowed("adam@four8.co", ["@four8.co"]), "domain match");
+  assert(!senderMatchesAllowed("vendor@gmail.com", ["@four8.co"]), "no match");
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "joshu-share-email-"));
+  const uuid = "22222222-2222-4222-8222-222222222222";
+  upsertShareEmailBinding(
+    { shareUuid: uuid, allowedSenders: ["@four8.co", "boss@thejoint.com"], cc: ["allen@thejoint.com"] },
+    tmp,
+  );
+  const row = getShareEmailBinding(uuid, tmp);
+  assert(row?.allowedSenders.includes("@four8.co"), "stored domain");
+  assert(findShareForEmailSender("adam@four8.co", tmp)?.shareUuid === uuid, "find by domain");
+  assert(findShareForEmailSender("boss@thejoint.com", tmp)?.shareUuid === uuid, "find by exact");
+  assert(publicEmailBindingStatus(uuid, tmp).configured === true, "public status on");
+  markEmailMessageProcessed(uuid, "msg-1", tmp);
+  assert(isEmailMessageProcessed(uuid, "msg-1", tmp), "processed id");
+  unlinkShareEmailBinding(uuid, tmp);
+  assert(publicEmailBindingStatus(uuid, tmp).configured === false, "public status off");
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+{
+  const chatShareHtml = path.resolve(
+    process.cwd(),
+    "arozos/web-overlays-vanilla/SystemAO/file_system/chat_share.html",
+  );
+  assert(fs.existsSync(chatShareHtml), "chat_share.html exists");
+  const dialog = fs.readFileSync(chatShareHtml, "utf8");
+  assert(dialog.includes("emailQaSection"), "email Q&A section in dialog");
+  assert(dialog.includes("btnEmailSave"), "save email Q&A control");
+}
+
+{
+  const uiPath = path.resolve(process.cwd(), "apps/share-chat/index.html");
+  assert(fs.existsSync(uiPath), "apps/share-chat/index.html must exist for public Chat with files");
+  const html = fs.readFileSync(uiPath, "utf8");
+  assert(html.includes("{{SHARE_UUID}}"), "share-chat UI SHARE_UUID placeholder");
+  assert(html.includes("{{ASSET_BASE}}"), "share-chat UI ASSET_BASE placeholder");
+  assert(html.includes("{{ASSISTANT_NAME}}"), "share-chat UI ASSISTANT_NAME placeholder");
+}
+
 console.log("test-share-chat: ok");

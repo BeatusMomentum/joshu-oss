@@ -13,7 +13,11 @@ export type OwnerReplyEligibilityInput = {
   /** Classifier disposition; ingest only queues track. */
   disposition?: string;
   category?: string;
-  /** True when ingress will take scheduling path A (meeting worker owns outbound). */
+  /**
+   * True when ingest will take scheduling path A (meeting worker owns outbound).
+   * `buildMailIngressTaskBody` passes false so owner→agent Nylas asks win Path D
+   * even if the classifier tagged scheduling.
+   */
   schedulingPathA?: boolean;
 };
 

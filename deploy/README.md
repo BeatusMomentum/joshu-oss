@@ -17,6 +17,7 @@ Hermes is baked at image build time from the pin in `deploy/RELEASE.json` (same 
 
 ```bash
 npm run build:deploy
+npm run test:runtime-assets
 
 # Local load (default tag: local)
 npm run vps:build-image
@@ -27,7 +28,7 @@ JOSHU_IMAGE_TAG=0.1.14 JOSHU_IMAGE_REPO=ghcr.io/YOUR_ORG/joshu-sandbox JOSHU_IMA
 
 Pushes **`ghcr.io/YOUR_ORG/joshu-sandbox:<tag>`** and **`ghcr.io/YOUR_ORG/joshu-voice-realtime:<tag>`** (override with `JOSHU_VOICE_IMAGE_REPO` / `JOSHU_VOICE_IMAGE_REF`).
 
-Current stable pin: [`deploy/RELEASE.json`](RELEASE.json) (**`0.1.40`**).
+Current stable pin: [`deploy/RELEASE.json`](RELEASE.json) (**`0.1.41`**).
 
 After `npm run hermes:update`, `npm run vps:sync-hermes-pin` runs automatically (also invoked by `vps:build-image`).
 After bumping `camofoxBase`, run `npm run vps:sync-camofox-pin` before rebuild.
@@ -141,6 +142,8 @@ Cloud-init (control-plane provision) runs `bootstrap-vps.sh`, which clones the r
 | `scripts/render-time-block-excalidraw.mjs`, `gather-time-block-input.mjs` | `/opt/joshu/scripts/` | A — EA time-block pipeline |
 | `templates/ea/` | `/opt/joshu/templates/ea/` | A — EA filesystem seeds |
 | `deploy/scripts/vps-start.sh`, selected `scripts/` | `/opt/joshu/scripts/` | A — boot / MCP |
+| `arozos/web-overlays-vanilla/` | `/opt/joshu/arozos/web-overlays-vanilla/` | A — vanilla shell overlays |
+| `apps/share-chat/` | `/opt/joshu/apps/share-chat/` | A — public Chat with files HTML |
 
 `git pull` alone does not refresh `dist/` — the host bind-mount shadows the image copy. Match the update path to what you changed:
 

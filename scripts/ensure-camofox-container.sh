@@ -92,7 +92,7 @@ else
     -e MAX_TABS_GLOBAL="${MAX_TABS_GLOBAL:-1}" \
     -e CAMOFOX_MAX_TABS="${CAMOFOX_MAX_TABS:-1}" \
     -e HITL_FORCE_SINGLE_VISIBLE_PAGE="${HITL_FORCE_SINGLE_VISIBLE_PAGE:-true}" \
-    -e CAMOFOX_START_URL="${CAMOFOX_START_URL:-https://news.google.com/}" \
+    -e CAMOFOX_START_URL="${CAMOFOX_START_URL:-https://joshu.me/}" \
     -e CAMOFOX_FF_VERSION="${CAMOFOX_FF_VERSION:-139}" \
     "${PROXY_DOCKER_ARGS[@]}" \
     -v "${ROOT_DIR}:/opt/joshu:ro" \

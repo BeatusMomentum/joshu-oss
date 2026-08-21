@@ -26,12 +26,14 @@ Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 | Topic | Doc |
 |-------|-----|
 | Self-host (standalone Docker) | [`self-host.md`](self-host.md) |
-| **Release notes** | [`releases/0.1.38-0.1.40.md`](releases/0.1.38-0.1.40.md) · **since 0.1.40 (unreleased):** [`releases/since-0.1.40.md`](releases/since-0.1.40.md) |
+| **Release notes** | [`releases/0.1.38-0.1.40.md`](releases/0.1.38-0.1.40.md) · **0.1.40 → 0.1.41:** [`releases/0.1.40-0.1.41.md`](releases/0.1.40-0.1.41.md) |
 | Box state / factory reset | [`box-state.md`](box-state.md) |
 | Local dev install | [`local-installation.md`](local-installation.md) |
 | Hermes integration (skills, gateway, env) | [`hermes-integration.md`](hermes-integration.md) |
 | Connectors (mail, calendar, MCP) | [`connectors.md`](connectors.md) |
 | File index + search (gbrain) | [`file-brain.md`](file-brain.md) |
+| Chat with shared files | [`share-chat.md`](share-chat.md) |
+| **Runtime assets** (HTML/PNG the API reads — must land in `dist/`) | [`runtime-assets.md`](runtime-assets.md) |
 | Agent write safety | [`agent-safety.md`](agent-safety.md) |
 | Safety desktop app | [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md) |
 | Nylas agent inbox | [`nylas-agent-mailbox.md`](nylas-agent-mailbox.md) |

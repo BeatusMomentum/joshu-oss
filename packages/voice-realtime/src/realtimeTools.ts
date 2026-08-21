@@ -20,9 +20,61 @@ export const REALTIME_TOOL_DEFINITIONS = [
   },
   {
     type: "function" as const,
+    name: "start_dictation",
+    description:
+      "Begin a multi-turn voice dictation session. Use when the user will speak a list, meeting notes, rambling thoughts, or any content that may pause between chunks before they are done. Joshu buffers every subsequent utterance until finish_dictation (or the user says they are done). Do NOT call think for each list item. Call with zero spoken preamble, then confirm briefly that you are ready.",
+    parameters: {
+      type: "object",
+      properties: {
+        destination: {
+          type: "string",
+          description:
+            "Where to store when finished — e.g. Websites.md on Desktop, meeting notes, journal entry",
+        },
+        format: {
+          type: "string",
+          description:
+            "cleanup = light edit / lists; reformulate = rewrite clear notes from rambling; auto = choose from content (default)",
+        },
+        title: {
+          type: "string",
+          description: "Optional document title or heading",
+        },
+      },
+      required: ["destination"],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "finish_dictation",
+    description:
+      "End the active dictation session and hand the full buffered speech to Hermes to format and save. Call when the user says they are done, finished, that's all, or similar — even if some chunks already arrived. Do NOT call if no start_dictation is active.",
+    parameters: {
+      type: "object",
+      properties: {
+        note: {
+          type: "string",
+          description: "Optional one-line context for Hermes (e.g. user wants bullets)",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "cancel_dictation",
+    description: "Abort the active dictation session without saving. Discard the buffer.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    type: "function" as const,
     name: "think",
     description:
-      "Use your full brain (Hermes, files, memory, tools) for anything about THIS user: saved files, journals, notes, desktop, past conversations, or tasks that read/write/browse. Call this tool FIRST with zero spoken preamble — do not say you lack access; this tool IS your access. Returns immediately; speak the result when ready. Do NOT use for general world knowledge you already know. Do NOT use for simple app opens — use open_desktop instead.",
+      "Use your full brain (Hermes, files, memory, tools) for anything about THIS user: saved files, journals, notes, desktop, past conversations, or tasks that read/write/browse. Call this tool FIRST with zero spoken preamble — do not say you lack access; this tool IS your access. Returns immediately; speak the result when ready. Do NOT use for general world knowledge you already know. Do NOT use for simple app opens — use open_desktop instead. Do NOT use think for mid-dictation chunks — use start_dictation / finish_dictation instead.",
     parameters: {
       type: "object",
       properties: {
@@ -48,9 +100,14 @@ export const REALTIME_TOOL_DEFINITIONS = [
 /**
  * Tools a surface actually implements. Declaring a tool the handler cannot execute makes the
  * model call it and narrate fake success ("I've opened the Welcome app"), so surfaces opt in.
- * PSTN implements `think` only — `open_desktop` is browser/desktop-session work.
+ * PSTN: think + dictation (no open_desktop — desktop opens are browser/desktop-session work).
  */
-export const PHONE_TOOL_NAMES = ["think"] as const;
+export const PHONE_TOOL_NAMES = [
+  "think",
+  "start_dictation",
+  "finish_dictation",
+  "cancel_dictation",
+] as const;
 
 /** Base tool definitions filtered to `names` (all when omitted), plus app-specific extras. */
 export function selectRealtimeTools(

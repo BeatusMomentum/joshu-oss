@@ -9,6 +9,7 @@ import YAML from "yaml";
 import { requestBrainReindex } from "../brainApi.js";
 import { resolveJoshuFilesPaths } from "../joshuFilesPaths.js";
 import { agentReportToMarkdown, tryParseAgentReport } from "./agentReportFormat.js";
+import { getAudienceRegister, registerFromArgv } from "./audienceRegister.js";
 import type { Last30DaysRunRecord } from "./runner.js";
 import { topicFromRunArgv } from "./runner.js";
 
@@ -51,7 +52,8 @@ function buildResearchMarkdownBody(
   }
 
   if (report) {
-    lines.push(agentReportToMarkdown(report).trimEnd());
+    const register = registerFromArgv(run.argv);
+    lines.push(agentReportToMarkdown(report, { register }).trimEnd());
   } else {
     const excerpt = run.stdout.trim();
     lines.push(`# ${topic}`, "");
@@ -77,6 +79,7 @@ export function buildResearchMarkdown(
   relativePath: string,
 ): string {
   const report = tryParseAgentReport(run.stdout);
+  const register = getAudienceRegister(registerFromArgv(run.argv));
   const frontmatter: Record<string, unknown> = {
     type: "research",
     source: "last30days",
@@ -85,6 +88,7 @@ export function buildResearchMarkdown(
     status: run.status,
     generated_at: new Date(run.updatedAt || run.createdAt).toISOString(),
     joshu_uri: `joshu://${relativePath.replace(/^\/+/, "")}`,
+    writing_style: register.name,
   };
   if (report?.query) frontmatter.query = report.query;
   if (report?.window_days != null) frontmatter.window_days = report.window_days;

@@ -30,9 +30,11 @@ import { readHermesGatewayPreference, writeHermesGatewayPreference } from "./her
 import { hasCompanionIdentityBootstrap, syncCompanionIdentityFromEnv } from "./companionIdentitySync.js";
 import { registerBoxStateRoutes } from "./boxStateApi.js";
 import { registerBoxSecretsRoutes } from "./boxSecrets/routes.js";
+import { registerAuthRecoveryRoutes } from "./authRecovery/routes.js";
 import { registerOnboardingRoutes } from "./onboardingApi.js";
 import { registerDay0Routes } from "./day0/day0Api.js";
 import { registerHermesCronRoutes } from "./hermesCronApi.js";
+import { syncAllAppManifestCronJobs } from "./appCronSync.js";
 import { registerHermesChatSessionListener } from "./hermesChatSessionPush.js";
 import { SSE_HEADERS, sseSend, startSseHeartbeat } from "./httpSse.js";
 import { registerLast30DaysRoutes } from "./last30days/routes.js";
@@ -200,7 +202,7 @@ const DOCKER_BIN = envOr("DOCKER_BIN", "docker");
 const CAMOFOX_RESTART_COOLDOWN_MS = Number(envOr("CAMOFOX_RESTART_COOLDOWN_MS", "15000"));
 const CAMOFOX_VIEWPORT_WIDTH = Number(envOr("CAMOFOX_VIEWPORT_WIDTH", "1024"));
 const CAMOFOX_VIEWPORT_HEIGHT = Number(envOr("CAMOFOX_VIEWPORT_HEIGHT", "768"));
-const CAMOFOX_START_URL = normalizeHttpUrl(envOr("CAMOFOX_START_URL", "https://news.google.com/"));
+const CAMOFOX_START_URL = normalizeHttpUrl(envOr("CAMOFOX_START_URL", "https://joshu.me/"));
 const HINDSIGHT_API_URL = envOr("HINDSIGHT_API_URL", "http://127.0.0.1:8888").replace(/\/+$/, "");
 const HINDSIGHT_BANK_ID = envOr("HINDSIGHT_BANK_ID", "joshu");
 const HINDSIGHT_API_KEY = envOr("HINDSIGHT_API_KEY", "");
@@ -241,7 +243,7 @@ const dockerSupervisor = new DockerSupervisor({
 
 let lastCamofoxBootstrapAt = 0;
 
-/** Open Google News (or CAMOFOX_START_URL) when Camofox has no tab or only a blank page. */
+/** Open CAMOFOX_START_URL (default joshu.me) when Camofox has no tab or only a blank page. */
 async function bootstrapCamofoxStartUrl(force = false): Promise<void> {
   const now = Date.now();
   if (!force && now - lastCamofoxBootstrapAt < 5_000) return;
@@ -257,14 +259,11 @@ async function bootstrapCamofoxStartUrl(force = false): Promise<void> {
     if (!tab) {
       tab = await camofoxSession.currentTab().catch(() => undefined);
     }
-    // Camofox rejects about: tabs — never call ensureTab(about:blank). Leave an
-    // existing blank alone; only create when missing and start URL is http(s).
+    // No tab after idle shutdown / cold boot: always create one so VNC has a
+    // live Firefox. Omit URL when start is about:blank (Camofox rejects about:*).
     if (!tab) {
-      if (isBlankBrowserUrl(CAMOFOX_START_URL)) {
-        console.warn("[joshu] Camofox has no tab and CAMOFOX_START_URL is blank; skip create");
-        return;
-      }
-      tab = await camofoxSession.ensureTab(CAMOFOX_START_URL);
+      const start = isBlankBrowserUrl(CAMOFOX_START_URL) ? undefined : CAMOFOX_START_URL;
+      tab = await camofoxSession.ensureTab(start);
       runner.rememberBrowserTarget(tab.url, HITL_CAMOFOX_USER_ID);
       console.log(`[joshu] Camofox opened start URL: ${tab.url}`);
     } else if (isBlankBrowserUrl(tab.url) && !isBlankBrowserUrl(CAMOFOX_START_URL)) {
@@ -469,6 +468,7 @@ function buildAppRouter(): {
   });
   registerOnboardingRoutes(router, { projectRoot: PROJECT_ROOT });
   registerBoxSecretsRoutes(router, { projectRoot: PROJECT_ROOT, runner });
+  registerAuthRecoveryRoutes(router);
   registerDay0Routes(router, { projectRoot: PROJECT_ROOT });
 
   registerHermesCronRoutes(router);
@@ -623,10 +623,13 @@ function buildAppRouter(): {
 
   router.post("/api/camofox/fit-viewport", async (_req: Request, res: Response) => {
     try {
+      // Also the jWeb warm path after Camofox browser idle_shutdown — creates a
+      // tab (and Firefox) when health shows browserConnected:false.
       await bootstrapCamofoxStartUrl(true);
       let tab = (await alignSharedBrowserTab()).tab;
       if (!tab) {
-        tab = await camofoxSession.ensureTab(CAMOFOX_START_URL);
+        const start = isBlankBrowserUrl(CAMOFOX_START_URL) ? undefined : CAMOFOX_START_URL;
+        tab = await camofoxSession.ensureTab(start);
         runner.rememberBrowserTarget(tab.url, HITL_CAMOFOX_USER_ID);
       }
       await camofoxSession.fitViewport(tab.tabId);
@@ -658,6 +661,35 @@ function buildAppRouter(): {
       await camofoxSession.insertText(text, { selectAll });
       const tab = await camofoxSession.currentTab().catch(() => undefined);
       res.json({ ok: true, chars: text.length, tab });
+    } catch (err) {
+      res.status(502).json({ error: (err as Error).message });
+    }
+  });
+
+  /**
+   * Scroll / page-nav without relying on VNC wheel or arrow keysyms.
+   * jWeb bridges host wheel + Arrow/Page/Home/End here when the VNC canvas is engaged.
+   */
+  router.post("/api/camofox/scroll", async (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as { direction?: unknown; amount?: unknown; key?: unknown };
+      if (typeof body.key === "string" && body.key.trim()) {
+        await camofoxSession.pressKey(body.key.trim());
+        res.json({ ok: true, key: body.key.trim() });
+        return;
+      }
+      const rawDir = typeof body.direction === "string" ? body.direction.toLowerCase() : "down";
+      const direction = (["up", "down", "left", "right"].includes(rawDir) ? rawDir : "down") as
+        | "up"
+        | "down"
+        | "left"
+        | "right";
+      const amount = typeof body.amount === "number" ? body.amount : Number(body.amount);
+      await camofoxSession.scrollPage({
+        direction,
+        amount: Number.isFinite(amount) ? amount : undefined,
+      });
+      res.json({ ok: true, direction, amount: Number.isFinite(amount) ? amount : 400 });
     } catch (err) {
       res.status(502).json({ error: (err as Error).message });
     }
@@ -1199,6 +1231,21 @@ const server = app.listen(PORT, HOST, () => {
     })();
   }
   void bootstrapCamofoxStartUrl(true);
+  void (async () => {
+    // First pass at listen; a second pass after 20s catches Aroz volume / docker-cp overlays.
+    for (const delayMs of [0, 20_000]) {
+      if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+      try {
+        const synced = await syncAllAppManifestCronJobs(PROJECT_ROOT);
+        console.log(`[joshu] app manifest cron synced jobs=${synced}${delayMs ? ` (deferred ${delayMs}ms)` : ""}`);
+      } catch (err) {
+        console.warn(
+          `[joshu] app manifest cron sync failed${delayMs ? ` (deferred ${delayMs}ms)` : ""}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+  })();
   void import("./shareChat/triggerSubscribe.js")
     .then(({ startShareChatSlackbotTriggerSubscribe }) =>
       startShareChatSlackbotTriggerSubscribe(PROJECT_ROOT),

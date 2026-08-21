@@ -11,6 +11,8 @@ The **control plane** (managed provisioning, customer portal at `hello.joshu.me`
 | [`hetzner-quickstart.md`](hetzner-quickstart.md) | **Hetzner Ubuntu** self-host walkthrough (example build) |
 | [`../self-host.md`](../self-host.md) | Standalone Docker bootstrap |
 | [`runtime-topology.md`](runtime-topology.md) | How legacy assumptions map to Compose |
+| [`../runtime-assets.md`](../runtime-assets.md) | API-served HTML/PNG must be listed so they land in `dist/` |
+| [`hotpatch-running-box.md`](hotpatch-running-box.md) | Git / dist / image hotfixes on a live box |
 | [`instance-agent-protocol.md`](instance-agent-protocol.md) | Optional sidecar for managed hosting — heartbeats and signed commands |
 | [`control-plane.md`](control-plane.md) | Stub — points to proprietary CP repo |
 

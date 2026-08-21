@@ -1,8 +1,11 @@
-// One-shot ArozOS password reset for solo self-host recovery over SSH.
+// One-shot ArozOS password reset for solo self-host recovery over SSH
+// and fleet set_aroz_password (precomputed hash from the control plane).
 // ArozOS stores passhash/<username> in system/ao.db (Bolt) as JSON-encoded sha512 hex.
+// Rotating auth/sessionkey in the same transaction invalidates existing desktop cookies.
 package main
 
 import (
+	"crypto/rand"
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
@@ -10,24 +13,61 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	bolt "go.etcd.io/bbolt"
 )
 
+func isSha512Hex(s string) bool {
+	if len(s) != 128 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func main() {
 	dbPath := flag.String("db", "", "path to system/ao.db")
 	user := flag.String("user", "", "ArozOS username")
-	password := flag.String("password", "", "new login password")
+	password := flag.String("password", "", "new login password (SSH recovery)")
+	hashFlag := flag.String("hash", "", "precomputed sha512 hex (128 chars); preferred for fleet")
 	flag.Parse()
 
-	if *dbPath == "" || *user == "" || *password == "" {
+	if *dbPath == "" || *user == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
 
-	sum := sha512.Sum512([]byte(*password))
-	hashed := hex.EncodeToString(sum[:])
+	hashed := strings.ToLower(strings.TrimSpace(*hashFlag))
+	if hashed == "" {
+		if *password == "" {
+			fmt.Fprintln(os.Stderr, "either -password or -hash is required")
+			flag.Usage()
+			os.Exit(2)
+		}
+		sum := sha512.Sum512([]byte(*password))
+		hashed = hex.EncodeToString(sum[:])
+	}
+	if !isSha512Hex(hashed) {
+		log.Fatal("hash must be 128 lowercase hex characters (sha512)")
+	}
+
 	value, err := json.Marshal(hashed)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	sessionRaw := make([]byte, 32)
+	if _, err := rand.Read(sessionRaw); err != nil {
+		log.Fatal(err)
+	}
+	sessionValue, err := json.Marshal(string(sessionRaw))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -47,11 +87,14 @@ func main() {
 		if bucket.Get(key) == nil {
 			return fmt.Errorf("user %q not found (missing passhash/%s in ao.db)", *user, *user)
 		}
-		return bucket.Put(key, value)
+		if err := bucket.Put(key, value); err != nil {
+			return err
+		}
+		return bucket.Put([]byte("sessionkey"), sessionValue)
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("Password updated for %q\n", *user)
+	fmt.Printf("Password updated for %q (session key rotated)\n", *user)
 }

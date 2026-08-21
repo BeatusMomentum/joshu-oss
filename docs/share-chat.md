@@ -78,6 +78,9 @@ Share Chat also serves the CSS at `GET /joshu/share-chat/assets/joshu-public-pag
 | `POST` | `/joshu/api/share-chat/:shareUuid/message?stream=1` | Same, **SSE**: `status` → `evidence` → `delta`* → `done` |
 | `POST` | `/joshu/api/share-chat/:shareUuid/enable` | Owner dialog: mark chat sharing on |
 | `POST` | `/joshu/api/share-chat/:shareUuid/disable` | Owner dialog: mark chat sharing off |
+| `GET` | `/joshu/api/share-chat/:shareUuid/email` | Email Q&A status (agent address + allowlist) |
+| `POST` | `/joshu/api/share-chat/:shareUuid/email` | Save allowed senders + optional CC |
+| `POST` | `/joshu/api/share-chat/:shareUuid/email/unlink` | Turn off email Q&A for this share |
 | `GET` / `POST` | `/joshu/api/share-chat/:shareUuid/slack/channel` | Composio Slackbot: status / create named channel |
 | `POST` | `/joshu/api/share-chat/:shareUuid/slack/channel/unlink` | Drop channel mapping (+ disable trigger) |
 | `POST` | `/joshu/api/share-chat/teams/messages` | Azure Bot Framework messaging endpoint |
@@ -117,7 +120,7 @@ Each LLM answer is traced via the shared Joshu Langfuse pipeline (`src/observabi
 
 - trace `joshu-share-chat`, generation `share-chat-answer`
 - user id = box attribution (`HERMES_LANGFUSE_USER_ID`, e.g. `patrick`, or derived from `CUSTOMER_DOMAIN`)
-- tags: `joshu-app`, `share-chat`, `share-chat:web` / `share-chat:slack`
+- tags: `joshu-app`, `share-chat`, `share-chat:web` / `share-chat:slack` / `share-chat:teams` / `share-chat:email`
 - metadata: share UUID, shared item name, evidence count/titles, channel
 - token + cost usage from OpenRouter (`usage.include=true` on the stream)
 
@@ -151,6 +154,7 @@ Composio Graph Teams APIs do **not** support personal Microsoft accounts. For fr
 
 | Piece | Detail |
 |-------|--------|
+| UI flag | Connectors card only when `JOSHU_TEAMS_BOT_UI_ENABLED=true` (default off). Setup status includes `uiEnabled`. |
 | Setup | **Connectors → Teams bot**: paste Entra App ID + client secret; copy Messaging endpoint into Azure Bot; download app package zip → Teams → Upload a custom app |
 | Bind | Chat sharing dialog → copy `bind <uuid>` (or paste Share Chat URL) into a Teams DM/group with the bot |
 | Registry | `.joshu/share-chat/teams-conversations.json` + `teams-bot.json` |
@@ -160,6 +164,21 @@ Composio Graph Teams APIs do **not** support personal Microsoft accounts. For fr
 | Env overrides | `JOSHU_TEAMS_BOT_APP_ID`, `JOSHU_TEAMS_BOT_APP_PASSWORD`, optional `JOSHU_TEAMS_BOT_TENANT_ID` |
 
 No Microsoft Store approval for sideload. Public Store publishing is out of scope.
+
+## Email Q&A (agent mailbox)
+
+Owners can bind **allowed senders** on the agent Nylas mailbox (`{slug}@joshu.me`) to a share UUID. Inbound mail from those addresses is answered with the same scoped RAG as the public page — **before** EA mail ingress runs. No second Nylas mailbox and no plus-addressing.
+
+| Piece | Detail |
+|-------|--------|
+| Setup | **Chat sharing** dialog → **Email Q&A** → allowlist (`@company.com` or `person@company.com`) + optional CC |
+| Inbound | Nylas mirror → `tryShareChatEmailIngress` (provider `nylas`) when sender matches |
+| Outbound | `nylas` send on-thread with Joshu HTML signature; citations appended in plain text |
+| Registry | `.joshu/share-chat/email-bindings.json` (`allowedSenders`, `cc`, `processedMessageIds`) |
+| Disable | **Turn off email Q&A** in dialog, or **Remove Sharing** (clears binding) |
+| Rate limit | ~10 answers/min per share+sender |
+
+Joshua clinic pilot used a cron + keyword script before this shipped; migrate by saving the same `@thejoint.com` / `@four8.co` allowlist on the Training share and retiring the Hermes cron.
 
 ### Local setup with ngrok (plain English)
 
@@ -251,11 +270,14 @@ Fetch a starter manifest: `GET .../slack/manifest`.
 | `src/shareChat/scopedBrain.ts` | Path-filtered retrieval |
 | `src/shareChat/answer.ts` | Constrained RAG |
 | `src/shareChat/routes.ts` | HTTP + UI |
+| `src/shareChat/emailBindings.ts` | Per-share allowlist registry |
+| `src/shareChat/emailIngress.ts` | Nylas inbound → scoped answer + send |
 | `src/shareChat/chatFlags.ts` | Per-UUID enable/disable flag |
 | `src/shareChat/slackChannels.ts` / `composioSlackbot.ts` / `composioTriggers.ts` | Composio Slackbot KB channels |
 | `src/shareChat/teamsBot*.ts` / `teamsConversations.ts` | Azure Bot Share Chat (free Teams) |
 | `src/shareChat/slackRegistry.ts` / `slackEvents.ts` | Legacy per-share Events API bots |
 | `apps/share-chat/index.html` | Public chat page (brandbar + server-injected identity) |
+| `dist/shareChat/ui/index.html` | Bundled copy (`npm run build`) so VPS `dist/` bind-mounts still serve the UI |
 | `arozos/web-overlays-vanilla/joshu-public-pages.css` | Shared guest CSS (File Share + Share Chat) |
 | `arozos/web-overlays-vanilla/joshu-public-identity.js` | Client identity hydrator for `/share/*` |
 | `arozos/web-overlays-vanilla/SystemAO/file_system/share_to.html` | Share To picker |
@@ -269,3 +291,24 @@ npm run test:share-chat
 ```
 
 See also [file-brain.md](file-brain.md) and [design/README.md](design/README.md) (File Share overlays).
+
+## Packaging (VPS)
+
+The guest HTML is **not** a Vite app. It is listed in [`scripts/runtime-assets.json`](../scripts/runtime-assets.json); `npm run build` copies it to `dist/shareChat/ui/index.html`. The sandbox image also copies `apps/share-chat/`, and compose bind-mounts that folder from the host clone.
+
+If guests see `Share chat UI missing`, the running container cannot read either path.
+
+**Live box (0.1.40 and earlier images):** `git pull` does **not** install the HTML. Host `dist/` is gitignored and shadows the image; host compose may still lack the `apps/share-chat` mount. Overlay without bouncing the stack:
+
+```bash
+# laptop
+node scripts/copy-runtime-assets.mjs
+rsync -avz dist/shareChat/ui/ root@<host>:/opt/joshu/dist/shareChat/ui/
+rsync -avz apps/share-chat/ root@<host>:/opt/joshu/apps/share-chat/
+```
+
+`uiHtmlPath()` checks `existsSync` per request, so the guest page comes back immediately. Also add the compose bind-mount on the **host** clone (`../apps/share-chat:/opt/joshu/apps/share-chat:ro`) so the next recreate keeps a second copy. Do **not** `syncDistFromImage` from **0.1.40** after that overlay — `--delete` wipes `dist/shareChat/ui/`.
+
+Patrick lost this again **2026-08-18** after a `set_aroz_password` bounce: stop/start does not delete host `dist/`, but the overlay was missing and host compose had never been updated. Re-check both files after any stack bounce on a box that has not pulled this compose/dist packaging.
+
+New API-served static files: add a row to `runtime-assets.json` — see [`runtime-assets.md`](runtime-assets.md).

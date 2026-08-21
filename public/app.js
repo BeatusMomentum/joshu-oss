@@ -1,4 +1,5 @@
 import { attachVncClipboard } from "./vnc-clipboard.js";
+import { attachVncScrollBridge } from "./vnc-scroll.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -86,6 +87,7 @@ const state = {
   intentionalRfbDisconnect: null,
   novnc: null,
   vncClipboardDetach: null,
+  vncScrollDetach: null,
   /** After a VNC drop, block auto-reconnect until this timestamp (ms). Reload VNC clears it. */
   vncReconnectAfter: 0,
   /** True after the first automatic connect attempt (status poll must not keep reconnecting). */
@@ -220,6 +222,10 @@ function disconnectVnc({ clear = true } = {}) {
     state.vncClipboardDetach();
     state.vncClipboardDetach = null;
   }
+  if (state.vncScrollDetach) {
+    state.vncScrollDetach();
+    state.vncScrollDetach = null;
+  }
   const rfb = state.rfb;
   state.rfb = null;
   if (rfb) {
@@ -284,6 +290,26 @@ async function installCamofoxShimOnce() {
 function camofoxBrowserReady(camofox) {
   const h = camofox?.health;
   return Boolean(h?.browserRunning || h?.browserConnected || (h?.activeTabs ?? 0) > 0);
+}
+
+/** After BROWSER_IDLE_TIMEOUT_MS shutdown, Camofox stays up but Firefox is gone.
+ *  Status polls must not navigate live tabs — fit-viewport only creates when missing. */
+let lastCamofoxWarmAt = 0;
+async function maybeWarmCamofoxBrowser(data) {
+  if (camofoxBrowserReady(data?.camofox)) return false;
+  const now = Date.now();
+  if (now - lastCamofoxWarmAt < 15_000) {
+    if (!state.rfb) setVncStatus("starting Camofox browser…", "warn");
+    return false;
+  }
+  lastCamofoxWarmAt = now;
+  if (!state.rfb) setVncStatus("starting Camofox browser…", "warn");
+  const res = await fetch("api/camofox/fit-viewport", { method: "POST", cache: "no-store" }).catch(() => undefined);
+  if (!res?.ok) return false;
+  // Idle shutdown often disconnects VNC with a 60s backoff — clear so we reconnect now.
+  state.vncReconnectAfter = 0;
+  state.vncAutoConnectDone = false;
+  return true;
 }
 
 async function maybeConnectVncFromStatus(data, { force = false } = {}) {
@@ -370,6 +396,8 @@ async function connectVnc(novnc, { force = false } = {}) {
           hint: els.vncClipboardHint,
         },
       });
+      if (state.vncScrollDetach) state.vncScrollDetach();
+      state.vncScrollDetach = attachVncScrollBridge(els.vncScreen);
     }
     rfb.addEventListener("connect", () => {
       state.vncReconnectAfter = 0;
@@ -427,7 +455,12 @@ async function refreshStatus() {
     els.status.innerHTML = parts.join(" &middot; ");
     if (data.browserViewport) applyFramebufferAspect(data.browserViewport.width, data.browserViewport.height);
     if (data.novnc?.embedUrl) els.openVnc.href = data.novnc.embedUrl;
-    await maybeConnectVncFromStatus(data);
+    const warmed = await maybeWarmCamofoxBrowser(data);
+    // After warm, re-read status so VNC connects against live browserConnected.
+    const statusForVnc = warmed
+      ? await fetch("api/status", { cache: "no-store" }).then((r) => (r.ok ? r.json() : data)).catch(() => data)
+      : data;
+    await maybeConnectVncFromStatus(statusForVnc, warmed ? { force: true } : undefined);
     if (!state.sessionId && data.activeSessionId) setSession(data.activeSessionId);
   } catch (err) {
     els.status.innerHTML = `<span class="err">status error: ${escapeHtml(err.message)}</span>`;

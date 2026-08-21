@@ -72,7 +72,9 @@ For a normal image release, `build:deploy` + Dockerfile bake jTerm into `/opt/ar
 
 ## TUI notes (Hermes CLI)
 
-Hermes (and other full-screen CLIs) clear/redraw the alternate screen — that is expected. jTerm only notifies the PTY of **real** size changes (debounced `ResizeObserver`, ≥2px host delta) so float-window chrome does not spam `SIGWINCH` and force constant redraws. The viewport always reserves a vertical scrollbar gutter (`overflow-y: scroll` + `scrollbar-gutter: stable`) so FitAddon does not blink scrollbars when the measured area toggles by one gutter width.
+Hermes (and other full-screen CLIs) clear/redraw the alternate screen — that is expected. jTerm only notifies the PTY of **real** size changes (debounced `ResizeObserver`, ≥**4px** host delta, **200ms** debounce) so float-window chrome does not spam `SIGWINCH` and force constant redraws. The viewport always reserves a vertical scrollbar gutter (`overflow-y: scroll` + `scrollbar-gutter: stable`) so FitAddon does not blink scrollbars when the measured area toggles by one gutter width.
+
+**Live box lag:** the float window loads `/var/lib/arozos/subservice/jterm/app/` (ArozOS volume), **not** host `/opt/joshu/dist/jterm/` alone. After a `git pull` / dist overlay, run `bash scripts/hotpatch-jterm.sh root@<host>` (or recreate after baking into the image) or the desktop keeps an old bundle and the blink loop returns. Hard-refresh and open a **new** jTerm window after hotpatch.
 
 ## Security notes
 

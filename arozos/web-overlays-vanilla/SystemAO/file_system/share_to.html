@@ -7,7 +7,7 @@
         <title>Share To</title>
         <link rel="stylesheet" href="../../script/semantic/semantic.min.css">
         <link rel="stylesheet" href="../../script/ao.css">
-        <link rel="stylesheet" href="../../script/joshu-share-dialogs.css?v=20260717f">
+        <link rel="stylesheet" href="../../script/joshu-share-dialogs.css?v=20260820a">
         <script src="../../script/jquery.min.js"></script>
         <script src="../../script/semantic/semantic.min.js"></script>
         <script src="../../script/ao_module.js"></script>
@@ -27,12 +27,12 @@
             </button>
             <button type="button" class="share-to-option" id="optChatWithFiles">
                 <span class="share-to-option-title">Chat with files</span>
-                <span class="share-to-option-desc">Get a public chat URL (copy / turn off anytime), like a download link.</span>
+                <span class="share-to-option-desc">Public chat link plus optional Slack, Teams, or email Q&amp;A — scoped to these files only.</span>
             </button>
         </div>
 
         <script>
-            var SHARE_DIALOG_CACHE_BUST = "20260717f";
+            var SHARE_DIALOG_CACHE_BUST = "20260820a";
             var shareFiles = [];
 
             function loadSelection(){
@@ -111,7 +111,7 @@
                 var file = Object.assign({}, shareFiles[0]);
                 var payload = encodeURIComponent(JSON.stringify([file]));
                 var url = "SystemAO/file_system/chat_share.html?v=" + SHARE_DIALOG_CACHE_BUST + "#" + payload;
-                openFloatOrWindow(url, "Chat sharing", 640, 480);
+                openFloatOrWindow(url, "Chat sharing", 640, 720);
             }
 
             $(function(){

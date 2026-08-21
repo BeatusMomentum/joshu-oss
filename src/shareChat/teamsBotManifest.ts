@@ -111,6 +111,8 @@ export async function buildTeamsBotPackageZip(
 }
 
 export type TeamsBotSetupStatus = {
+  /** Connectors UI section — gated by JOSHU_TEAMS_BOT_UI_ENABLED (default off). */
+  uiEnabled: boolean;
   configured: boolean;
   appIdPreview?: string;
   messagesUrl: string;
@@ -124,17 +126,28 @@ function previewId(id: string): string {
   return `${id.slice(0, 8)}…${id.slice(-4)}`;
 }
 
+/**
+ * Feature flag for the Connectors → Teams bot setup card.
+ * Messaging / bind APIs stay available when credentials are already configured.
+ * Default: hidden until explicitly enabled.
+ */
+export function isTeamsBotUiEnabled(): boolean {
+  return /^(1|true|yes)$/i.test(process.env.JOSHU_TEAMS_BOT_UI_ENABLED?.trim() || "");
+}
+
 export function getTeamsBotSetupStatus(projectRoot = process.cwd()): TeamsBotSetupStatus {
   const creds = resolveTeamsBotCreds(projectRoot);
   const messagesUrl = teamsBotMessagesRequestUrl();
   const messagesUrlIsPublic = teamsBotMessagesUrlIsPublic();
   const configured = Boolean(creds?.appId && creds.appPassword);
+  const uiEnabled = isTeamsBotUiEnabled();
   return {
+    uiEnabled,
     configured,
     appIdPreview: creds?.appId ? previewId(creds.appId) : undefined,
     messagesUrl,
     messagesUrlIsPublic,
-    setupRequired: !configured,
+    setupRequired: uiEnabled && !configured,
     steps: [
       "Create an Azure Bot (F0) + Entra app registration (multi-tenant / personal accounts OK for free Teams sideload).",
       "Azure Bot → Channels → enable Microsoft Teams.",

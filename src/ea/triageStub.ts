@@ -221,6 +221,16 @@ export async function createTriageStubAfterMirror(input: AfterMirrorThreadInput)
     return;
   }
 
+  // Email Q&A lane: scoped share-chat auto-reply before EA classifier/ingress.
+  if (provider === "nylas" && projectRoot) {
+    const { tryShareChatEmailIngress } = await import("../shareChat/emailIngress.js");
+    const handled = await tryShareChatEmailIngress(input, projectRoot).catch((err) => {
+      console.warn(`[share-chat/email] ingress: ${(err as Error).message}`);
+      return false;
+    });
+    if (handled) return;
+  }
+
   const latestMessageId = messageId?.trim() || `${threadId}-${receivedAt ?? "unknown"}`;
 
   const runClassifier =

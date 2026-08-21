@@ -143,7 +143,7 @@ export type ShareChatStreamHandlers = {
 };
 
 /** Where the public question came from — Langfuse tag/metadata only. */
-export type ShareChatChannel = "web" | "slack" | "teams";
+export type ShareChatChannel = "web" | "slack" | "teams" | "email";
 
 /** Result of the raw OpenRouter stream, including usage from the final chunk. */
 type StreamCoreResult = {

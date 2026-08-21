@@ -6,7 +6,7 @@
   "publisher": "joshu",
   "entry": "last30days/index.html",
   "apiPrefix": "/joshu/api/last30days",
-  "description": "Research the last 30 days across social and web sources (ScrapeCreators; no yt-dlp/cookies)",
+  "description": "Research the last 30 days across social and web sources (ScrapeCreators + Xquik; no yt-dlp/cookies)",
   "delivery": {
     "onComplete": "hermes_session",
     "outputDir": "research/last30days"
@@ -19,6 +19,16 @@
         "schedule": "0 8 * * *",
         "noAgent": true,
         "script": "last30days-watchlist-run.sh",
+        "invoke": { "action": "watchlistRunAll", "args": { "cadence": "daily" } },
+        "deliver": "local"
+      },
+      {
+        "id": "watchlist-weekly",
+        "name": "last30days: watchlist weekly",
+        "schedule": "0 8 * * 1",
+        "noAgent": true,
+        "script": "last30days-watchlist-weekly.sh",
+        "invoke": { "action": "watchlistRunAll", "args": { "cadence": "weekly" } },
         "deliver": "local"
       }
     ]
@@ -51,12 +61,23 @@
       { "name": "openSettings", "description": "Open Settings dialog" },
       { "name": "runDoctor", "description": "Run doctor health check (json mode)" },
       { "name": "refreshRuns", "description": "Refresh recent runs list" },
-      { "name": "openWatchlist", "description": "Switch to Watchlist nav" }
+      { "name": "openWatching", "description": "Switch to Watching" },
+      {
+        "name": "watchThisTopic",
+        "description": "Add the current topic to Watching",
+        "parameters": [{ "name": "topic", "type": "string" }]
+      }
     ],
     "actions": [
       { "name": "research", "description": "Headless topic research (async; pass wait:true to block)" },
       { "name": "doctor", "description": "Headless doctor health check" },
-      { "name": "watchlistRunAll", "description": "Run research for all enabled watchlist topics" },
+      { "name": "watchingList", "description": "List Watching topics and trending status" },
+      { "name": "watchingAdd", "description": "Add a Watching topic (daily or weekly); does not run research" },
+      { "name": "watchingRemove", "description": "Remove a Watching topic" },
+      { "name": "watchingReport", "description": "Watch report: trending vs average for one topic" },
+      { "name": "watchingRun", "description": "Re-run one Watching topic now (async, 7-day window)" },
+      { "name": "watchingRunAll", "description": "Re-run enabled Watching topics now (async; optional cadence)" },
+      { "name": "watchlistRunAll", "description": "Blocking re-run of enabled watches (cron / Schedules)" },
       { "name": "briefingGenerate", "description": "Generate briefing digest from store" }
     ]
   }

@@ -20,10 +20,19 @@ const GET_ACTIONS = new Set([
   "welcome",
   "config",
   "sources",
+  "watchingList",
+  "watchingReport",
 ]);
 
 /** Long-running POST actions — default fire-and-forget unless args.wait === true. */
-const ASYNC_POST_ACTIONS = new Set(["research", "discover", "drill", "verifyFreshness"]);
+const ASYNC_POST_ACTIONS = new Set([
+  "research",
+  "discover",
+  "drill",
+  "verifyFreshness",
+  "watchingRun",
+  "watchingRunAll",
+]);
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";

@@ -98,6 +98,8 @@ const SHARE_CHAT_API = "/joshu/api/share-chat";
 
 type TeamsBotSetupStatus = {
   ok?: boolean;
+  /** Server feature flag JOSHU_TEAMS_BOT_UI_ENABLED — when false, hide the Teams card. */
+  uiEnabled?: boolean;
   configured?: boolean;
   appIdPreview?: string;
   messagesUrl?: string;
@@ -218,7 +220,9 @@ function App() {
     if (!res.ok) return null;
     const json = (await res.json()) as TeamsBotSetupStatus;
     setTeamsBotSetup(json);
-    if (json.setupRequired) setTeamsBotWizardOpen(true);
+    // Only auto-expand when the UI flag is on and setup is still needed.
+    if (json.uiEnabled && json.setupRequired) setTeamsBotWizardOpen(true);
+    else if (!json.uiEnabled) setTeamsBotWizardOpen(false);
     return json;
   }, []);
 
@@ -242,17 +246,17 @@ function App() {
     void refreshAll();
   }, [refreshAll]);
 
-  // Deep-link from Chat sharing: #slackbot | #teams-bot
+  // Deep-link from Chat sharing: #slackbot | #teams-bot (Teams only when UI flag is on)
   useEffect(() => {
     const openFromHash = () => {
       const hash = window.location.hash.replace(/^#/, "");
       if (hash === "slackbot") setSlackbotWizardOpen(true);
-      if (hash === "teams-bot") setTeamsBotWizardOpen(true);
+      if (hash === "teams-bot" && teamsBotSetup?.uiEnabled) setTeamsBotWizardOpen(true);
     };
     openFromHash();
     window.addEventListener("hashchange", openFromHash);
     return () => window.removeEventListener("hashchange", openFromHash);
-  }, []);
+  }, [teamsBotSetup?.uiEnabled]);
 
   useEffect(() => {
     const onFocus = () => void refreshAll();
@@ -626,6 +630,7 @@ function App() {
 
       {error && <p className="error">{error}</p>}
 
+      {teamsBotSetup?.uiEnabled ? (
       <section className="card" id="teams-bot">
         <h2>Teams bot (Share Chat)</h2>
         <p className="hint">
@@ -739,6 +744,7 @@ function App() {
           </div>
         )}
       </section>
+      ) : null}
 
       <section className="card">
           <h2>Apps</h2>

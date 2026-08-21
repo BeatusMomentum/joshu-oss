@@ -20,6 +20,14 @@ import { runJoshuThink, resolveThinkUserQuote } from "./brainThink.js";
 import { JOSHU_IDENTITY } from "./config.js";
 import { createVoiceS2sClient, voiceS2sProviderLabel } from "./createVoiceS2sClient.js";
 import { normalizeThinkToolName, PHONE_TOOL_NAMES } from "./realtimeTools.js";
+import {
+  appendDictationChunk,
+  buildDictationThinkMessage,
+  createDictationSession,
+  dictationStatusPayload,
+  looksLikeDictationDone,
+  type DictationSessionState,
+} from "./dictationSession.js";
 import type { FunctionCallPayload, ResponseSpeechReason, VoiceS2sClient } from "./voiceS2sTypes.js";
 import { matchesThinkPassphrase } from "./phonePassphrase.js";
 import {
@@ -127,6 +135,8 @@ export class TwilioRealtimeSession {
   private callerInputSeen = false;
   /** Set when caller spoke but the auto-reply may have been muted; nudge once on transcript. */
   private geminiUserTurnNeedsReply = false;
+  /** Multi-turn voice capture — buffer until finish_dictation / done phrase. */
+  private dictation: DictationSessionState | null = null;
   private readonly geminiPhone = VOICE_S2S_PROVIDER === "gemini_live";
   private currentResponseReason: ResponseSpeechReason = "organic";
   private responseHadSpeech = false;
@@ -227,6 +237,15 @@ export class TwilioRealtimeSession {
         }
         // OpenAI PSTN: manual turn (create_response=false). Gemini auto-responds like browser.
         if (
+          this.geminiPhone &&
+          reason === "organic" &&
+          this.dictation?.active
+        ) {
+          voiceLog(this.callSid, "dictation", "suppress organic speech while buffering", { seq });
+          this.s2s?.cancelActiveResponse();
+          return;
+        }
+        if (
           !this.geminiPhone &&
           reason === "organic" &&
           !this.joshuInitiatedResponse
@@ -301,6 +320,7 @@ export class TwilioRealtimeSession {
 
   close(): void {
     this.cancelActiveJob();
+    this.dictation = null;
     this.clearSessionDeadline();
     voiceLog(this.callSid, "twilio", "stream close", this.metrics);
     this.s2s?.close();
@@ -548,6 +568,15 @@ export class TwilioRealtimeSession {
     });
     const safeText = this.sanitizeTextForThinkContext(text);
     if (safeText) this.pushTranscript("user", safeText);
+    if (safeText && this.dictation?.active) {
+      this.onDictationUserTranscript(safeText);
+      // Stay silent while buffering — OpenAI path must not request organic chat.
+      if (this.geminiPhone) {
+        this.geminiUserTurnNeedsReply = false;
+        this.allowGeminiCallerReply("dictation chunk");
+      }
+      return;
+    }
     // Only a turn with content beyond the passphrase counts as the restated intent.
     // The passphrase transcript often arrives just after a think_tool unlock, and it
     // sanitizes to empty — clearing the guard on it would re-open the empty-job path.
@@ -884,6 +913,19 @@ export class TwilioRealtimeSession {
       }
     }
 
+    if (toolName === "start_dictation") {
+      this.handleStartDictation(call.callId, args);
+      return;
+    }
+    if (toolName === "finish_dictation") {
+      this.handleFinishDictation(call.callId, args);
+      return;
+    }
+    if (toolName === "cancel_dictation") {
+      this.handleCancelDictation(call.callId);
+      return;
+    }
+
     if (toolName !== "think") {
       // Not declared to the model on PSTN (see PHONE_TOOL_NAMES) — hallucinated call.
       voiceWarn(this.callSid, "tool", `unsupported tool on phone: ${call.name}`);
@@ -950,6 +992,112 @@ export class TwilioRealtimeSession {
 
     this.metrics.joshuJobCount += 1;
     this.startJoshuJob({ jobId, intent, summary, userQuote });
+  }
+
+  private onDictationUserTranscript(text: string): void {
+    if (!this.dictation?.active) return;
+    const before = this.dictation.chunks.length;
+    this.dictation = appendDictationChunk(this.dictation, text);
+    if (this.dictation.chunks.length !== before) {
+      voiceLog(this.callSid, "dictation", "buffered chunk", {
+        chunks: this.dictation.chunks.length,
+        preview: text.slice(0, 120),
+      });
+    }
+    if (looksLikeDictationDone(text) && this.dictation.chunks.length > 0) {
+      voiceLog(this.callSid, "dictation", "done phrase — finishing session");
+      this.completeDictationAndThink("done_phrase");
+    }
+  }
+
+  private handleStartDictation(callId: string, args: Record<string, unknown>): void {
+    const s2s = this.s2s;
+    if (!s2s) return;
+    const destination = String(args.destination ?? "").trim() || "Desktop note";
+    const title = typeof args.title === "string" ? args.title : undefined;
+    this.dictation = createDictationSession({
+      destination,
+      format: args.format,
+      title,
+    });
+    voiceLog(this.callSid, "dictation", "started", dictationStatusPayload(this.dictation));
+    s2s.sendFunctionOutput(
+      callId,
+      JSON.stringify({
+        status: "started",
+        ...dictationStatusPayload(this.dictation),
+        message:
+          "Dictation mode on. Stay nearly silent while the caller speaks. Call finish_dictation when they are done.",
+      }),
+      { triggerResponse: false },
+    );
+    this.joshuInitiatedResponse = true;
+    s2s.injectProgressMessage("Ready — go ahead.");
+  }
+
+  private handleFinishDictation(callId: string, args: Record<string, unknown>): void {
+    const s2s = this.s2s;
+    if (!s2s) return;
+    if (!this.dictation?.active) {
+      s2s.sendFunctionOutput(
+        callId,
+        JSON.stringify({ status: "error", error: "No active dictation session" }),
+        { triggerResponse: true },
+      );
+      return;
+    }
+    const note = typeof args.note === "string" ? args.note.trim() : "";
+    s2s.sendFunctionOutput(
+      callId,
+      JSON.stringify({
+        status: "finishing",
+        ...dictationStatusPayload(this.dictation),
+        message: `${JOSHU_IDENTITY.name} is formatting and saving the dictation.`,
+      }),
+      { triggerResponse: false },
+    );
+    this.completeDictationAndThink("finish_dictation", note);
+  }
+
+  private handleCancelDictation(callId: string): void {
+    const s2s = this.s2s;
+    if (!s2s) return;
+    const chunks = this.dictation?.chunks.length ?? 0;
+    this.dictation = null;
+    voiceLog(this.callSid, "dictation", "cancelled", { chunks });
+    s2s.sendFunctionOutput(
+      callId,
+      JSON.stringify({ status: "cancelled", discarded_chunks: chunks }),
+      { triggerResponse: true },
+    );
+  }
+
+  private completeDictationAndThink(source: string, extraNote = ""): void {
+    const session = this.dictation;
+    if (!session?.active) return;
+    session.active = false;
+    const msg = buildDictationThinkMessage(session);
+    if (extraNote) {
+      msg.summary = `${msg.summary} Note: ${extraNote}`;
+    }
+    this.dictation = null;
+    const jobId = randomUUID().slice(0, 8);
+    voiceLog(this.callSid, "dictation", `complete source=${source}`, {
+      jobId,
+      chunks: session.chunks.length,
+      chars: msg.userQuote.length,
+      format: session.format,
+      destination: session.destination,
+    });
+    this.joshuInitiatedResponse = true;
+    this.s2s?.injectProgressMessage("One moment.");
+    this.metrics.joshuJobCount += 1;
+    this.startJoshuJob({
+      jobId,
+      intent: msg.intent,
+      summary: this.sanitizeTextForThinkContext(msg.summary),
+      userQuote: msg.userQuote,
+    });
   }
 
   private startJoshuJob(params: {

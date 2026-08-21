@@ -18,6 +18,11 @@ const LEGACY_MIDDAY_NAME = "EA midday window";
 /** Hermes skill-backed cron: must match SKILL.md frontmatter `name`. */
 export const EA_PLAYBOOK_SKILL = "ea-playbook";
 
+const EA_CRON_NAME_SET = new Set<string>(Object.values(EA_CRON_JOB_NAMES));
+
+/** Serialize concurrent syncs (double Finish setup, resync while Welcome saves). */
+let syncEaCronJobsChain: Promise<unknown> = Promise.resolve();
+
 type EaCronJobSpec = {
   name: string;
   schedule: string;
@@ -111,8 +116,32 @@ async function removeLegacyMidday(existing: CronBridgeJobSummary[]): Promise<voi
   console.info("[ea-cron] removed legacy midday job");
 }
 
+/** Keep the first listed job per EA name; remove extras (Welcome double-submit race). */
+export async function dedupeEaCronJobsByName(jobs: CronBridgeJobSummary[]): Promise<number> {
+  const byName = new Map<string, CronBridgeJobSummary[]>();
+  for (const job of jobs) {
+    const name = job.name?.trim();
+    if (!name || !EA_CRON_NAME_SET.has(name)) continue;
+    const group = byName.get(name) ?? [];
+    group.push(job);
+    byName.set(name, group);
+  }
+
+  let removed = 0;
+  for (const group of byName.values()) {
+    for (const dup of group.slice(1)) {
+      if (!dup.job_id) continue;
+      await callCronBridge({ action: "remove", job_id: dup.job_id });
+      removed += 1;
+      console.info("[ea-cron] removed duplicate job %s (%s)", dup.name, dup.job_id);
+    }
+  }
+  return removed;
+}
+
 async function upsertJob(spec: EaCronJobSpec, existing: CronBridgeJobSummary[]): Promise<"created" | "updated"> {
-  const match = existing.find((job) => job.name === spec.name);
+  const matches = existing.filter((job) => job.name === spec.name);
+  const match = matches[0];
   const payload = {
     schedule: spec.schedule,
     name: spec.name,
@@ -147,12 +176,12 @@ export type SyncEaCronJobsResult = {
   ok: boolean;
   created: number;
   updated: number;
+  deduped: number;
   schedules: ReturnType<typeof buildSchedules>;
   error?: string;
 };
 
-/** Best-effort sync of EA cron windows from Welcome draft. Does not throw. */
-export async function syncEaCronJobs(draft: OnboardingDraft): Promise<SyncEaCronJobsResult> {
+async function syncEaCronJobsInner(draft: OnboardingDraft): Promise<SyncEaCronJobsResult> {
   const schedules = buildSchedules(draft);
   try {
     // Hermes cron hour/minute are interpreted in owner local time — not VPS UTC.
@@ -162,29 +191,47 @@ export async function syncEaCronJobs(draft: OnboardingDraft): Promise<SyncEaCron
         ok: false,
         created: 0,
         updated: 0,
+        deduped: 0,
         schedules,
         error: tzResult.error ?? "Hermes timezone sync failed",
       };
     }
 
-    const existing = await listExistingJobs();
+    let existing = await listExistingJobs();
     await removeLegacyMidday(existing);
+    const deduped = await dedupeEaCronJobsByName(existing);
+    if (deduped > 0) {
+      existing = await listExistingJobs();
+    }
+
     const specs = buildJobSpecs(draft);
     let created = 0;
     let updated = 0;
     for (const spec of specs) {
-      const outcome = await upsertJob(spec, existing);
+      // Fresh list each iteration — concurrent creates must not leave stale snapshots.
+      const outcome = await upsertJob(spec, await listExistingJobs());
       if (outcome === "created") created += 1;
       else updated += 1;
     }
-    return { ok: true, created, updated, schedules };
+    return { ok: true, created, updated, deduped, schedules };
   } catch (err) {
     return {
       ok: false,
       created: 0,
       updated: 0,
+      deduped: 0,
       schedules,
       error: (err as Error).message,
     };
   }
+}
+
+/** Best-effort sync of EA cron windows from Welcome draft. Does not throw. */
+export async function syncEaCronJobs(draft: OnboardingDraft): Promise<SyncEaCronJobsResult> {
+  const run = syncEaCronJobsChain.then(() => syncEaCronJobsInner(draft));
+  syncEaCronJobsChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }

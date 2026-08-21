@@ -202,6 +202,8 @@ WORKDIR ${APP_DIR}
 COPY deploy/runtime/package.json deploy/runtime/package-lock.json ./
 COPY patches ./patches
 COPY dist ./dist
+# Public Chat-with-files HTML (cwd lookup). Also bundled at dist/shareChat/ui/.
+COPY apps/share-chat ./apps/share-chat
 COPY public ./public
 COPY integrations ./integrations
 COPY .hermes ./.hermes
@@ -254,6 +256,10 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     || (echo "ERROR: @joshu/email-signature dist missing after npm ci" >&2; exit 1) \
     && test -f node_modules/@joshu/whiteboard-cwm/dist/index.js \
     || (echo "ERROR: @joshu/whiteboard-cwm dist missing after npm ci" >&2; exit 1)
+
+# Fail closed: every runtime-assets.json dest must be in the baked dist/.
+RUN node scripts/copy-runtime-assets.mjs --check \
+    && test -f apps/share-chat/index.html
 
 # Camofox 1.6+ ships plugins.vnc.enabled=false; ENABLE_VNC alone never loads the plugin.
 RUN python3 - <<'PY'

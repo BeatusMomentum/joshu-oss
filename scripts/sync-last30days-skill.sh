@@ -37,4 +37,7 @@ echo "[last30days-skill] installed → ${DEST}"
 test -f "${DEST}/skills/last30days/scripts/last30days.py"
 
 python3 "${ROOT_DIR}/scripts/patch-last30days-sc-relay.py"
+python3 "${ROOT_DIR}/scripts/patch-last30days-xquik-relay.py"
+python3 "${ROOT_DIR}/scripts/patch-last30days-watch-window.py"
 python3 "${ROOT_DIR}/scripts/patch-last30days-clustering.py"
+python3 "${ROOT_DIR}/scripts/patch-last30days-share-dir.py"

@@ -287,7 +287,11 @@ const TOOLS = [
           description:
             "Email subject. On replies (replyToMessageId set), copy the parent subject exactly from the thread mirror — do not append availability, names, or task titles (Gmail will fork a new conversation).",
         },
-        body: { type: "string" },
+        body: {
+          type: "string",
+          description:
+            "Message content (plain text or light markdown: **bold**, lists, [label](url), bare https URLs). Server converts to HTML with clickable links and appends the Joshu signature — do not include signature markup.",
+        },
         replyToMessageId: {
           type: "string",
           description:

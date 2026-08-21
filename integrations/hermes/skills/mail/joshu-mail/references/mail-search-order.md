@@ -89,7 +89,7 @@ When action guard is enabled, owner approves on Telegram before delivery. The RE
 | Principal Gmail message | — | `GET /joshu/api/connectors/mail/gmail/messages/:id` |
 | Principal Gmail send/reply | — | **Agent blocked** (jMail owner UI only) |
 
-**Agent send signature:** Joshu appends a branded HTML signature server-side (companion name, `{owner}'s Joshu`, https://joshu.me). Pass plain message text in `body` — do not include signature markup.
+**Agent send body + signature:** Pass message content in `body` (plain text or light markdown: links, bold/italic, lists). Joshu converts to HTML (clickable URLs) and appends a branded signature (companion name, `{owner}'s Joshu`, https://joshu.me) — do not include signature markup yourself.
 
 Mail **search** is steps 1–3 (mirror + gbrain), not these tools — except live get-by-id when you already have a message id.
 

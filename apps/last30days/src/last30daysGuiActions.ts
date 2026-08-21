@@ -1,12 +1,7 @@
 import type { MutableRefObject } from "react";
 import type { JoshuGuiActionInput } from "@joshu/app-agent";
 
-export type Last30DaysNavId =
-  | "research"
-  | "watchlist"
-  | "store"
-  | "briefings"
-  | "doctor";
+export type Last30DaysNavId = "research" | "watching";
 
 export type Last30DaysGuiAgentApi = {
   getGuiSnapshot: () => Record<string, unknown>;
@@ -21,7 +16,8 @@ export type Last30DaysGuiAgentApi = {
   openSettings: () => string;
   runDoctor: () => Promise<string>;
   refreshRuns: () => Promise<string>;
-  openWatchlist: () => string;
+  openWatching: () => string;
+  watchThisTopic: (args?: { topic?: string }) => Promise<string>;
 };
 
 export function createLast30DaysGuiActions(
@@ -68,9 +64,18 @@ export function createLast30DaysGuiActions(
       handler: async () => guiRef.current?.refreshRuns() ?? "App not ready.",
     },
     {
-      name: "openWatchlist",
-      description: "Switch to Watchlist screen",
-      handler: async () => guiRef.current?.openWatchlist() ?? "App not ready.",
+      name: "openWatching",
+      description: "Switch to Watching screen",
+      handler: async () => guiRef.current?.openWatching() ?? "App not ready.",
+    },
+    {
+      name: "watchThisTopic",
+      description: "Add the current (or given) topic to Watching",
+      parameters: [{ name: "topic", type: "string" }],
+      handler: async (args) =>
+        guiRef.current?.watchThisTopic({
+          topic: typeof args.topic === "string" ? args.topic : undefined,
+        }) ?? "App not ready.",
     },
   ];
 }

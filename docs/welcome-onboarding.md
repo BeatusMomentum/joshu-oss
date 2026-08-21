@@ -12,8 +12,23 @@ Human SOP: [`executive-assistant.md`](executive-assistant.md). Welcome seeds pro
 4. **Optional Day 0:** After Gmail is connected, run **Analyze mail for setup (Day 0)** in **Connectors → Connect apps** to pre-fill the draft from 30 days of mail + calendar. See [`day0-cold-start.md`](day0-cold-start.md).
 5. Essentials wizard: big-picture priorities, work/personal email + timezone + working hours. Owner/assistant display names come from box identity / `profile.json` (not a Welcome step).
 6. Progress auto-saves on each **Continue** via `PUT /joshu/api/onboarding/draft`.
-7. **Finish setup** writes workspace markdown + `.joshu` profile JSON; **ea-playbook** reads those files on every operational run. Optional **agent mailbox** can be created on Review via `POST /joshu/api/nylas/agent`.
+7. **Finish setup** writes workspace markdown + `.joshu` profile JSON, creates **Projects/** folders, installs **EA morning / evening / weekly** Hermes crons (awaits cron sync before HTTP returns), and bootstraps the EA scheduling Kanban board. Optional **agent mailbox** can be created on Review via `POST /joshu/api/nylas/agent`.
 8. After completion, reopen **Welcome** anytime to edit in the same form — header becomes **Your Joshu profile**, review button **Save changes**. Draft JSON is retained for re-editing.
+
+### Finish setup — what the button does
+
+**Finish setup** (first run) and **Save changes** (after completion) both call `POST /joshu/api/onboarding/complete`. The UI shows **Finishing…** until the HTTP response returns; the server **awaits** EA cron sync and scheduling Kanban bootstrap (not fire-and-forget).
+
+| Step | What happens |
+|------|----------------|
+| Sync | Profile, identity, project folders, EA layout files |
+| Hermes | Owner timezone → `config.yaml` + `HERMES_TIMEZONE` |
+| Crons | Upsert **EA morning**, **EA evening**, **EA weekly** from working hours ([`syncEaCronJobs`](../src/onboarding/eaCronJobs.ts)) |
+| Kanban | Bootstrap **`ea-scheduling`** board |
+
+On first success the UI shows a **You're set up** summary (projects, cron times, work email) with **Open jChat** / **Open Connectors** — not just a one-line banner.
+
+**Double-submit:** The UI blocks repeat clicks; the API serializes `/complete` and cron sync dedupes jobs by name. Historically, two rapid **Finish setup** clicks (before this hardening) could create **duplicate** EA evening/weekly jobs because Hermes allows duplicate names — see [`schedules-arozos-app.md`](schedules-arozos-app.md#duplicate-ea-cron-jobs).
 
 **Open manually:** desktop **Welcome** shortcut ([`docs/arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md)), or after **hard factory reset** ([`docs/box-state.md`](box-state.md#hard-factory-reset)) — which also clears Hindsight, gbrain, Composio connections, agent skills in `~/.hermes/skills/`, and EA cron jobs in `~/.hermes/cron/`.
 
@@ -25,7 +40,7 @@ Human SOP: [`executive-assistant.md`](executive-assistant.md). Welcome seeds pro
 | 1 | Connect AI | OpenRouter API key (**standalone only**, when not provisioned); optional Gemini key for jChat voice |
 | 2 | Big picture | Multi-select priorities + optional notes → `Projects/<slug>/` |
 | 3 | Schedule & email | Work email, optional personal email, IANA timezone, working hours |
-| 4 | Review | Summary → optional agent mailbox → **Finish setup** or **Save changes** |
+| 4 | Review | Summary → optional agent mailbox → **Finish setup** (creates Projects + EA crons) or **Save changes** |
 
 Step **Connect AI** is omitted when `GET /joshu/api/box-secrets/status` reports `needsConnectAi: false` (fleet / CP boxes with provisioned `OPENROUTER_API_KEY`, or after the key is saved).
 
@@ -92,6 +107,7 @@ Mounted under `PUBLIC_BASE_PATH` (default `/joshu`). JSON body routes require `e
 | `GET` | `/joshu/api/onboarding/draft` | `{ draft }` or `{ draft: null }` |
 | `PUT` | `/joshu/api/onboarding/draft` | Save partial progress (`ownerName` + `assistantName` required) |
 | `POST` | `/joshu/api/onboarding/complete` | Seed Projects + mark complete; `timezone` required |
+| `POST` | `/joshu/api/onboarding/resync-ea-crons` | Ops repair: re-sync timezone + EA crons from draft or Nylas profile; dedupes duplicate job names |
 
 ### Box secrets (Connect AI)
 
@@ -100,7 +116,7 @@ Mounted under `PUBLIC_BASE_PATH` (default `/joshu`). JSON body routes require `e
 | `GET` | `/joshu/api/box-secrets/status` | `needsConnectAi`, `needsOpenRouter`, `needsGeminiVoice`, `voiceOffered`, `geminiConfigured`, `standalone`, per-field source |
 | `PUT` | `/joshu/api/box-secrets` | Save `OPENROUTER_API_KEY` and/or `GEMINI_API_KEY` to `.joshu/box-secrets/local-env.json`; sync Hermes; restart gateway when OpenRouter changes |
 
-`POST /complete` is idempotent for updates: re-running refreshes markdown/profile without a second running-log entry.
+`POST /complete` is serialized server-side and re-syncs EA crons idempotently (dedupes duplicate job names, refreshes schedules from draft). Double-clicks or parallel requests must not create extra cron jobs.
 
 ## Factory reset
 
@@ -123,6 +139,7 @@ Mounted under `PUBLIC_BASE_PATH` (default `/joshu`). JSON body routes require `e
 | ArozOS subservice | [`arozos/subservice/welcome/`](../arozos/subservice/welcome/) → `dist/welcome/` |
 | Auto-launch overlay | [`arozos/web-overlays-vanilla/aroz-onboarding-launch.js`](../arozos/web-overlays-vanilla/aroz-onboarding-launch.js) |
 | EA templates | [`templates/ea/`](../templates/ea/) |
+| EA cron sync | [`src/onboarding/eaCronJobs.ts`](../src/onboarding/eaCronJobs.ts) |
 | Playbook skill | [`integrations/hermes/skills/executive-assistant/ea-playbook/`](../integrations/hermes/skills/executive-assistant/ea-playbook/SKILL.md) |
 
 ## Dev

@@ -6,6 +6,9 @@
  *   POST /api/share-chat/:shareUuid/message
  *   POST /api/share-chat/:shareUuid/enable   (desktop Share To dialog)
  *   POST /api/share-chat/:shareUuid/disable  (desktop Share To dialog)
+ *   GET  /api/share-chat/:shareUuid/email
+ *   POST /api/share-chat/:shareUuid/email
+ *   POST /api/share-chat/:shareUuid/email/unlink
  *   POST /api/share-chat/:shareUuid/slack/configure
  *   GET  /api/share-chat/:shareUuid/slack/manifest
  *   POST /api/share-chat/slack/events/:shareUuid
@@ -79,6 +82,14 @@ import {
   publicTeamsBindingStatus,
   unlinkTeamsConversation,
 } from "./teamsConversations.js";
+import {
+  parseAllowedSendersList,
+  parseCcList,
+  publicEmailBindingStatus,
+  resolveAgentMailboxEmail,
+  unlinkShareEmailBinding,
+  upsertShareEmailBinding,
+} from "./emailBindings.js";
 import { resolveJoshuPublicApiBase } from "../ownerChannel/publicUrl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -121,10 +132,12 @@ function identityPhotoHtml(name: string, portraitUrl: string | null): string {
 }
 
 function uiHtmlPath(): string {
-  // Prefer apps/share-chat (source), fall back to bundled copy beside this module.
+  // Listed in scripts/runtime-assets.json (copied to dist/shareChat/ui on build).
+  // Local tsx: apps/share-chat. VPS: that dest, and/or compose bind of apps/share-chat.
   const candidates = [
     path.resolve(process.cwd(), "apps/share-chat/index.html"),
     path.resolve(__dirname, "../../apps/share-chat/index.html"),
+    path.resolve(process.cwd(), "dist/shareChat/ui/index.html"),
     path.resolve(__dirname, "ui/index.html"),
   ];
   for (const p of candidates) {
@@ -428,7 +441,9 @@ export function registerShareChatRoutes(router: Router): void {
     const scope = gate.scope;
     const htmlPath = uiHtmlPath();
     if (!fs.existsSync(htmlPath)) {
-      res.status(500).type("text").send("Share chat UI missing. Expected apps/share-chat/index.html");
+      res.status(500).type("text").send(
+        "Share chat UI missing. Expected apps/share-chat/index.html or dist/shareChat/ui/index.html",
+      );
       return;
     }
     let html = fs.readFileSync(htmlPath, "utf8");
@@ -470,6 +485,7 @@ export function registerShareChatRoutes(router: Router): void {
       scopeWarning: "Answers only from the shared files",
       slack: publicSlackStatus(shareUuid),
       slackChannel: publicSlackChannelStatus(shareUuid),
+      email: publicEmailBindingStatus(shareUuid),
     });
   });
 
@@ -499,6 +515,7 @@ export function registerShareChatRoutes(router: Router): void {
       return;
     }
     setShareChatEnabled(shareUuid, false);
+    unlinkShareEmailBinding(shareUuid);
     res.json({ ok: true, enabled: false, uuid: shareUuid });
   });
 
@@ -968,6 +985,75 @@ export function registerShareChatRoutes(router: Router): void {
     }
     unlinkTeamsConversation(shareUuid);
     res.json({ ok: true, configured: false, unlinkedConversationId: existing.conversationId });
+  });
+
+  // --- Email Q&A (agent mailbox → scoped share-chat) ---
+
+  router.get("/api/share-chat/:shareUuid/email", (req: Request, res: Response) => {
+    const shareUuid = String(req.params.shareUuid || "").trim();
+    const scope = resolveShareScope(shareUuid);
+    if (!scope || !scope.valid) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    const agentEmail = resolveAgentMailboxEmail();
+    res.json({
+      ok: true,
+      agentEmail,
+      chatEnabled: isShareChatEnabled(shareUuid),
+      displayName: scope.displayName,
+      ...publicEmailBindingStatus(shareUuid),
+      hint:
+        agentEmail
+          ? `Allowed senders can email ${agentEmail} with questions. Answers use only files under this share — not the full assistant.`
+          : "Provision the agent mailbox (jMail) before enabling Email Q&A.",
+      formatHint: "One entry per line: @company.com (whole domain) or person@company.com",
+    });
+  });
+
+  router.post("/api/share-chat/:shareUuid/email", (req: Request, res: Response) => {
+    if (!allowChatFlagMutation(req, res)) return;
+    const shareUuid = String(req.params.shareUuid || "").trim();
+    const scope = resolveShareScope(shareUuid);
+    if (!scope || !scope.valid) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    if (!resolveAgentMailboxEmail()) {
+      res.status(400).json({ error: "agent_mailbox_required", hint: "Set up jMail / Nylas agent first." });
+      return;
+    }
+    const body = req.body || {};
+    try {
+      const allowedSenders = parseAllowedSendersList(body.allowedSenders ?? body.allowed_senders);
+      if (allowedSenders.length === 0) {
+        res.status(400).json({
+          error: "allowed_senders_required",
+          hint: "Add at least one @domain.com or email@domain.com.",
+        });
+        return;
+      }
+      const cc = parseCcList(body.cc);
+      const row = upsertShareEmailBinding({ shareUuid, allowedSenders, cc });
+      setShareChatEnabled(shareUuid, true);
+      res.json({
+        ok: true,
+        configured: true,
+        agentEmail: resolveAgentMailboxEmail(),
+        allowedSenders: row.allowedSenders,
+        cc: row.cc,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: msg });
+    }
+  });
+
+  router.post("/api/share-chat/:shareUuid/email/unlink", (req: Request, res: Response) => {
+    if (!allowChatFlagMutation(req, res)) return;
+    const shareUuid = String(req.params.shareUuid || "").trim();
+    unlinkShareEmailBinding(shareUuid);
+    res.json({ ok: true, configured: false });
   });
 }
 

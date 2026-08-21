@@ -95,9 +95,9 @@ Layout (left → right, immediately left of the clock): **VU meter · mic · ava
 
 | Control | Behavior |
 | --- | --- |
-| **Avatar** | Toggle jChat: opens or focuses the docked window when hidden; adds `jp-jchat-dock-hidden` on the float window when open (required because dock CSS uses `display: flex !important`, which blocks jQuery `fadeOut`). |
-| **Mic** | Toggle Realtime voice mode. Posts `jchat:voice-toggle` into the jChat iframe; opens jChat first if needed. Disabled when `/api/voice/status` reports unavailable. |
-| **VU meter** | Winamp-style level bars driven by `@joshu/voice-client` `onAudioLevel` (mic while listening, playback while speaking). Grayed out when voice is off. |
+| **Avatar** | Toggle the **docked** jChat companion: opens or focuses it when hidden; adds `jp-jchat-dock-hidden` when open (required because dock CSS uses `display: flex !important`, which blocks jQuery `fadeOut`). Does not steal icon-launched floating windows. |
+| **Mic** | Toggle Realtime voice mode on the **docked** iframe. Posts `jchat:voice-toggle`; opens the docked window first if needed. Disabled when `/api/voice/status` reports unavailable. Floating windows use their own in-window Mic. |
+| **VU meter** | Winamp-style level bars driven by `@joshu/voice-client` `onAudioLevel` from the docked session. Grayed out when voice is off. |
 
 **Persona:** tray and jChat iframe both load `GET /joshu/api/instance/identity`; portrait precedence is `avatarUrl` → `imageUrl` (see [self-host.md#identity-without-control-plane](self-host.md#identity-without-control-plane)). Email signatures use **`imageUrl` only**.
 
@@ -106,11 +106,22 @@ Layout (left → right, immediately left of the clock): **VU meter · mic · ava
 | Direction | Message | Payload |
 | --- | --- | --- |
 | iframe → shell | `jchat:tray` | `assistantName`, `portraitUrl`, optional `notification`, `voiceInputOn`, `voiceAvailable`, `audioLevel` |
-| shell → iframe | `jchat:voice-toggle` | (none) — toggles voice mode in `main.tsx` |
+| iframe → shell | `jchat:undock` | (none) — pops this docked window into a free-floating one |
+| shell → iframe | `jchat:voice-toggle` | (none) — toggles voice mode in `main.tsx` (docked iframe only) |
 
-When a new assistant reply completes, jChat sends `notification` text; the shell shows a toast above the taskbar (click opens jChat; does not close an open window).
+When a new assistant reply completes, jChat sends `notification` text; the shell shows a toast above the taskbar if that window is hidden (click opens the **docked** companion). Applied with `scripts/apply_arozos_joshu_theme.py` on each `dev-arozos` / deploy boot (cache-busted `?v=` on overlay JS/CSS).
 
-Applied with `scripts/apply_arozos_joshu_theme.py` on each `dev-arozos` / deploy boot (cache-busted `?v=` on overlay JS/CSS).
+### Multiple windows (icon vs tray)
+
+jChat is not a singleton. Each iframe mints its own Hermes `sessionId` (`joshu-hermes-chat:<id>`).
+
+| Opener | Window | Session |
+| --- | --- | --- |
+| Desktop **jChat** icon, start menu, or `openModule("jChat")` | New **floating** ArozOS window (drag / resize / min / max) | Fresh session on each launch |
+| Taskbar **avatar** | One **docked** companion (`jp-jchat-docked` — 400px right rail) | Continues that docked iframe’s session |
+| **Undock** (title-bar ↗ / in-app **Undock**) | That docked window becomes floating | Same session; next tray click opens a **new** docked session |
+
+Dock CSS lives in the paper-shell / vanilla overlay and targets **`.jp-jchat-docked` only**. Floating jChat windows use stock ArozOS chrome. `aroz-desktop-window-session.js` persists the docked/floating flag across a same-tab desktop refresh.
 
 ## Desktop presentation (two tiers)
 
@@ -153,8 +164,10 @@ jChat uses **speech-to-speech** via `@joshu/voice-client` when voice-realtime is
 | Layer | Behavior |
 | --- | --- |
 | **Chat UI (typed)** | Fast path for `open …` app shortcuts (no Hermes); otherwise Hermes stream + tool cards |
-| **Chat UI (voice)** | S2S transcript on casual turns; Hermes brain stream after `think` |
-| **Voice** | OpenAI Realtime / Gemini Live — direct answers, `open_desktop`, or co-present summary after `think` |
+| **Chat UI (voice)** | S2S transcript on casual turns; Hermes brain stream after `think` or `finish_dictation` |
+| **Voice** | OpenAI Realtime / Gemini Live — direct answers, `open_desktop`, dictation buffer (`start_dictation` → `finish_dictation`), or co-present summary after `think` |
+
+Dictation (lists, meeting notes, rambling): see [voice-think-speak.md — Dictation sessions](vps-sandbox/voice-think-speak.md#dictation-sessions-lists-notes-rambling).
 
 `npm run dev:arozos` autostarts voice-realtime on `:8792` when a voice API key (`OPENAI_API_KEY` or `GEMINI_API_KEY` with `JOSHU_VOICE_PROVIDER=gemini_live`) and `HERMES_API_KEY` are set.
 
@@ -190,8 +203,8 @@ Client behavior (`apps/hermes-chat/src/main.tsx`, `@joshu/voice-client`):
 
 - Connects when `/api/voice/status` reports `available: true`
 - `think_job_start` clears the assistant bubble before Hermes streams; Realtime transcript is never shown in jChat
-- **Mic** (in-window toolbar and taskbar tray) opens a **Realtime S2S** session via `voice-realtime`; spoken replies come from the provider, not a separate typed-chat TTS path
-- Taskbar mic toggles the same voice session; audio level is mirrored to the tray VU meter via `jchat:tray`
+- **Mic** (in-window toolbar) opens a **Realtime S2S** session via `voice-realtime`; spoken replies come from the provider, not a separate typed-chat TTS path
+- **Taskbar mic** toggles voice on the **docked** companion only; audio level is mirrored to the tray VU meter via `jchat:tray`. Floating windows use their own in-window Mic.
 - Typed chat is **text-only**; use **Mic** for spoken interaction
 
 ## Companion persona (portrait + avatar)
@@ -229,10 +242,7 @@ events:
 
 ## Session Semantics
 
-One app launch equals one fresh session. The frontend creates a random launch
-session id and sends it on each request. Joshu forwards it to Hermes as
-`X-Hermes-Session-Id`, so follow-up messages in the same browser app instance
-continue the same Hermes transcript without adding a session manager yet.
+Each **window** (and each in-window **New chat**) is its own Hermes session. The frontend creates a random session id per iframe load (and again on **New chat**) and sends it on each request. Joshu forwards it to Hermes as `X-Hermes-Session-Id`. Follow-up messages in that window continue the same transcript; a second jChat window does not share it. Past chats remain available from the history drawer (`session_search` on other surfaces).
 
 ## Local Development
 
@@ -460,7 +470,6 @@ Pre-connecting in the **Connectors** app avoids that during normal use.
 
 ## Current Non-goals
 
-- No session list or resume UI.
 - No file persistence bridge to ArozOS storage.
 - No direct browser calls to Hermes Agent.
 - No wholesale port of `~/hermes-workspace`; that repo remains

@@ -144,6 +144,32 @@ hermes cron create "0 8 * * 1-5" \
 
 See [`executive-assistant.md`](executive-assistant.md) and [`time-block-planning.md`](excalidraw-sandbox.md) for daily handoff. Human VA reference: [`executive-assistant.md`](executive-assistant.md). EA also runs **on demand** via jChat between scheduled windows.
 
+### Parallel cron runs (fleet default)
+
+Joshu syncs **`HERMES_CRON_MAX_PARALLEL=2`** into `~/.hermes/.env` and **`cron.max_parallel_jobs: 2`** in `config.yaml` on gateway start ([`src/hermesApi.ts`](../src/hermesApi.ts)). Override with `JOSHU_HERMES_CRON_MAX_PARALLEL` in Joshu `.env` / VPS `instance.env` (when writable). This caps **cron-vs-cron** concurrency only — jChat and Kanban workers still share the same gateway process.
+
+Unset / unbounded parallel crons plus a wedged gateway contributed to **600s inactivity timeouts** on joshua.box (2026-08-19); see [Duplicate EA cron jobs](#duplicate-ea-cron-jobs) and [`troubleshooting-and-lessons.md`](vps-sandbox/troubleshooting-and-lessons.md#hermes-cron-inactivity-timeout-600s-and-duplicate-ea-jobs).
+
+### Duplicate EA cron jobs
+
+**Symptom:** Two **`EA evening`** and/or two **`EA weekly`** jobs in Schedules or `hermes cron list` (same name, different job ids).
+
+**Cause (validated joshua.box 2026-08-18):** Two **`POST /joshu/api/onboarding/complete`** requests within ~75ms (double **Finish setup**). Each run called `syncEaCronJobs` with a stale job list snapshot while the first run was still creating jobs → second run updated morning but **created** evening + weekly again.
+
+**Fix on a live box:**
+
+```bash
+# Prefer resync (dedupes + refreshes schedules) after Joshu with eaCronJobs fix is deployed:
+curl -fsS -X POST http://127.0.0.1:8788/joshu/api/onboarding/resync-ea-crons | jq .
+
+# Or remove duplicates manually — keep the *older* job id (earlier created_at):
+hermes cron remove <duplicate_job_id>
+```
+
+**Prevention (main):** Welcome UI submit guard, serialized `/complete`, `syncEaCronJobs` mutex + name dedupe + fresh list per upsert ([`welcome-onboarding.md`](welcome-onboarding.md#finish-setup--what-the-button-does)).
+
+Owner-specific **Training Q&A auto-reply** crons (script + `joshu-mail` skill) are separate from Welcome; install via Desktop `Training/` scripts, not `syncEaCronJobs`.
+
 ## Build and dev
 
 ```bash
@@ -170,6 +196,8 @@ Included in `npm run build:deploy` and Docker image build (`deploy/Dockerfile` r
 | Invalid duration / cron error | Bad schedule string — use `every Nm`, `every Nh`, or `0 9 * * *` |
 | Job missing after CLI create | Refresh UI; confirm `~/.hermes/cron/jobs.json` |
 | Bridge import error | `HERMES_BIN` / venv must resolve; bridge needs `HERMES_AGENT_ROOT` for `cron/jobs.py` |
+| `TimeoutError: idle for 601s (limit 600s)` | Hermes **inactivity** watchdog — agent thread stuck (not “job needs 10 min”). Restart gateway; set `HERMES_CRON_MAX_PARALLEL=2`; dedupe duplicate EA jobs — [troubleshooting](vps-sandbox/troubleshooting-and-lessons.md#hermes-cron-inactivity-timeout-600s-and-duplicate-ea-jobs) |
+| Duplicate `EA evening` / `EA weekly` | Double Welcome **Finish setup** — [Duplicate EA cron jobs](#duplicate-ea-cron-jobs) |
 
 Quick API check (Joshu on loopback):
 

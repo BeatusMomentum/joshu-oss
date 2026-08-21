@@ -1,11 +1,11 @@
 {
-  "version": "0.1.40",
+  "version": "0.1.41",
   "channel": "stable",
-  "imageRef": "ghcr.io/db-aeon/joshu-oss:0.1.40",
-  "voiceImageRef": "ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.40",
+  "imageRef": "ghcr.io/db-aeon/joshu-oss:0.1.41",
+  "voiceImageRef": "ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.41",
   "hermesRef": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
   "gbrainRef": "fa2c7a6990a7a57b251979ef6e1988ff09529021",
   "camofoxBase": "ghcr.io/jo-inc/camofox-browser@sha256:3ab61b4742105922aab6f8c99460f55563b6f93e906975383ddce16ec8917f3f",
-  "builtAt": "2026-08-07T15:00:00.000Z",
-  "notes": "0.1.40 - last30days multimodal agent reports + owner delivery; JoshuMultimodalApp in app-agent; Hermes chat session push; EA cron owner-timezone repair/resync; ScrapeCreators self-host key path"
+  "builtAt": "2026-08-21T23:15:00.000Z",
+  "notes": "0.1.41 - voice dictation sessions; jChat multi-window; jWeb scroll/warm; jTerm resize gate; EA owner-reply; Share Chat UI; Watching/QueryPlan"
 }

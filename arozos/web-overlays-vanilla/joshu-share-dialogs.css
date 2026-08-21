@@ -101,10 +101,97 @@ body.jp-share-dialog #slackChannelName {
   box-shadow: inset 0 1px 2px rgba(26, 26, 26, 0.04);
 }
 
+body.jp-share-dialog textarea.jp-share-textarea {
+  width: 100%;
+  min-height: 4.5rem;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--jp-auth-border);
+  border-radius: var(--jp-auth-radius-sm);
+  background: #fff;
+  color: var(--jp-auth-ink);
+  resize: vertical;
+  box-shadow: inset 0 1px 2px rgba(26, 26, 26, 0.04);
+}
+
+body.jp-share-dialog textarea.jp-share-textarea:focus {
+  outline: none;
+  border-color: var(--jp-auth-accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+}
+
+body.jp-share-dialog .jp-share-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+body.jp-share-dialog .jp-share-label-row .jp-share-label {
+  margin: 0;
+}
+
+body.jp-share-dialog .jp-share-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  line-height: 1.3;
+}
+
+body.jp-share-dialog .jp-share-badge-off {
+  color: var(--jp-auth-muted);
+  background: rgba(26, 26, 26, 0.06);
+}
+
+body.jp-share-dialog .jp-share-badge-on {
+  color: #166534;
+  background: #dcfce7;
+}
+
+body.jp-share-dialog .jp-share-email-box {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  margin: 0 0 10px;
+}
+
+body.jp-share-dialog .jp-share-email-box input {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+body.jp-share-dialog .jp-share-email-box .ui.button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+body.jp-share-dialog .jp-share-field-label {
+  display: block;
+  margin: 0 0 4px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--jp-auth-muted);
+}
+
+body.jp-share-dialog .jp-share-field-block {
+  margin: 0 0 10px;
+}
+
 body.jp-share-dialog input:focus,
 body.jp-share-dialog #sharelinkInput:focus,
 body.jp-share-dialog #chatlinkInput:focus,
-body.jp-share-dialog #slackChannelName:focus {
+body.jp-share-dialog #slackChannelName:focus,
+body.jp-share-dialog #emailAgentAddress:focus,
+body.jp-share-dialog #teamsBindCommand:focus {
   outline: none;
   border-color: var(--jp-auth-accent);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
@@ -119,6 +206,8 @@ body.jp-share-dialog a#chatlink {
 body.jp-share-dialog .jp-share-actions,
 body.jp-share-dialog .actions,
 body.jp-share-dialog .slack-actions,
+body.jp-share-dialog .email-actions,
+body.jp-share-dialog .teams-actions,
 body.jp-share-dialog .actionButton {
   display: flex;
   flex-wrap: wrap;

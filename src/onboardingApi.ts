@@ -153,27 +153,38 @@ export function registerOnboardingRoutes(router: Router, opts: { projectRoot: st
     }
   });
 
+  /** One complete at a time — avoids overlapping workspace + cron writes. */
+  let completeOnboardingChain: Promise<void> = Promise.resolve();
+
   router.post("/api/onboarding/complete", (req: Request, res: Response) => {
-    try {
-      const draft = readDraftBody(req.body);
-      if (!draft) {
-        res.status(400).json({ error: "ownerName and assistantName required" });
-        return;
-      }
-      if (!draft.timezone?.trim()) {
-        res.status(400).json({ error: "timezone required" });
-        return;
-      }
-      const result = completeOnboarding(opts.projectRoot, draft);
-      res.json({
-        ok: true,
-        filesRoot: result.filesRoot,
-        projectsRoot: result.projectsRoot,
-        eaLayoutVersion: EA_LAYOUT_VERSION,
-      });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+    const draft = readDraftBody(req.body);
+    if (!draft) {
+      res.status(400).json({ error: "ownerName and assistantName required" });
+      return;
     }
+    if (!draft.timezone?.trim()) {
+      res.status(400).json({ error: "timezone required" });
+      return;
+    }
+
+    const run = completeOnboardingChain.then(() => completeOnboarding(opts.projectRoot, draft));
+    completeOnboardingChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    void run
+      .then((result) => {
+        res.json({
+          ok: true,
+          filesRoot: result.filesRoot,
+          projectsRoot: result.projectsRoot,
+          eaLayoutVersion: EA_LAYOUT_VERSION,
+        });
+      })
+      .catch((err) => {
+        res.status(500).json({ error: (err as Error).message });
+      });
   });
 
   /** Ops repair: re-apply Hermes owner timezone + EA cron windows from draft or Nylas profile. */

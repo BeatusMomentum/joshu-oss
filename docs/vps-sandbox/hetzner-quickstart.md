@@ -15,7 +15,7 @@ No proprietary control plane — this is **standalone self-host** only. Control-
 | --- | --- |
 | VPS public IP | `203.0.113.50` |
 | Hostname | `mybox.example.com` |
-| Release image | `ghcr.io/db-aeon/joshu-oss:0.1.40` (see [`deploy/RELEASE.json`](../../deploy/RELEASE.json)) |
+| Release image | `ghcr.io/db-aeon/joshu-oss:0.1.41` (see [`deploy/RELEASE.json`](../../deploy/RELEASE.json)) |
 
 ---
 
@@ -95,8 +95,8 @@ CUSTOMER_DOMAIN=mybox.example.com
 VPS_IPV4=203.0.113.50
 ACME_EMAIL=you@example.com
 
-JOSHU_RELEASE_VERSION=0.1.40
-JOSHU_IMAGE_REF=ghcr.io/db-aeon/joshu-oss:0.1.40
+JOSHU_RELEASE_VERSION=0.1.41
+JOSHU_IMAGE_REF=ghcr.io/db-aeon/joshu-oss:0.1.41
 ```
 
 Save: **Ctrl+O** Enter, **Ctrl+X**.
@@ -190,9 +190,11 @@ Browser voice does **not** need Twilio. To answer a real phone number on this bo
 
 ---
 
-## Forgot ArozOS password (self-host)
+## Forgot ArozOS password
 
-Joshu does **not** send email reset links. The **Forgot password?** link on the login page (`/reset.html`) expects an **administrator** to generate a **temporary password** first (System Settings → Users → edit user → **Reset password**), then you complete the flow in the browser.
+**Fleet boxes** (`*.box.joshu.me`): the login screen **Forgot password?** emails a 30-minute link via the control plane (SendGrid) to the owner address on file. You choose a new **desktop** password at `https://hello.joshu.me/auth/box-reset-password`. This is **not** the hello.joshu.me portal password. Existing desktop cookies on that box die only after a completed reset (session key rotate). The box looks down for about two minutes (`joshu-stack` stop/start) — wait for health, then log in with the **new** password. On **0.1.40** images, smoke Chat with files after the bounce (`Share chat UI missing` means host `dist/shareChat/ui/` was never overlaid — [share-chat.md](../share-chat.md#packaging-vps)). OSS / standalone boxes never send that email.
+
+**Self-host / OSS:** Joshu does **not** send email reset links. The **Forgot password?** panel points at SSH recovery. The old ArozOS `/reset.html` flow (temporary password from another admin) is still in the binary but the Joshu overlay no longer uses it.
 
 On a **solo** self-host box you are usually both admin and user. If you are locked out but still have **SSH as root**:
 
@@ -214,10 +216,9 @@ First run pulls a small `golang:1.23-alpine` image and compiles the helper (~1�
 
 Log in at `https://mybox.example.com/` with the new password.
 
-### Option B — Browser reset (when another admin exists)
+### Option B — Another admin on the same box (upstream ArozOS)
 
-1. Admin: **System Settings → Users →** edit user → **Reset password** (copies a temporary password).
-2. User: open `/reset.html` or the link with `acc` and `rkey` query params, enter username + temporary password, choose a new password.
+Joshu overlays no longer use `validateResetKey`. If another admin is still signed in, they can reset the user from **System Settings → Users**. Otherwise use Option A (SSH) or, on a fleet box, the emailed link from **Forgot password?**.
 
 ### Not the same as Hermes admin
 

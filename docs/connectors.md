@@ -182,7 +182,7 @@ Outbound steps still go through **`nylas_send_message`** (action guard). Skill: 
 
 **Tool naming:** Hermes exposes **prefixed** names to the model (`mcp_<server>_<tool>`). On a healthy path it routes to MCP with the **short** name (`nylas_send_message`). Langfuse metadata often shows the prefixed name even when the wire call succeeded. The MCP server also accepts prefixed names (strips `mcp_joshu_connectors_`) for clients that forward the display name verbatim.
 
-**EA summary sends** (morning brief / end of day) use `nylas_send_message` → agent Nylas mailbox only. The Joshu API appends the companion HTML signature automatically. See [`executive-assistant.md`](executive-assistant.md#summary-email).
+**EA summary sends** (morning brief / end of day) use `nylas_send_message` → agent Nylas mailbox only. The Joshu API converts `body` to HTML (linkified URLs, light markdown) and appends the companion signature automatically. See [`executive-assistant.md`](executive-assistant.md#summary-email).
 
 ### Troubleshooting `Unknown tool: mcp_joshu_connectors_*`
 

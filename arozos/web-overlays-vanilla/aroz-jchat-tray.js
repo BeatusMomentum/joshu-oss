@@ -1,9 +1,18 @@
 /**
  * jChat desk — taskbar tray (avatar + mic + VU meter) and notification toasts.
  * Replaces the stock background-tasks button on the bottom-right nav strip.
+ *
+ * Two window modes:
+ *   - Tray avatar / mic → one docked companion (class jp-jchat-docked).
+ *   - Desktop icon / openModule("jChat") → a new floating window + new session.
+ * Maximize on a docked window (and the in-app Undock control) pops it free.
  */
 (function () {
   var METER_BARS = 10;
+  var FLOAT_WIDTH = 480;
+  var FLOAT_HEIGHT = 700;
+  var DOCK_WIDTH = 400;
+  var DOCK_HEIGHT = 720;
 
   var trayState = {
     assistantName: "John",
@@ -41,21 +50,104 @@
     return Boolean(title && String(title.textContent || "").trim() === "jChat");
   }
 
-  function jpJChatFloatWindow($) {
-    var found = null;
+  function jpAllJChatWindows($) {
+    var found = [];
+    if (!$) return found;
     $(".floatWindow").each(function () {
       var fw = $(this);
-      if (!jpIsJChatFloatWindow($, fw)) return;
-      found = fw;
-      return false;
+      if (jpIsJChatFloatWindow($, fw)) found.push(fw);
     });
     return found;
   }
 
+  function jpJChatDockedWindow($) {
+    var all = jpAllJChatWindows($);
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].hasClass("jp-jchat-docked")) return all[i];
+    }
+    return null;
+  }
+
+  /** First untagged jChat — upgrade path from the old "every jChat is docked" CSS. */
+  function jpUntaggedJChatWindow($) {
+    var all = jpAllJChatWindows($);
+    var untagged = [];
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].hasClass("jp-jchat-docked") || all[i].hasClass("jp-jchat-floating")) continue;
+      untagged.push(all[i]);
+    }
+    return untagged.length === 1 ? untagged[0] : null;
+  }
+
   function jpJChatIsOpen($) {
-    var fw = jpJChatFloatWindow($);
+    var fw = jpJChatDockedWindow($);
     if (!fw || !fw.length) return false;
     return !fw.hasClass("jp-jchat-dock-hidden");
+  }
+
+  function jpWindowById(uuid) {
+    if (!uuid) return null;
+    var $ = jpQuery();
+    if (typeof window.getFloatWindowByID === "function") {
+      var fw = window.getFloatWindowByID(uuid);
+      if (fw && fw.length) return fw;
+    }
+    if ($) {
+      var byAttr = $(".floatWindow[windowId='" + uuid + "']");
+      if (byAttr.length) return byAttr;
+    }
+    return null;
+  }
+
+  function jpNewestJChatWindow($) {
+    var all = jpAllJChatWindows($);
+    return all.length ? all[all.length - 1] : null;
+  }
+
+  function jpJChatIcon() {
+    var mod = jpFindJChatModule();
+    if (mod && (mod.IconPath || mod.iconPath)) return mod.IconPath || mod.iconPath;
+    var $ = jpQuery();
+    var all = jpAllJChatWindows($);
+    for (var i = 0; i < all.length; i++) {
+      var icon = all[i].find(".moduleicon").attr("src");
+      if (icon) return icon;
+    }
+    return "img/joshu/chat.png";
+  }
+
+  function jpFindJChatModule() {
+    var lists = [window.modules, window.Modules, window.loadedModules, window.moduleList];
+    for (var c = 0; c < lists.length; c++) {
+      var list = lists[c];
+      if (!list) continue;
+      if (!Array.isArray(list)) continue;
+      for (var i = 0; i < list.length; i++) {
+        var m = list[i];
+        if (!m) continue;
+        if (m.Name === "jChat" || m.name === "jChat") return m;
+      }
+    }
+    return null;
+  }
+
+  function jpSetMaxTitle(fw, text) {
+    if (!fw || !fw.length) return;
+    fw.find(".fwcontrol .buttons.maxtoggle").attr("title", text);
+  }
+
+  function jpMarkDocked(fw) {
+    if (!fw || !fw.length) return fw;
+    fw.removeClass("jp-jchat-floating").addClass("jp-jchat-docked");
+    jpSetMaxTitle(fw, "Undock chat");
+    return fw;
+  }
+
+  function jpMarkFloating(fw) {
+    if (!fw || !fw.length) return fw;
+    fw.removeClass("jp-jchat-docked jp-jchat-dock-hidden").addClass("jp-jchat-floating");
+    jpSetMaxTitle(fw, "");
+    return fw;
   }
 
   function jpSetJChatVisible(fw, visible) {
@@ -70,12 +162,51 @@
     }
   }
 
-  function jpJChatIframe() {
+  function jpUndockJChat(fw) {
+    if (!fw || !fw.length) return;
+    var width = FLOAT_WIDTH;
+    var height = Math.min(FLOAT_HEIGHT, Math.round((window.innerHeight || 800) * 0.78));
+    var left = Math.max(24, (window.innerWidth || 1200) - width - 80);
+    var top = 48;
+    jpMarkFloating(fw);
+    fw.css({
+      left: left + "px",
+      top: top + "px",
+      width: width + "px",
+      height: height + "px",
+    });
+    if (typeof window.MoveFloatWindowToTop === "function") {
+      window.MoveFloatWindowToTop(fw);
+    }
+    jpSyncTray();
+  }
+
+  function jpDockedIframe() {
     var $ = jpQuery();
     if (!$) return null;
-    var fw = jpJChatFloatWindow($);
+    var fw = jpJChatDockedWindow($);
     if (!fw || !fw.length) return null;
     return fw.find("iframe")[0] || null;
+  }
+
+  function jpFloatWindowForSource(source) {
+    var $ = jpQuery();
+    if (!$ || !source) return null;
+    var found = null;
+    $(".floatWindow").each(function () {
+      var iframe = this.querySelector("iframe");
+      if (iframe && iframe.contentWindow === source) {
+        found = $(this);
+        return false;
+      }
+    });
+    return found;
+  }
+
+  function jpFwIsVisible(fw) {
+    if (!fw || !fw.length) return false;
+    if (fw.hasClass("jp-jchat-dock-hidden")) return false;
+    return fw.is(":visible");
   }
 
   function jpMeterBarHtml() {
@@ -110,7 +241,7 @@
       trayState.notification = null;
       jpSyncTray();
     });
-    toast.addEventListener("click", jpOpenJChat);
+    toast.addEventListener("click", jpOpenDockedJChat);
   }
 
   function jpEnsureTrayDom() {
@@ -142,7 +273,7 @@
 
     jpEnsureToastDom();
 
-    root.querySelector("#jp-jchat-tray-avatar").addEventListener("click", jpToggleJChat);
+    root.querySelector("#jp-jchat-tray-avatar").addEventListener("click", jpToggleDockedJChat);
     root.querySelector("#jp-jchat-tray-mic").addEventListener("click", function (evt) {
       evt.stopPropagation();
       jpToggleVoice();
@@ -253,7 +384,7 @@
   }
 
   function jpPostVoiceToggle() {
-    var iframe = jpJChatIframe();
+    var iframe = jpDockedIframe();
     if (iframe && iframe.contentWindow) {
       iframe.contentWindow.postMessage({ type: "jchat:voice-toggle" }, "*");
       return true;
@@ -265,62 +396,189 @@
     if (!trayState.voiceAvailable) return;
     if (jpPostVoiceToggle()) return;
 
-    jpOpenJChat();
-    window.setTimeout(function () {
-      jpPostVoiceToggle();
-    }, 650);
+    jpOpenDockedJChat(function () {
+      window.setTimeout(function () {
+        jpPostVoiceToggle();
+      }, 650);
+    });
   }
 
-  function jpOpenJChat() {
-    trayState.notificationDismissed = true;
-    trayState.notification = null;
-
+  /**
+   * Create a jChat float window. Prefer cloning an existing iframe src so the
+   * subservice path matches ArozOS; first launch falls back to openModule.
+   */
+  function jpLaunchJChatWindow(mode, done) {
     var $ = jpQuery();
-    var fw = $ ? jpJChatFloatWindow($) : null;
-    if (fw && fw.length) {
-      jpSetJChatVisible(fw, true);
+    var existingSrc = "";
+    var all = jpAllJChatWindows($);
+    for (var i = 0; i < all.length; i++) {
+      var src = all[i].find("iframe").attr("src");
+      if (src) {
+        existingSrc = String(src);
+        break;
+      }
+    }
+
+    var finished = false;
+    function finish(fw) {
+      if (finished || !fw || !fw.length) return;
+      finished = true;
+      if (mode === "docked") jpMarkDocked(fw);
+      else jpMarkFloating(fw);
+      if (typeof done === "function") done(fw);
       jpSyncTray();
+    }
+
+    if (existingSrc && typeof window.newFloatWindow === "function") {
+      var cfg = {
+        url: existingSrc,
+        title: "jChat",
+        appicon: jpJChatIcon(),
+        width: mode === "docked" ? DOCK_WIDTH : FLOAT_WIDTH,
+        height: mode === "docked" ? DOCK_HEIGHT : FLOAT_HEIGHT,
+      };
+      if (mode === "floating") {
+        cfg.left = 72 + Math.round(Math.random() * 48);
+        cfg.top = 40 + Math.round(Math.random() * 36);
+      }
+      try {
+        window.newFloatWindow(cfg, function (uuid) {
+          finish(jpWindowById(uuid) || jpNewestJChatWindow($));
+        });
+      } catch (_e) {
+        /* fall through to timeout */
+      }
+      window.setTimeout(function () {
+        if (!finished) finish(jpNewestJChatWindow(jpQuery()));
+      }, 280);
       return;
     }
 
-    if (typeof window.openModule === "function") {
-      window.openModule("jChat");
-    }
-    jpScheduleSyncTray();
+    var opener = window.__jpOrigOpenModule || window.openModule;
+    if (typeof opener !== "function") return;
+    var beforeCount = all.length;
+    opener.call(window, "jChat");
+    window.setTimeout(function () {
+      var now = jpQuery();
+      var after = jpAllJChatWindows(now);
+      if (after.length > beforeCount) {
+        finish(jpNewestJChatWindow(now));
+        return;
+      }
+      // Stock openModule reused a window. Clone a new instance when we now have a src.
+      var newest = jpNewestJChatWindow(now);
+      var cloneSrc = newest ? newest.find("iframe").attr("src") : "";
+      if (cloneSrc && typeof window.newFloatWindow === "function") {
+        var cloneCfg = {
+          url: String(cloneSrc),
+          title: "jChat",
+          appicon: jpJChatIcon(),
+          width: mode === "docked" ? DOCK_WIDTH : FLOAT_WIDTH,
+          height: mode === "docked" ? DOCK_HEIGHT : FLOAT_HEIGHT,
+        };
+        if (mode === "floating") {
+          cloneCfg.left = 72 + Math.round(Math.random() * 48);
+          cloneCfg.top = 40 + Math.round(Math.random() * 36);
+        }
+        try {
+          window.newFloatWindow(cloneCfg, function (uuid) {
+            finish(jpWindowById(uuid) || jpNewestJChatWindow(jpQuery()));
+          });
+        } catch (_e) {
+          finish(newest);
+        }
+        return;
+      }
+      finish(newest);
+    }, 180);
   }
 
-  function jpToggleJChat() {
+  function jpEnsureDockedWindow(done) {
+    var $ = jpQuery();
+    var docked = $ ? jpJChatDockedWindow($) : null;
+    if (docked && docked.length) {
+      if (typeof done === "function") done(docked);
+      return;
+    }
+    var untagged = $ ? jpUntaggedJChatWindow($) : null;
+    if (untagged && untagged.length) {
+      jpMarkDocked(untagged);
+      if (typeof done === "function") done(untagged);
+      jpSyncTray();
+      return;
+    }
+    jpLaunchJChatWindow("docked", done);
+  }
+
+  function jpOpenDockedJChat(done) {
+    trayState.notificationDismissed = true;
+    trayState.notification = null;
+
+    jpEnsureDockedWindow(function (fw) {
+      jpSetJChatVisible(fw, true);
+      jpSyncTray();
+      if (typeof done === "function") done(fw);
+    });
+  }
+
+  function jpToggleDockedJChat() {
     trayState.notificationDismissed = true;
     trayState.notification = null;
 
     var $ = jpQuery();
-    var fw = $ ? jpJChatFloatWindow($) : null;
+    var fw = $ ? jpJChatDockedWindow($) : null;
     if (fw && fw.length) {
       jpSetJChatVisible(fw, !jpJChatIsOpen($));
       jpSyncTray();
       return;
     }
 
-    jpOpenJChat();
+    jpOpenDockedJChat();
   }
 
-  /** Detect stock min/close on jChat — native listener (no jQuery timing dependency). */
+  function jpHookOpenModule() {
+    if (typeof window.openModule !== "function") return false;
+    if (window.openModule.__jpJChatWrapped) return true;
+    var orig = window.openModule;
+    window.__jpOrigOpenModule = orig;
+    function wrapped(name) {
+      if (String(name || "") !== "jChat") {
+        return orig.apply(this, arguments);
+      }
+      // Desktop icon / start menu / agent "open jChat" → new floating session.
+      jpLaunchJChatWindow("floating");
+    }
+    wrapped.__jpJChatWrapped = true;
+    window.openModule = wrapped;
+    return true;
+  }
+
+  /** Maximize on a docked window undocks instead of zooming. */
   function jpInstallChromeSync() {
     document.addEventListener(
       "mousedown",
       function (evt) {
         var target = evt.target;
         if (!target || !target.closest) return;
-        if (!target.closest(".buttons.closetoggle, .buttons.close")) return;
         var fwEl = target.closest(".floatWindow");
         if (!fwEl || !jpFloatWindowElIsJChat(fwEl)) return;
+
+        if (target.closest(".buttons.maxtoggle") && fwEl.classList.contains("jp-jchat-docked")) {
+          evt.preventDefault();
+          evt.stopPropagation();
+          var $ = jpQuery();
+          if ($) jpUndockJChat($(fwEl));
+          return;
+        }
+
+        if (!target.closest(".buttons.closetoggle, .buttons.close")) return;
         jpScheduleSyncTray();
       },
       true
     );
   }
 
-  /** When ArozOS removes the jChat float window from the DOM, refresh tray state. */
+  /** When ArozOS removes a jChat float window from the DOM, refresh tray state. */
   function jpInstallFloatWindowObserver() {
     if (typeof MutationObserver === "undefined") return;
     var obs = new MutationObserver(function (mutations) {
@@ -347,18 +605,35 @@
       var data = evt.data;
       if (!data || !data.type) return;
 
+      if (data.type === "jchat:undock") {
+        var undockFw = jpFloatWindowForSource(evt.source);
+        if (undockFw && undockFw.hasClass("jp-jchat-docked")) jpUndockJChat(undockFw);
+        return;
+      }
+
       if (data.type !== "jchat:tray") return;
       if (typeof data.assistantName === "string") trayState.assistantName = data.assistantName;
       if (typeof data.portraitUrl === "string") trayState.portraitUrl = data.portraitUrl;
       if (typeof data.notification === "string" && data.notification.trim()) {
-        trayState.notification = data.notification.trim();
-        var $n = jpQuery();
-        trayState.notificationDismissed = $n ? jpJChatIsOpen($n) : false;
+        var sourceFw = jpFloatWindowForSource(evt.source);
+        // Skip the toast when the sending window is already on screen.
+        if (sourceFw && jpFwIsVisible(sourceFw)) {
+          trayState.notification = null;
+        } else {
+          trayState.notification = data.notification.trim();
+          var $n = jpQuery();
+          trayState.notificationDismissed = $n ? jpJChatIsOpen($n) : false;
+        }
       }
-      if (typeof data.voiceInputOn === "boolean") trayState.voiceInputOn = data.voiceInputOn;
-      if (typeof data.voiceAvailable === "boolean") trayState.voiceAvailable = data.voiceAvailable;
-      if (typeof data.audioLevel === "number" && !Number.isNaN(data.audioLevel)) {
-        trayState.audioLevel = data.audioLevel;
+      // Voice VU / mic state come from the docked companion only.
+      var voiceFw = jpFloatWindowForSource(evt.source);
+      var isDockedVoice = Boolean(voiceFw && voiceFw.hasClass("jp-jchat-docked"));
+      if (isDockedVoice || !jpQuery() || !jpJChatDockedWindow(jpQuery())) {
+        if (typeof data.voiceInputOn === "boolean") trayState.voiceInputOn = data.voiceInputOn;
+        if (typeof data.voiceAvailable === "boolean") trayState.voiceAvailable = data.voiceAvailable;
+        if (typeof data.audioLevel === "number" && !Number.isNaN(data.audioLevel)) {
+          trayState.audioLevel = data.audioLevel;
+        }
       }
       jpSyncTray();
     });
@@ -379,9 +654,18 @@
     jpInstallMessageListener();
     jpInstallChromeSync();
     jpInstallFloatWindowObserver();
+    jpHookOpenModule();
 
     var $ = jpQuery();
     if ($) jpHookTaskbar($);
+
+    // openModule is defined by desktop.html; retry if this overlay won the race.
+    if (!jpHookOpenModule()) {
+      var tries = 0;
+      var timer = window.setInterval(function () {
+        if (jpHookOpenModule() || ++tries > 40) window.clearInterval(timer);
+      }, 50);
+    }
 
     fetch("/joshu/api/instance/identity", { cache: "no-store" })
       .then(function (r) {

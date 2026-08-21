@@ -51,7 +51,7 @@ def _resolve_theme_paths(root: Path) -> tuple[Path, str, Path, bool]:
 
 
 # Bump when Share / File Manager overlays must bust browser iframe caches.
-OVERLAY_VERSION = "20260717i"
+OVERLAY_VERSION = "20260821a"
 SHARE_DIALOG_CACHE_BUST = "20260717d"
 DESKTOP_SHARE_TO_MARKER = "/* joshu-desktop-share-to */"
 FOLDER_ICON_VERSION = "2"
@@ -60,6 +60,8 @@ SHELL_SCRIPTS = (
     "aroz-taskbar-focus.js",
     "aroz-desktop-icon-tooltips.js",
     "aroz-desktop-overlay-guard.js",
+    # After overlay-guard so we can chain __arozOnDesktopInitComplete.
+    "aroz-desktop-window-session.js",
     "aroz-onboarding-launch.js",
     "aroz-jchat-tray.js",
     "aroz-filebrain-toast.js",
@@ -961,6 +963,15 @@ def _replace_init_splash(web: Path, overlay: Path) -> None:
         shutil.copyfile(src, dest)
 
 
+def _shell_script_src(overlay: Path, root: Path, script_name: str) -> Path | None:
+    """Branded pack may omit some shell JS; fall back to vanilla so fleet still gets them."""
+    branded = overlay / script_name
+    if branded.is_file():
+        return branded
+    vanilla = root / "arozos" / "web-overlays-vanilla" / script_name
+    return vanilla if vanilla.is_file() else None
+
+
 def _inject_before_body_close(html: str, snippet: str, marker: str) -> str:
     if marker in html or "</body>" not in html:
         return html
@@ -1080,8 +1091,8 @@ def main() -> None:
     _copy_share_public_pages(web, overlay, root)
     _apply_reset_templates(web, overlay, root, release_version)
     for script_name in SHELL_SCRIPTS:
-        src_js = overlay / script_name
-        if src_js.is_file():
+        src_js = _shell_script_src(overlay, root, script_name)
+        if src_js is not None:
             shutil.copyfile(src_js, web / script_name)
 
     # Drop obsolete filename if present from a previous apply.
@@ -1109,7 +1120,7 @@ def main() -> None:
     text = _patch_favicon_link(text)
 
     for script_name in SHELL_SCRIPTS:
-        if (overlay / script_name).is_file():
+        if _shell_script_src(overlay, root, script_name) is not None:
             versioned = f"./{script_name}?v={OVERLAY_VERSION}"
             script_tag = f'    <script defer src="{versioned}"></script>'
             text = _inject_before_body_close(text, script_tag, script_name)

@@ -637,6 +637,38 @@ async function applyCompanionIdentitySync(payload: Record<string, unknown>): Pro
 }
 
 /** Deliver a CP-authored owner email via the box Nylas agent mailbox (action-guard bypass). */
+async function applySetArozPassword(payload: Record<string, unknown>): Promise<void> {
+  const passwordHash =
+    typeof payload.passwordHash === "string" ? payload.passwordHash.trim().toLowerCase() : "";
+  if (!/^[0-9a-f]{128}$/.test(passwordHash)) {
+    throw new Error("set_aroz_password: invalid passwordHash");
+  }
+
+  const fileEnv = await readEnvFileKeys();
+  const arozUser = (fileEnv.JOSHU_AROZ_USER || env("JOSHU_AROZ_USER")).trim();
+  if (!arozUser) {
+    throw new Error("set_aroz_password: JOSHU_AROZ_USER is not set");
+  }
+
+  const expected =
+    typeof payload.username === "string" ? payload.username.trim() : "";
+  if (expected && expected.toLowerCase() !== arozUser.toLowerCase()) {
+    throw new Error("set_aroz_password: username does not match JOSHU_AROZ_USER");
+  }
+
+  const script = path.join(INSTALL_DIR, "scripts/arozos-reset-password.sh");
+  await execFileAsync("bash", [script, arozUser], {
+    timeout: 300_000,
+    env: {
+      ...process.env,
+      AO_PW_HASH: passwordHash,
+      JOSHU_COMPOSE_DIR: path.dirname(COMPOSE_FILE),
+      ENV_FILE: COMPOSE_ENV_FILE,
+    },
+  });
+  console.info(`[instance-agent] set_aroz_password applied for ${arozUser}`);
+}
+
 async function applySendOwnerEmail(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const to = typeof payload.to === "string" ? payload.to.trim() : "";
   const subject = typeof payload.subject === "string" ? payload.subject.trim() : "";
@@ -739,6 +771,12 @@ async function applyReleaseUpdate(payload: Record<string, unknown>): Promise<voi
   try {
     await ensureRegistryLoginForUpdate(payload);
     await assertRegistryAuthForPull();
+
+    // Write release pins before compose pull — pull uses --env-file instance.env.
+    // If we pull first, a deleted previous tag (e.g. *-hermes-canary) fails the whole update
+    // even when payload.imageRef points at a valid GHCR tag.
+    await applyReleaseEnvUpdates(envUpdates);
+
     const pullServices = UPDATE_RECREATE_SERVICES.length > 0 ? UPDATE_RECREATE_SERVICES : ["joshu-stack"];
     await runCompose(["pull", ...pullServices]);
 
@@ -746,9 +784,7 @@ async function applyReleaseUpdate(payload: Record<string, unknown>): Promise<voi
       await syncVoiceRealtimeForUpdate(payload);
     }
 
-    // Sync host dist/ before instance.env — on rollback, dist reverts before env so we never
-    // leave env at N−1 with dist at N. Health reads release version from instance.env mount
-    // (provisionInstanceEnv) so dist matches as soon as env is patched, before recreate.
+    // Host ../dist bind-mount shadows the image — sync from the release image after pull.
     if (syncDist) {
       if (!imageRef) {
         throw new Error("syncDistFromImage requires JOSHU_IMAGE_REF or payload.imageRef");
@@ -763,8 +799,6 @@ async function applyReleaseUpdate(payload: Record<string, unknown>): Promise<voi
       });
       await assertDistProvenanceMatches(INSTALL_DIR, expectedVersion);
     }
-
-    await applyReleaseEnvUpdates(envUpdates);
 
     if (UPDATE_RECREATE_SERVICES.length === 0) {
       throw new Error("JOSHU_UPDATE_SERVICES must include at least one service besides instance-agent");
@@ -815,6 +849,9 @@ async function executeCommand(cmd: Command): Promise<Record<string, unknown> | v
       break;
     case "send_owner_email":
       return applySendOwnerEmail(payload);
+    case "set_aroz_password":
+      await applySetArozPassword(payload);
+      break;
     case "rotate_secrets": {
       const secrets = payload.secrets;
       if (secrets && typeof secrets === "object") {

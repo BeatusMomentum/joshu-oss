@@ -1,6 +1,6 @@
 # Summary email templates
 
-Use with `POST /joshu/api/nylas/messages/send`. **From:** agent Nylas. **To:** owner `primaryWorkEmail` from `.joshu/nylas/profile.json`. **Signature:** appended server-side (companion name, `{owner}'s Joshu`, https://joshu.me) — write plain text in `body` only.
+Use with `POST /joshu/api/nylas/messages/send`. **From:** agent Nylas. **To:** owner `primaryWorkEmail` from `.joshu/nylas/profile.json`. **Signature:** appended server-side (companion name, `{owner}'s Joshu`, https://joshu.me) — write plain text or light markdown in `body` only (URLs are linkified).
 
 ## Morning
 

@@ -172,10 +172,10 @@ function refreshSummaryEmailTemplate(projectRoot: string, draft: OnboardingDraft
   fs.writeFileSync(dest, text);
 }
 
-export function completeOnboarding(
+export async function completeOnboarding(
   projectRoot: string,
   draft: OnboardingDraft,
-): { filesRoot: string; projectsRoot: string } {
+): Promise<{ filesRoot: string; projectsRoot: string }> {
   ensureEaLayoutSeeded(projectRoot);
 
   const paths = resolveJoshuFilesPaths(projectRoot);
@@ -238,22 +238,20 @@ export function completeOnboarding(
   const draftFile = onboardingDraftPath(projectRoot);
   if (draftFile) writeJsonFile(draftFile, resolved);
 
-  void bootstrapEaSchedulingKanban(projectRoot).then((result) => {
-    if (!result.ok) {
-      console.warn(`[onboarding] EA Kanban bootstrap skipped: ${result.error ?? "unknown"}`);
-    }
-  });
+  const kanbanResult = await bootstrapEaSchedulingKanban(projectRoot);
+  if (!kanbanResult.ok) {
+    console.warn(`[onboarding] EA Kanban bootstrap skipped: ${kanbanResult.error ?? "unknown"}`);
+  }
 
-  void syncEaCronJobs(resolved).then((result) => {
-    if (!result.ok) {
-      console.warn(`[onboarding] EA cron sync skipped: ${result.error ?? "unknown error"}`);
-      return;
-    }
+  const cronResult = await syncEaCronJobs(resolved);
+  if (!cronResult.ok) {
+    console.warn(`[onboarding] EA cron sync skipped: ${cronResult.error ?? "unknown error"}`);
+  } else {
     console.info(
-      `[onboarding] EA cron v2 synced (created=${result.created}, updated=${result.updated}, ` +
-        `morning=${result.schedules.morning}, evening=${result.schedules.eod})`,
+      `[onboarding] EA cron v2 synced (created=${cronResult.created}, updated=${cronResult.updated}, ` +
+        `deduped=${cronResult.deduped}, morning=${cronResult.schedules.morning}, evening=${cronResult.schedules.eod})`,
     );
-  });
+  }
 
   return { filesRoot, projectsRoot: projects };
 }

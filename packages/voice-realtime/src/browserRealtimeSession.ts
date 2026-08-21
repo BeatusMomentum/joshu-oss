@@ -21,6 +21,14 @@ import {
   type AppVoiceCommand,
 } from "./appVoiceTools.js";
 import { normalizeThinkToolName } from "./realtimeTools.js";
+import {
+  appendDictationChunk,
+  buildDictationThinkMessage,
+  createDictationSession,
+  dictationStatusPayload,
+  looksLikeDictationDone,
+  type DictationSessionState,
+} from "./dictationSession.js";
 import type { FunctionCallPayload, ResponseSpeechReason } from "./voiceS2sTypes.js";
 import type { VoiceS2sClient } from "./voiceS2sTypes.js";
 import { voiceLog, voiceWarn } from "./voiceLog.js";
@@ -103,6 +111,8 @@ export class BrowserRealtimeSession {
   private voiceCommands: AppVoiceCommand[] = [];
   /** Embedded app agent context — aligns voice think with AG-UI chat + app_gui_action. */
   private appSurface: EmbeddedAppSurfaceContext | null = null;
+  /** Multi-turn voice capture — buffer until finish_dictation / done phrase. */
+  private dictation: DictationSessionState | null = null;
 
   constructor(private readonly ws: WebSocket) {}
 
@@ -236,6 +246,7 @@ export class BrowserRealtimeSession {
           voiceLog(this.sessionId, "user", `said: ${JSON.stringify(text)}`);
           this.pushTranscript("user", text);
           this.send({ event: "user_transcript", text, partial: false });
+          this.onDictationUserTranscript(text);
           this.beginUserTurn(text);
         },
         onAssistantTranscript: (delta) => {
@@ -291,6 +302,7 @@ export class BrowserRealtimeSession {
 
   close(): void {
     this.cancelBrainJob();
+    this.dictation = null;
     voiceLog(this.sessionId, "browser", "stream close");
     this.s2s?.close();
     this.s2s = null;
@@ -300,6 +312,8 @@ export class BrowserRealtimeSession {
     if (!deltaB64 || this.ws.readyState !== 1) return;
     // Drop stray organic audio while Hermes is running — think path uses progress + inject only.
     if (this.brainJob && this.activeSpeechReason === "organic") return;
+    // Dictation buffers silently — only progress / inject speech should play.
+    if (this.dictation?.active && this.activeSpeechReason === "organic") return;
     if (itemId) this.lastAssistantItem = itemId;
     this.setState("speaking");
 
@@ -340,6 +354,13 @@ export class BrowserRealtimeSession {
   private handleResponseStarted(reason: ResponseSpeechReason, seq: number): void {
     if (this.brainJob && reason === "organic") {
       voiceWarn(this.sessionId, "think", "cancel unexpected organic speech during brain job", { seq });
+      this.s2s?.cancelActiveResponse();
+      this.activeSpeechReason = null;
+      return;
+    }
+    // Dictation captures silently — cancel chatty organic replies between chunks.
+    if (this.dictation?.active && reason === "organic") {
+      voiceLog(this.sessionId, "dictation", "suppress organic speech while buffering", { seq });
       this.s2s?.cancelActiveResponse();
       this.activeSpeechReason = null;
       return;
@@ -455,6 +476,19 @@ export class BrowserRealtimeSession {
 
     const toolName = normalizeThinkToolName(call.name);
     voiceLog(this.sessionId, "tool", `invoke ${toolName}`, { callId: call.callId, args });
+
+    if (toolName === "start_dictation") {
+      this.handleStartDictation(call.callId, args);
+      return;
+    }
+    if (toolName === "finish_dictation") {
+      this.handleFinishDictation(call.callId, args);
+      return;
+    }
+    if (toolName === "cancel_dictation") {
+      this.handleCancelDictation(call.callId);
+      return;
+    }
 
     if (toolName === "open_desktop") {
       const app = String(args.app ?? "");
@@ -574,6 +608,117 @@ export class BrowserRealtimeSession {
     });
   }
 
+  /** Buffer STT while dictating; auto-finish on clear done phrases. */
+  private onDictationUserTranscript(text: string): void {
+    if (!this.dictation?.active) return;
+    const before = this.dictation.chunks.length;
+    this.dictation = appendDictationChunk(this.dictation, text);
+    if (this.dictation.chunks.length !== before) {
+      voiceLog(this.sessionId, "dictation", "buffered chunk", {
+        chunks: this.dictation.chunks.length,
+        preview: text.slice(0, 120),
+      });
+    }
+    if (looksLikeDictationDone(text) && this.dictation.chunks.length > 0) {
+      voiceLog(this.sessionId, "dictation", "done phrase — finishing session");
+      this.completeDictationAndThink("done_phrase");
+    }
+  }
+
+  private handleStartDictation(callId: string, args: Record<string, unknown>): void {
+    const s2s = this.s2s;
+    if (!s2s) return;
+    const destination = String(args.destination ?? "").trim() || "Desktop note";
+    const title = typeof args.title === "string" ? args.title : undefined;
+    this.dictation = createDictationSession({
+      destination,
+      format: args.format,
+      title,
+    });
+    this.organicSurfaceSync = false;
+    voiceLog(this.sessionId, "dictation", "started", dictationStatusPayload(this.dictation));
+    s2s.sendFunctionOutput(
+      callId,
+      JSON.stringify({
+        status: "started",
+        ...dictationStatusPayload(this.dictation),
+        message:
+          "Dictation mode on. Stay nearly silent while the user speaks. Call finish_dictation when they are done.",
+      }),
+      { triggerResponse: false },
+    );
+    // Progress reason is not cancelled by the dictation organic suppressor.
+    s2s.injectProgressMessage("Ready — go ahead.");
+  }
+
+  private handleFinishDictation(callId: string, args: Record<string, unknown>): void {
+    const s2s = this.s2s;
+    if (!s2s) return;
+    if (!this.dictation?.active) {
+      s2s.sendFunctionOutput(
+        callId,
+        JSON.stringify({ status: "error", error: "No active dictation session" }),
+        { triggerResponse: true },
+      );
+      return;
+    }
+    const note = typeof args.note === "string" ? args.note.trim() : "";
+    s2s.sendFunctionOutput(
+      callId,
+      JSON.stringify({
+        status: "finishing",
+        ...dictationStatusPayload(this.dictation),
+        message: `${JOSHU_IDENTITY.name} is formatting and saving the dictation.`,
+      }),
+      { triggerResponse: false },
+    );
+    this.completeDictationAndThink("finish_dictation", note);
+  }
+
+  private handleCancelDictation(callId: string): void {
+    const s2s = this.s2s;
+    if (!s2s) return;
+    const had = Boolean(this.dictation?.active);
+    const chunks = this.dictation?.chunks.length ?? 0;
+    this.dictation = null;
+    voiceLog(this.sessionId, "dictation", "cancelled", { had, chunks });
+    s2s.sendFunctionOutput(
+      callId,
+      JSON.stringify({ status: "cancelled", discarded_chunks: chunks }),
+      { triggerResponse: true },
+    );
+  }
+
+  /** Close dictation buffer and start one Hermes job with the full transcript. */
+  private completeDictationAndThink(source: string, extraNote = ""): void {
+    const session = this.dictation;
+    if (!session?.active) return;
+    session.active = false;
+    const msg = buildDictationThinkMessage(session);
+    if (extraNote) {
+      msg.summary = `${msg.summary} Note: ${extraNote}`;
+    }
+    this.dictation = null;
+    this.turnThinkRequested = true;
+    this.organicSurfaceSync = false;
+    this.pendingUserQuote = msg.userQuote;
+    voiceLog(this.sessionId, "dictation", `complete source=${source}`, {
+      chunks: session.chunks.length,
+      chars: msg.userQuote.length,
+      format: session.format,
+      destination: session.destination,
+    });
+    this.s2s?.injectProgressMessage("One moment.");
+    this.startBrainJob({
+      intent: msg.intent,
+      summary: msg.summary,
+      userQuote: msg.userQuote,
+      voiceInject: true,
+      withProgress: true,
+      source: "think",
+    });
+  }
+
   /** New user utterance — arm organic surface sync; brain only when S2S calls think. */
   private beginUserTurn(userQuote: string): void {
     if (this.lastBrainHandledQuote && this.lastBrainHandledQuote !== userQuote) {
@@ -611,7 +756,8 @@ export class BrowserRealtimeSession {
     this.pendingUserQuote = userQuote;
     this.realtimeTurnSettled = false;
     this.turnThinkRequested = false;
-    this.organicSurfaceSync = true;
+    // During dictation, do not mirror empty organic chat to the surface.
+    this.organicSurfaceSync = !this.dictation?.active;
   }
 
   /**

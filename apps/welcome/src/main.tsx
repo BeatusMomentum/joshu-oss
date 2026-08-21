@@ -4,7 +4,7 @@ import "@joshu/design-system/base.css";
 import "./styles.css";
 
 import { BIG_PICTURE_PRIORITIES } from "@joshu/onboarding/options";
-import { StrictMode, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
 const API = "/joshu/api/onboarding";
@@ -29,6 +29,26 @@ function openConnectorsApp(): void {
     return;
   }
   window.open("/connectors/index.html", "_blank", "noopener,noreferrer");
+}
+
+/** Open jChat on the desktop (same pattern as Connectors). */
+function openJChatApp(): void {
+  const parent = window.parent as Window & { openModule?: (name: string) => void };
+  if (typeof parent.openModule === "function") {
+    parent.openModule("jChat");
+    return;
+  }
+  window.open("/hermes-chat/index.html", "_blank", "noopener,noreferrer");
+}
+
+function formatHourMinute(hhmm: string): string {
+  const match = hhmm.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return hhmm || "—";
+  const hour = Number.parseInt(match[1]!, 10);
+  const minute = match[2];
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const h12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${h12}:${minute} ${suffix}`;
 }
 
 type VipRow = { who: string; priority: string; gatekeepNotes: string };
@@ -226,6 +246,9 @@ function App() {
   const [agentEmailInput, setAgentEmailInput] = useState("");
   const [alreadyCompleted, setAlreadyCompleted] = useState(false);
   const [savedFlash, setSavedFlash] = useState("");
+  /** Shown once after a successful Finish setup in this session (not on reload). */
+  const [showSetupComplete, setShowSetupComplete] = useState(false);
+  const completeInFlightRef = useRef(false);
 
   const steps = useMemo(() => buildSteps(needsConnectAi), [needsConnectAi]);
   const stepId = steps[step] ?? "welcome";
@@ -515,9 +538,12 @@ function App() {
   };
 
   const complete = async () => {
+    if (completeInFlightRef.current) return;
     setError("");
     setSavedFlash("");
+    completeInFlightRef.current = true;
     setBusy(true);
+    const wasCompleted = alreadyCompleted;
     try {
       const payload = {
         ...draft,
@@ -531,11 +557,16 @@ function App() {
       const data = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(data.error ?? "Save failed");
       setAlreadyCompleted(true);
-      setSavedFlash(alreadyCompleted ? "Changes saved." : "Setup complete — Projects and crons are ready.");
       sessionStorage.setItem("joshu-onboarding-dismissed", "1");
+      if (!wasCompleted) {
+        setShowSetupComplete(true);
+      } else {
+        setSavedFlash("Changes saved.");
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      completeInFlightRef.current = false;
       setBusy(false);
     }
   };
@@ -667,7 +698,8 @@ function App() {
             <>
               <h2>Schedule & email</h2>
               <p className="welcome-hint">
-                Work email is where morning/evening briefs go. Time zone and hours set when those cron jobs run.
+                Work email is where morning/evening briefs go. Time zone and hours set when automated EA cron jobs
+                run (morning pointer, evening shutdown, weekly review).
               </p>
               <Field label="Work email" hint="Daily brief destination">
                 <input
@@ -715,9 +747,65 @@ function App() {
             </>
           )}
 
-          {stepId === "review" && (
+          {stepId === "review" && showSetupComplete ? (
+            <>
+              <h2>You&apos;re set up</h2>
+              <p className="welcome-hint">
+                Your executive assistant workspace is ready. Here&apos;s what we configured:
+              </p>
+              <ul className="welcome-setup-list">
+                <li>
+                  <strong>Project folders</strong> under Desktop for each priority you selected
+                  {draft.bigPicturePriorities.length
+                    ? `: ${formatList(draft.bigPicturePriorities)}`
+                    : " (plus Projects/other)"}
+                </li>
+                <li>
+                  <strong>Scheduled briefs</strong> in your time zone ({draft.timezone || "—"}): morning at{" "}
+                  {formatHourMinute(draft.workingHoursStart)} (weekdays), evening at{" "}
+                  {formatHourMinute(draft.workingHoursEnd)} (weekdays), weekly review Friday morning
+                </li>
+                <li>
+                  <strong>Work email</strong> for pointer summaries: {workEmail || "—"}
+                </li>
+                {nylasProvisioned ? (
+                  <li>
+                    <strong>Agent mailbox</strong>: {assistantEmail}
+                  </li>
+                ) : null}
+              </ul>
+              <p className="welcome-hint">
+                Link Gmail and calendar in Connectors so mail ingest and scheduling can run. Say{" "}
+                <strong>morning review</strong> in jChat when you want to plan the day.
+              </p>
+              <div className="welcome-setup-actions">
+                <button type="button" className="primary" onClick={openJChatApp}>
+                  Open jChat
+                </button>
+                <button type="button" className="secondary" onClick={openConnectorsApp}>
+                  Open Connectors
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    setShowSetupComplete(false);
+                    window.close?.();
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </>
+          ) : null}
+
+          {stepId === "review" && !showSetupComplete && (
             <>
               <h2>Review</h2>
+              <p className="welcome-hint">
+                <strong>Finish setup</strong> creates your project folders, installs EA morning/evening/weekly cron
+                jobs, and saves your profile. This can take a few seconds — please wait for confirmation.
+              </p>
               <dl className="welcome-review">
                 <dt>Help with</dt>
                 <dd>{formatList(draft.bigPicturePriorities)}</dd>
@@ -819,7 +907,7 @@ function App() {
                 Skip for now
               </button>
             ) : null}
-            {alreadyCompleted && step === lastStep ? (
+            {alreadyCompleted && step === lastStep && !showSetupComplete ? (
               <button type="button" className="secondary" disabled={busy} onClick={() => window.close?.()}>
                 Close
               </button>
@@ -828,9 +916,15 @@ function App() {
               <button type="button" className="primary" disabled={busy} onClick={() => void next()}>
                 {stepId === "connect-ai" ? "Save & continue" : "Continue"}
               </button>
-            ) : (
+            ) : showSetupComplete ? null : (
               <button type="button" className="primary" disabled={busy} onClick={() => void complete()}>
-                {alreadyCompleted ? "Save changes" : "Finish setup"}
+                {busy
+                  ? alreadyCompleted
+                    ? "Saving…"
+                    : "Finishing…"
+                  : alreadyCompleted
+                    ? "Save changes"
+                    : "Finish setup"}
               </button>
             )}
           </div>

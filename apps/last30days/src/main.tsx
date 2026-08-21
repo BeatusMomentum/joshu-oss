@@ -17,9 +17,11 @@ import {
 import {
   indexClustersForDisplay,
   membersForCluster,
+  filterItemsForDisplay,
   sourceCounts,
   sourceIssuesFromStatus,
   tryParseAgentReport,
+  formatCompactCount,
 } from "@joshu/last30days-format";
 
 const API = (import.meta.env.VITE_LAST30DAYS_API_BASE || "/joshu/api/last30days").replace(
@@ -103,7 +105,17 @@ function stripMdAgentEnvelope(text: string): string {
     .trim();
 }
 
-function ResearchReportView({ text }: { text: string }) {
+function ResearchReportView({
+  text,
+  onWatchTopic,
+  alreadyWatched,
+  watchLabel,
+}: {
+  text: string;
+  onWatchTopic?: () => void;
+  alreadyWatched?: boolean;
+  watchLabel?: string;
+}) {
   const [showRaw, setShowRaw] = useState(false);
   const report = useMemo(() => tryParseAgentReport(text), [text]);
   const mdAlerts = useMemo(
@@ -111,9 +123,17 @@ function ResearchReportView({ text }: { text: string }) {
     [report, text],
   );
   // Hooks must run unconditionally — opening a saved JSON run used to crash here.
+  const displayOpts = useMemo(
+    () => ({ query: report?.query || "" }),
+    [report?.query],
+  );
+  const displayItems = useMemo(
+    () => filterItemsForDisplay(report?.results || [], displayOpts),
+    [report, displayOpts],
+  );
   const indexedClusters = useMemo(
-    () => indexClustersForDisplay(report?.clusters || [], report?.results || []),
-    [report],
+    () => indexClustersForDisplay(report?.clusters || [], report?.results || [], displayOpts),
+    [report, displayOpts],
   );
 
   useEffect(() => {
@@ -161,9 +181,10 @@ function ResearchReportView({ text }: { text: string }) {
   const clusters = report.clusters || [];
   const items = report.results || [];
   const groupedCount = indexedClusters.filter((entry) => entry.memberCount > 1).length;
-  const counts = sourceCounts(report);
+  const counts = sourceCounts({ ...report, results: displayItems });
   const issues = sourceIssuesFromStatus(report.source_status);
   const missingExpected = !counts.some((c) => c.name === "youtube" && c.count > 0);
+  const dropped = Math.max(0, items.length - displayItems.length);
 
   return (
     <div className="result-stack">
@@ -171,18 +192,32 @@ function ResearchReportView({ text }: { text: string }) {
         <div>
           <p className="eyebrow">Brief</p>
           <h2 className="report-title">{report.query || "Research"}</h2>
+          {watchLabel ? <p className={`trend-pill ${alreadyWatched ? "on" : ""}`}>{watchLabel}</p> : null}
           <p className="hint">
             {report.window_days ? `${report.window_days}d window` : "window n/a"}
             {report.generated_at
               ? ` · ${new Date(report.generated_at).toLocaleString()}`
               : ""}
-            {` · ${clusters.length} clusters (${groupedCount} grouped) · ${items.length} items`}
-            {" · sorted by engagement"}
+            {` · ${indexedClusters.length} clusters (${groupedCount} grouped) · ${displayItems.length} items`}
+            {dropped > 0 ? ` · ${dropped} filtered` : ""}
+            {" · sorted by relevance"}
           </p>
         </div>
-        <button type="button" className="btn compact ghost" onClick={() => setShowRaw(true)}>
-          Raw JSON
-        </button>
+        <div className="row">
+          {onWatchTopic ? (
+            <button
+              type="button"
+              className="btn compact primary"
+              onClick={onWatchTopic}
+              disabled={alreadyWatched}
+            >
+              {alreadyWatched ? "Watching" : "Watch this topic"}
+            </button>
+          ) : null}
+          <button type="button" className="btn compact ghost" onClick={() => setShowRaw(true)}>
+            Raw JSON
+          </button>
+        </div>
       </div>
 
       {issues.length > 0 ? (
@@ -206,7 +241,10 @@ function ResearchReportView({ text }: { text: string }) {
               title={c.status ? `${c.name}: ${c.status}` : c.name}
             >
               {c.name}
-              <strong>{c.count}</strong>
+              <strong>
+                {c.count}
+                {c.nativeTotal > 0 ? ` · ${formatCompactCount(c.nativeTotal)} ${c.unit}` : ""}
+              </strong>
             </span>
           ))
         )}
@@ -214,16 +252,14 @@ function ResearchReportView({ text }: { text: string }) {
 
       {missingExpected ? (
         <p className="hint policy-hint">
-          X is unavailable in this Joshu app (no cookies / XAI / Xquik). YouTube runs via ScrapeCreators
-          when the planner includes it — try Depth <strong>Default</strong> or{" "}
-          <strong>Deep</strong>, or set{" "}
-          <code>--search youtube,reddit,hn,web,tiktok,instagram</code> under Advanced.
+          YouTube and X run when this search includes them. Use Thorough under More options if a
+          source looks thin.
         </p>
       ) : null}
 
       <div className="cluster-list">
-        {indexedClusters.map(({ cluster, idx, memberCount }, displayRank) => {
-          const members = membersForCluster(items, idx);
+        {indexedClusters.map(({ cluster, idx, memberCount, nativeLabel }, displayRank) => {
+          const members = membersForCluster(items, idx, 6, displayOpts);
           return (
             <article
               key={`${cluster.title || "cluster"}-${idx}`}
@@ -246,9 +282,7 @@ function ResearchReportView({ text }: { text: string }) {
                       {s}
                     </span>
                   ))}
-                  {typeof cluster.engagement_total === "number" ? (
-                    <span className="engagement">{cluster.engagement_total.toLocaleString()} eng</span>
-                  ) : null}
+                  {nativeLabel ? <span className="engagement">{nativeLabel}</span> : null}
                 </div>
               </header>
               {members.length > 0 ? (
@@ -291,7 +325,34 @@ type PublicConfig = {
   register?: string;
   scrapecreators?: { present: boolean; last4?: string; relay?: boolean };
   scrapecreatorsRelay?: { mode?: string; configured?: boolean };
+  xquik?: { present: boolean; last4?: string; relay?: boolean };
+  xquikRelay?: { mode?: string; configured?: boolean };
   policy?: Record<string, unknown>;
+};
+
+type WatchingTopicRow = {
+  name: string;
+  cadence: "daily" | "weekly";
+  enabled: boolean;
+  lastCheckedAt: string | null;
+  snapshotCount: number;
+  status: { kind: string; label: string };
+};
+
+type WatchReportPayload = {
+  topic: string;
+  trend: { kind: string; label: string };
+  quietEmpty?: boolean;
+  delta: { newUrls: string[]; continuedUrls: string[]; droppedUrls: string[] };
+  volume: {
+    name: string;
+    currentCount: number;
+    previousCount: number;
+    currentNative: number;
+    previousNative: number;
+    unit: string;
+  }[];
+  stdout?: string;
 };
 
 type StatusPayload = {
@@ -349,7 +410,9 @@ function buildRunCompleteToolResult(
   if (report) {
     const nClusters = report.clusters?.length ?? 0;
     const nItems = report.results?.length ?? 0;
-    const indexed = indexClustersForDisplay(report.clusters || [], report.results || []);
+    const indexed = indexClustersForDisplay(report.clusters || [], report.results || [], {
+      query: report.query,
+    });
     const themes = indexed
       .slice(0, 3)
       .map((entry) => entry.cluster?.title?.trim())
@@ -450,15 +513,17 @@ function App() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [drillTarget, setDrillTarget] = useState("1");
 
-  // Companions
-  const [companionOut, setCompanionOut] = useState("");
-  const [watchArgs, setWatchArgs] = useState("list");
-  const [storeArgs, setStoreArgs] = useState("stats");
-  const [briefArgs, setBriefArgs] = useState("show");
-  const [doctorOut, setDoctorOut] = useState("");
+  // Watching
+  const [watchingTopics, setWatchingTopics] = useState<WatchingTopicRow[]>([]);
+  const [watchDraft, setWatchDraft] = useState("");
+  const [watchCadence, setWatchCadence] = useState<"daily" | "weekly">("daily");
+  const [selectedWatch, setSelectedWatch] = useState<string | null>(null);
+  const [watchReport, setWatchReport] = useState<WatchReportPayload | null>(null);
+  const [showProgress, setShowProgress] = useState(false);
 
   // Settings / first-use dialogs
   const [scKey, setScKey] = useState("");
+  const [xquikKey, setXquikKey] = useState("");
   const [includeSources, setIncludeSources] = useState(
     "tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments",
   );
@@ -467,8 +532,57 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  const [doctorOut, setDoctorOut] = useState("");
+  const [storeArgs, setStoreArgs] = useState("stats");
+  const [briefArgs, setBriefArgs] = useState("show");
+  const [settingsPowerOpen, setSettingsPowerOpen] = useState(false);
 
   const scRelay = Boolean(status?.config?.scrapecreatorsRelay?.configured);
+  const xquikRelay = Boolean(status?.config?.xquikRelay?.configured);
+
+  const refreshWatching = useCallback(async () => {
+    try {
+      const data = await fetchJson<{ topics: WatchingTopicRow[] }>(`${API}/watching`);
+      setWatchingTopics(data.topics || []);
+      return data.topics || [];
+    } catch {
+      setWatchingTopics([]);
+      return [] as WatchingTopicRow[];
+    }
+  }, []);
+
+  const loadWatchReport = useCallback(async (topicName: string) => {
+    setSelectedWatch(topicName);
+    try {
+      const data = await fetchJson<WatchReportPayload>(
+        `${API}/watching/report?topic=${encodeURIComponent(topicName)}`,
+      );
+      setWatchReport(data);
+    } catch {
+      setWatchReport(null);
+    }
+  }, []);
+
+  const watchThisTopic = useCallback(
+    async (name?: string): Promise<string> => {
+      const topicName = (name || topic).trim();
+      if (!topicName) return "Enter a topic first.";
+      await fetchJson(`${API}/watching`, {
+        method: "POST",
+        body: JSON.stringify({
+          topic: topicName,
+          cadence: "daily",
+          stdout: resultText || undefined,
+          runId: activeRunId || undefined,
+        }),
+      });
+      await refreshWatching();
+      setNav("watching");
+      await loadWatchReport(topicName);
+      return `Watching “${topicName}”.`;
+    },
+    [topic, resultText, activeRunId, refreshWatching, loadWatchReport],
+  );
 
   const refreshStatus = useCallback(async () => {
     const data = await fetchJson<StatusPayload>(`${API}/status`);
@@ -476,6 +590,9 @@ function App() {
     if (data.config?.includeSources) setIncludeSources(data.config.includeSources);
     if (data.config?.memoryDir) setMemoryDir(data.config.memoryDir);
     if (typeof data.config?.store === "boolean") setStoreEnabled(data.config.store);
+    if (typeof data.config?.register === "string" && data.config.register) {
+      setRegister(data.config.register);
+    }
     if (data.config && !data.config.setupComplete && !onboardingDismissed) {
       setOnboardingOpen(true);
     }
@@ -503,7 +620,8 @@ function App() {
       .catch(() => {
         runsPollReadyRef.current = true;
       });
-  }, [refreshStatus, refreshRuns]);
+    void refreshWatching().catch(() => undefined);
+  }, [refreshStatus, refreshRuns, refreshWatching]);
 
   const attachRunStream = useCallback((runId: string): Promise<string> => {
     setActiveRunId(runId);
@@ -542,6 +660,7 @@ function App() {
             ? `joshu://${full.run.outputRelativePath.replace(/^\/+/, "")}`
             : undefined;
           setActiveReportUri(reportUri ?? null);
+          void refreshWatching();
           resolve(buildRunCompleteToolResult(full.run.status, label, stdout, reportUri));
         })
           .catch((err: Error) => {
@@ -581,7 +700,7 @@ function App() {
         settle();
       };
     });
-  }, [refreshRuns]);
+  }, [refreshRuns, refreshWatching]);
 
   const openHistoricalRun = useCallback(async (runId: string) => {
     setError(null);
@@ -653,7 +772,6 @@ function App() {
         topic: effectiveTopic || "mock topic",
         emit: "json",
         jsonProfile: "agent",
-        register,
         days: overrides?.days ?? days,
         mock: effectiveMock,
         hiringSignals,
@@ -662,6 +780,8 @@ function App() {
         quick: (overrides?.depth ?? depth) === "quick",
         deep: (overrides?.depth ?? depth) === "deep",
       };
+      // Writing style shapes the saved .md (JSON Results UI stays relevance-sorted).
+      if (register && register !== "default") body.register = register;
       if (competitors) body.competitors = true;
       if (advanced.trim()) {
         body.extraArgs = advanced.trim().split(/\s+/);
@@ -728,6 +848,7 @@ function App() {
         method: "PUT",
         body: JSON.stringify({
           scrapecreatorsApiKey: scKey || undefined,
+          xquikApiKey: xquikKey || undefined,
           includeSources,
           memoryDir: memoryDir || undefined,
           store: storeEnabled,
@@ -736,6 +857,7 @@ function App() {
         }),
       });
       setScKey("");
+      setXquikKey("");
       setOnboardingOpen(false);
       setOnboardingDismissed(false);
       await refreshStatus();
@@ -817,7 +939,7 @@ function App() {
       return "Settings opened.";
     },
     runDoctor: async () => {
-      setNav("doctor");
+      setSettingsOpen(true);
       await loadDoctor("json");
       return "Doctor json run complete.";
     },
@@ -825,18 +947,17 @@ function App() {
       await refreshRuns();
       return "Runs refreshed.";
     },
-    openWatchlist: () => {
-      setNav("watchlist");
-      return "Watchlist opened.";
+    openWatching: () => {
+      setNav("watching");
+      void refreshWatching();
+      return "Watching opened.";
     },
+    watchThisTopic: async (args) => watchThisTopic(args.topic),
   };
 
   const navItems: { id: NavId; label: string }[] = [
     { id: "research", label: "Research" },
-    { id: "watchlist", label: "Watchlist" },
-    { id: "store", label: "Store" },
-    { id: "briefings", label: "Briefings" },
-    { id: "doctor", label: "Doctor" },
+    { id: "watching", label: "Watching" },
   ];
 
   const openSettings = () => {
@@ -893,14 +1014,14 @@ function App() {
             <div className="details-grid">
               <div className="panel form-grid">
                 <div className="panel-head">
-                  <p className="eyebrow">Query</p>
+                  <p className="eyebrow">Ask</p>
                 </div>
                 <label className="topic-field">
                   Topic
                   <input
                     value={topic}
                     onChange={(e) => setTopic(e.target.value)}
-                    placeholder="OpenAI Codex / Peter Steinberger / …"
+                    placeholder="A company, product, person, or “A vs B”"
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
@@ -909,122 +1030,127 @@ function App() {
                     }}
                   />
                 </label>
-                <div className="form-grid four">
-                  <label>
-                    Depth
-                    <select value={depth} onChange={(e) => setDepth(e.target.value as typeof depth)}>
-                      <option value="quick">Quick</option>
-                      <option value="default">Default</option>
-                      <option value="deep">Deep</option>
-                    </select>
-                  </label>
-                  <label>
-                    Days
-                    <input
-                      type="number"
-                      min={1}
-                      max={365}
-                      value={days}
-                      onChange={(e) => setDays(Number(e.target.value) || 30)}
-                    />
-                  </label>
-                  <label>
-                    Register
-                    <select value={register} onChange={(e) => setRegister(e.target.value)}>
-                      <option value="default">default</option>
-                      <option value="exec">exec</option>
-                      <option value="dev">dev</option>
-                      <option value="creator">creator</option>
-                      <option value="eli5">eli5</option>
-                    </select>
-                  </label>
-                  <p className="hint emit-hint">
-                    Results always use <strong>json (agent)</strong> for cluster cards. Use{" "}
-                    <code>--emit=md</code> in Extra argv only for Hermes-style markdown export.
+                <div className="segmented" role="group" aria-label="Lookback window">
+                  <button
+                    type="button"
+                    className={`chip ${days === 7 ? "on" : ""}`}
+                    onClick={() => setDays(7)}
+                  >
+                    Last 7 days
+                  </button>
+                  <button
+                    type="button"
+                    className={`chip ${days === 30 ? "on" : ""}`}
+                    onClick={() => setDays(30)}
+                  >
+                    Last 30 days
+                  </button>
+                </div>
+                {busy ? (
+                  <p className="run-status-line">
+                    Searching Reddit, HN, X, and the web…
+                    <button
+                      type="button"
+                      className="btn compact ghost"
+                      onClick={() => setShowProgress((v) => !v)}
+                    >
+                      {showProgress ? "Hide progress" : "Show progress"}
+                    </button>
                   </p>
-                </div>
-                <div className="chips">
-                  <button
-                    type="button"
-                    className={`chip ${mock ? "on" : ""}`}
-                    onClick={() => setMock((v) => !v)}
-                  >
-                    mock
-                  </button>
-                  <button
-                    type="button"
-                    className={`chip ${hiringSignals ? "on" : ""}`}
-                    onClick={() => setHiringSignals((v) => !v)}
-                  >
-                    hiring signals
-                  </button>
-                  <button
-                    type="button"
-                    className={`chip ${competitors ? "on" : ""}`}
-                    onClick={() => setCompetitors((v) => !v)}
-                  >
-                    competitors
-                  </button>
-                  <button
-                    type="button"
-                    className={`chip ${deepResearch ? "on" : ""}`}
-                    onClick={() => setDeepResearch((v) => !v)}
-                  >
-                    deep research
-                  </button>
-                </div>
+                ) : null}
                 <details className="advanced">
-                  <summary>Advanced</summary>
+                  <summary>More options</summary>
                   <div className="advanced-body">
                     <label>
-                      --search override
+                      Depth
+                      <select value={depth} onChange={(e) => setDepth(e.target.value as typeof depth)}>
+                        <option value="quick">Simple</option>
+                        <option value="default">Thorough</option>
+                        <option value="deep">Deep</option>
+                      </select>
+                    </label>
+                    <label>
+                      Writing style
+                      <select value={register} onChange={(e) => setRegister(e.target.value)}>
+                        <option value="default">Default</option>
+                        <option value="exec">Executive</option>
+                        <option value="dev">Technical</option>
+                        <option value="creator">Creator</option>
+                        <option value="eli5">Plain language</option>
+                      </select>
+                    </label>
+                    <p className="hint">Applies to the saved markdown brief, not the Results cards.</p>
+                    <div className="chips">
+                      <button type="button" className={`chip ${mock ? "on" : ""}`} onClick={() => setMock((v) => !v)}>
+                        Offline test
+                      </button>
+                      <button
+                        type="button"
+                        className={`chip ${hiringSignals ? "on" : ""}`}
+                        onClick={() => setHiringSignals((v) => !v)}
+                      >
+                        Hiring signals
+                      </button>
+                      <button
+                        type="button"
+                        className={`chip ${competitors ? "on" : ""}`}
+                        onClick={() => setCompetitors((v) => !v)}
+                      >
+                        Competitors
+                      </button>
+                      <button
+                        type="button"
+                        className={`chip ${deepResearch ? "on" : ""}`}
+                        onClick={() => setDeepResearch((v) => !v)}
+                      >
+                        Extra web pass
+                      </button>
+                    </div>
+                    <label>
+                      Source override
                       <input
                         value={searchOverride}
                         onChange={(e) => setSearchOverride(e.target.value)}
-                        placeholder="reddit,youtube,hn,web"
+                        placeholder="reddit,youtube,hn,web,x"
                       />
                     </label>
                     <label>
-                      Extra argv
+                      Extra flags
                       <input
                         value={advanced}
                         onChange={(e) => setAdvanced(e.target.value)}
-                        placeholder="--github-user=steipete --subreddits=…"
+                        placeholder="rarely needed"
                       />
                     </label>
                   </div>
                 </details>
                 <div className="actions-row">
-                  <p className="hint">Enter to run · Cancel stops the live job</p>
+                  <p className="hint">Enter to run</p>
                   <div className="row">
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={!busy}
-                      onClick={() => void cancelActive()}
-                    >
+                    <button type="button" className="btn" disabled={!busy} onClick={() => void cancelActive()}>
                       Cancel
                     </button>
-                    <button
-                      type="button"
-                      className="btn primary"
-                      disabled={busy}
-                      onClick={() => void startResearch()}
-                    >
-                      {busy ? "Running…" : "Run research"}
+                    <button type="button" className="btn primary" disabled={busy} onClick={() => void startResearch()}>
+                      {busy ? "Running…" : "Research"}
                     </button>
                   </div>
                 </div>
               </div>
+              {showProgress || (!busy && logLines.length > 0) ? (
               <div className="panel log-panel">
                 <div className="panel-head">
-                  <p className="eyebrow">Live log</p>
-                  {busy ? <span className="run-status running">streaming</span> : null}
+                  <p className="eyebrow">Progress</p>
+                  {busy ? <span className="run-status running">live</span> : null}
                 </div>
                 <div className={`log-box ${logLines.length ? "" : "is-empty"}`}>
                   {logLines.join("\n") || "Waiting for a run…"}
                 </div>
               </div>
+              ) : (
+                <div className="panel log-panel is-quiet">
+                  <p className="hint">Results appear below after a run.</p>
+                </div>
+              )}
             </div>
 
             <div className="results-layout">
@@ -1036,41 +1162,52 @@ function App() {
                       Saved report: <code>{activeReportUri}</code>
                     </p>
                   ) : null}
-                  <div className="row">
-                    <button
-                      type="button"
-                      className="btn compact"
-                      disabled={busy}
-                      onClick={() => void runDrill()}
-                    >
-                      Drill
-                    </button>
-                    <button
-                      type="button"
-                      className="btn compact ghost"
-                      onClick={() => {
-                        void fetchJson(`${API}/verify-freshness`, {
-                          method: "POST",
-                          body: JSON.stringify({ mock }),
-                        }).then(
-                          (data: { runId?: string }) => data.runId && attachRunStream(data.runId),
-                        );
-                      }}
-                    >
-                      Verify freshness
-                    </button>
-                  </div>
                 </div>
-                <label>
-                  Drill target (cluster index or title)
-                  <input value={drillTarget} onChange={(e) => setDrillTarget(e.target.value)} />
-                </label>
-                <ResearchReportView text={resultText} />
+                <ResearchReportView
+                  text={resultText}
+                  onWatchTopic={() => void watchThisTopic()}
+                  alreadyWatched={watchingTopics.some(
+                    (t) => t.name.trim().toLowerCase() === topic.trim().toLowerCase(),
+                  )}
+                  watchLabel={
+                    watchingTopics.find(
+                      (t) => t.name.trim().toLowerCase() === topic.trim().toLowerCase(),
+                    )?.status.label
+                  }
+                />
+                <details className="advanced">
+                  <summary>More on this result</summary>
+                  <div className="advanced-body">
+                    <label>
+                      Drill into a cluster
+                      <input value={drillTarget} onChange={(e) => setDrillTarget(e.target.value)} />
+                    </label>
+                    <div className="row">
+                      <button type="button" className="btn compact" disabled={busy} onClick={() => void runDrill()}>
+                        Drill
+                      </button>
+                      <button
+                        type="button"
+                        className="btn compact ghost"
+                        onClick={() => {
+                          void fetchJson(`${API}/verify-freshness`, {
+                            method: "POST",
+                            body: JSON.stringify({ mock }),
+                          }).then(
+                            (data: { runId?: string }) => data.runId && attachRunStream(data.runId),
+                          );
+                        }}
+                      >
+                        Recheck freshness
+                      </button>
+                    </div>
+                  </div>
+                </details>
               </div>
 
               <div className="panel form-grid runs-rail">
                 <div className="panel-head">
-                  <p className="eyebrow">Recent runs</p>
+                  <p className="eyebrow">History</p>
                 </div>
                 {runs.length === 0 ? (
                   <p className="runs-empty">No runs yet.</p>
@@ -1112,148 +1249,237 @@ function App() {
           </section>
         )}
 
-        {nav === "watchlist" && (
-          <section className="panel form-grid companion-stack">
-            <div className="panel-head">
-              <p className="eyebrow">Watchlist</p>
-            </div>
-            <p className="hint">
-              Recurring topics to re-research on a schedule. Try{" "}
-              <code>list</code>, <code>add My Topic</code>, or <code>run-all</code>.
-            </p>
-            <label>
-              Args
-              <input value={watchArgs} onChange={(e) => setWatchArgs(e.target.value)} />
-            </label>
-            <div className="row end">
-              <button
-                type="button"
-                className="btn primary"
-                onClick={() => {
-                  void fetchJson<{ stdout: string; stderr: string }>(`${API}/watchlist`, {
-                    method: "POST",
-                    body: JSON.stringify({ args: watchArgs.trim().split(/\s+/).filter(Boolean) }),
-                  }).then((d) => setCompanionOut(`${d.stdout}\n${d.stderr}`));
-                }}
-              >
-                Run watchlist
-              </button>
-            </div>
-            <div className={`result-box ${companionOut ? "" : "is-empty"}`}>
-              {companionOut || "Output appears here."}
-            </div>
-          </section>
-        )}
-
-        {nav === "store" && (
-          <section className="panel form-grid companion-stack">
-            <div className="panel-head">
-              <p className="eyebrow">Store</p>
-            </div>
-            <p className="hint">
-              SQLite findings store. Typical args: <code>stats</code>, <code>search …</code>,{" "}
-              <code>trending</code>.
-            </p>
-            <label>
-              Args
-              <input value={storeArgs} onChange={(e) => setStoreArgs(e.target.value)} />
-            </label>
-            <div className="row end">
-              <button
-                type="button"
-                className="btn primary"
-                onClick={() => {
-                  void fetchJson<{ stdout: string; stderr: string }>(`${API}/store`, {
-                    method: "POST",
-                    body: JSON.stringify({ args: storeArgs.trim().split(/\s+/).filter(Boolean) }),
-                  }).then((d) => setCompanionOut(`${d.stdout}\n${d.stderr}`));
-                }}
-              >
-                Run store
-              </button>
-            </div>
-            <div className={`result-box ${companionOut ? "" : "is-empty"}`}>
-              {companionOut || "Output appears here."}
-            </div>
-          </section>
-        )}
-
-        {nav === "briefings" && (
-          <section className="panel form-grid companion-stack">
-            <div className="panel-head">
-              <p className="eyebrow">Briefings</p>
-            </div>
-            <p className="hint">
-              Digests from the store. Try <code>show</code> or <code>generate --weekly</code>.
-            </p>
-            <label>
-              Args
-              <input value={briefArgs} onChange={(e) => setBriefArgs(e.target.value)} />
-            </label>
-            <div className="row end">
-              <button
-                type="button"
-                className="btn primary"
-                onClick={() => {
-                  void fetchJson<{ stdout: string; stderr: string }>(`${API}/briefings`, {
-                    method: "POST",
-                    body: JSON.stringify({ args: briefArgs.trim().split(/\s+/).filter(Boolean) }),
-                  }).then((d) => setCompanionOut(`${d.stdout}\n${d.stderr}`));
-                }}
-              >
-                Run briefing
-              </button>
-            </div>
-            <div className={`result-box ${companionOut ? "" : "is-empty"}`}>
-              {companionOut || "Output appears here."}
-            </div>
-          </section>
-        )}
-
-        {nav === "doctor" && (
-          <section className="panel form-grid companion-stack">
-            <div className="panel-head">
-              <p className="eyebrow">Doctor</p>
-            </div>
-            <p className="hint">Health checks when a source looks thin or setup seems off.</p>
-            <div className="row">
-              {["json", "cached", "probe", "postmortem", "plain"].map((mode) => (
+        {nav === "watching" && (
+          <section className="watching-stack">
+            <div className="panel form-grid">
+              <div className="panel-head">
+                <p className="eyebrow">Watching</p>
                 <button
-                  key={mode}
                   type="button"
                   className="btn compact"
-                  disabled={busy}
-                  onClick={() => void loadDoctor(mode)}
+                  disabled={busy || watchingTopics.length === 0}
+                  onClick={() => {
+                    void fetchJson<{ runIds?: string[] }>(`${API}/watching/run-all`, {
+                      method: "POST",
+                      body: "{}",
+                    }).then((d) => {
+                      const first = d.runIds?.[0];
+                      if (first) attachRunStream(first);
+                      void refreshWatching();
+                    });
+                  }}
                 >
-                  {mode}
+                  Check all now
                 </button>
-              ))}
-              <button
-                type="button"
-                className="btn compact"
-                onClick={() => {
-                  void fetchJson<{ stdout: string }>(`${API}/preflight`).then((d) =>
-                    setDoctorOut(d.stdout),
-                  );
-                }}
-              >
-                preflight
-              </button>
-              <button
-                type="button"
-                className="btn compact"
-                onClick={() => {
-                  void fetchJson<{ stdout: string }>(`${API}/diagnose`).then((d) =>
-                    setDoctorOut(d.stdout),
-                  );
-                }}
-              >
-                diagnose
-              </button>
+              </div>
+              <div className="watch-add">
+                <label className="topic-field">
+                  Add a topic
+                  <input
+                    value={watchDraft}
+                    onChange={(e) => setWatchDraft(e.target.value)}
+                    placeholder="Company or product to track"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        const name = watchDraft.trim();
+                        if (!name) return;
+                        void fetchJson(`${API}/watching`, {
+                          method: "POST",
+                          body: JSON.stringify({ topic: name, cadence: watchCadence }),
+                        }).then(() => {
+                          setWatchDraft("");
+                          void refreshWatching();
+                        });
+                      }
+                    }}
+                  />
+                </label>
+                <div className="segmented">
+                  <button
+                    type="button"
+                    className={`chip ${watchCadence === "daily" ? "on" : ""}`}
+                    onClick={() => setWatchCadence("daily")}
+                  >
+                    Daily
+                  </button>
+                  <button
+                    type="button"
+                    className={`chip ${watchCadence === "weekly" ? "on" : ""}`}
+                    onClick={() => setWatchCadence("weekly")}
+                  >
+                    Weekly
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={() => {
+                    const name = watchDraft.trim();
+                    if (!name) return;
+                    void fetchJson(`${API}/watching`, {
+                      method: "POST",
+                      body: JSON.stringify({ topic: name, cadence: watchCadence }),
+                    }).then(() => {
+                      setWatchDraft("");
+                      void refreshWatching();
+                    });
+                  }}
+                >
+                  Watch
+                </button>
+              </div>
+              {watchingTopics.length === 0 ? (
+                <div className="empty-state">
+                  <p>Watch a topic after a research run, or add one here.</p>
+                  <p className="hint">Watches re-check on a schedule and flag what is above average.</p>
+                </div>
+              ) : (
+                <table className="table watch-table">
+                  <thead>
+                    <tr>
+                      <th>Topic</th>
+                      <th>Cadence</th>
+                      <th>Last checked</th>
+                      <th>Status</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {watchingTopics.map((row) => (
+                      <tr
+                        key={row.name}
+                        className={selectedWatch === row.name ? "is-selected" : ""}
+                        onClick={() => void loadWatchReport(row.name)}
+                      >
+                        <td>{row.name}</td>
+                        <td>{row.cadence === "weekly" ? "Weekly" : "Daily"}</td>
+                        <td>
+                          {row.lastCheckedAt
+                            ? formatRunWhen(Date.parse(row.lastCheckedAt) || 0)
+                            : "—"}
+                        </td>
+                        <td>
+                          <span className={`trend-pill kind-${row.status.kind}`}>
+                            {row.status.label}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="row">
+                            <button
+                              type="button"
+                              className="btn compact"
+                              disabled={busy}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void fetchJson<{ runId: string }>(`${API}/watching/run`, {
+                                  method: "POST",
+                                  body: JSON.stringify({ topic: row.name }),
+                                }).then((d) => {
+                                  if (d.runId) attachRunStream(d.runId);
+                                });
+                              }}
+                            >
+                              Check now
+                            </button>
+                            <button
+                              type="button"
+                              className="btn compact ghost"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void fetchJson(`${API}/watching`, {
+                                  method: "DELETE",
+                                  body: JSON.stringify({ topic: row.name }),
+                                }).then(() => {
+                                  if (selectedWatch === row.name) {
+                                    setSelectedWatch(null);
+                                    setWatchReport(null);
+                                  }
+                                  void refreshWatching();
+                                });
+                              }}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
-            <div className={`result-box ${doctorOut ? "" : "is-empty"}`}>
-              {doctorOut || "Run a check to inspect source health."}
-            </div>
+
+            {watchReport ? (
+              <div className="panel form-grid">
+                <div className="panel-head">
+                  <p className="eyebrow">Watch report</p>
+                  <span className={`trend-pill kind-${watchReport.trend.kind}`}>
+                    {watchReport.trend.label}
+                  </span>
+                </div>
+                {watchReport.quietEmpty ? (
+                  <p className="hint">Nothing new this window.</p>
+                ) : (
+                  <>
+                    <div>
+                      <h3>What’s new</h3>
+                      {watchReport.delta.newUrls.length === 0 ? (
+                        <p className="hint">No new stories.</p>
+                      ) : (
+                        <ul className="item-list">
+                          {watchReport.delta.newUrls.slice(0, 12).map((url) => (
+                            <li key={url}>
+                              <a href={url} target="_blank" rel="noreferrer">
+                                {url}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    <div>
+                      <h3>What fell off</h3>
+                      {watchReport.delta.droppedUrls.length === 0 ? (
+                        <p className="hint">Nothing dropped.</p>
+                      ) : (
+                        <ul className="item-list">
+                          {watchReport.delta.droppedUrls.slice(0, 12).map((url) => (
+                            <li key={url}>
+                              <a href={url} target="_blank" rel="noreferrer">
+                                {url}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    <div>
+                      <h3>Volume by source</h3>
+                      <div className="source-strip">
+                        {watchReport.volume.map((v) => (
+                          <span key={v.name} className="source-chip">
+                            {v.name}
+                            <strong>
+                              {v.currentCount} / {formatCompactCount(v.currentNative)} {v.unit}
+                            </strong>
+                            <span className="hint">
+                              was {v.previousCount} / {formatCompactCount(v.previousNative)}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    {watchReport.stdout ? (
+                      <details className="advanced">
+                        <summary>This window</summary>
+                        <ResearchReportView text={watchReport.stdout} />
+                      </details>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ) : null}
           </section>
         )}
 
@@ -1272,12 +1498,10 @@ function App() {
               <div className="form-grid">
                 <p className="hint">
                   {scRelay
-                    ? "Social sources use the fleet ScrapeCreators relay (no API key on this box). Pick a source tier below."
-                    : "Paste your ScrapeCreators API key and pick a source tier. You can change this later from the gear (Settings)."}
+                    ? "Social sources use Joshu’s shared connection. Pick how much to include."
+                    : "Paste your ScrapeCreators API key and pick how much to include. You can change this later in Settings."}
                 </p>
-                {scRelay ? (
-                  <p className="policy-note">ScrapeCreators: fleet relay active (CP proxy)</p>
-                ) : (
+                {scRelay ? null : (
                 <label>
                   ScrapeCreators API key
                   <input
@@ -1294,7 +1518,7 @@ function App() {
                 </label>
                 )}
                 <label>
-                  Custom INCLUDE_SOURCES
+                  Extra sources
                   <input value={includeSources} onChange={(e) => setIncludeSources(e.target.value)} />
                 </label>
                 <div className="row">
@@ -1306,10 +1530,10 @@ function App() {
                     Save recommended
                   </button>
                   <button type="button" className="btn" onClick={() => void saveSetup("everything")}>
-                    Save everything tier
+                    All social
                   </button>
                   <button type="button" className="btn" onClick={() => void saveSetup("custom")}>
-                    Save custom includes
+                    Save custom
                   </button>
                 </div>
                 <div className="row">
@@ -1357,35 +1581,32 @@ function App() {
                 </button>
               </div>
               <div className="form-grid">
-                <div className="policy-note">
-                  Forbidden in this app: FROM_BROWSER, AUTH_TOKEN/CT0, XAI_API_KEY, XQUIK_API_KEY,
-                  yt-dlp, Brave/Serper/Parallel. X/Twitter stays off without those backends.
-                </div>
-                {scRelay ? (
-                  <p className="policy-note">ScrapeCreators: fleet relay active (no key stored on box)</p>
+                {scRelay && xquikRelay ? (
+                  <p className="hint">Social and X search use Joshu — no API keys on this box.</p>
+                ) : scRelay ? (
+                  <p className="hint">Social sources use Joshu — no ScrapeCreators key on this box.</p>
+                ) : xquikRelay ? (
+                  <p className="hint">X search uses Joshu — no Xquik key on this box.</p>
                 ) : (
+                  <p className="hint">
+                    No browser cookies or yt-dlp. Paste keys below for social and X search.
+                  </p>
+                )}
+                {!scRelay ? (
                 <label>
                   ScrapeCreators API key (leave blank to keep saved)
                   <input type="password" value={scKey} onChange={(e) => setScKey(e.target.value)} />
                 </label>
-                )}
+                ) : null}
+                {!xquikRelay ? (
                 <label>
-                  INCLUDE_SOURCES
+                  Xquik API key for X search (leave blank to keep saved)
+                  <input type="password" value={xquikKey} onChange={(e) => setXquikKey(e.target.value)} />
+                </label>
+                ) : null}
+                <label>
+                  Extra sources
                   <input value={includeSources} onChange={(e) => setIncludeSources(e.target.value)} />
-                </label>
-                <label>
-                  LAST30DAYS_MEMORY_DIR
-                  <input value={memoryDir} onChange={(e) => setMemoryDir(e.target.value)} />
-                </label>
-                <label>
-                  Register default
-                  <select value={register} onChange={(e) => setRegister(e.target.value)}>
-                    <option value="default">default</option>
-                    <option value="exec">exec</option>
-                    <option value="dev">dev</option>
-                    <option value="creator">creator</option>
-                    <option value="eli5">eli5</option>
-                  </select>
                 </label>
                 <label style={{ flexDirection: "row", alignItems: "center", gap: "0.6rem" }}>
                   <input
@@ -1393,8 +1614,68 @@ function App() {
                     checked={storeEnabled}
                     onChange={(e) => setStoreEnabled(e.target.checked)}
                   />
-                  Persist findings to SQLite (--store / LAST30DAYS_STORE)
+                  Save research history
                 </label>
+                <button
+                  type="button"
+                  className="btn compact"
+                  disabled={busy}
+                  onClick={() => void loadDoctor("json")}
+                >
+                  Check connections
+                </button>
+                {doctorOut ? <pre className="result-box">{doctorOut}</pre> : null}
+                <details className="advanced" open={settingsPowerOpen} onToggle={(e) => setSettingsPowerOpen((e.target as HTMLDetailsElement).open)}>
+                  <summary>Power user</summary>
+                  <div className="advanced-body">
+                    <label>
+                      Memory folder
+                      <input value={memoryDir} onChange={(e) => setMemoryDir(e.target.value)} />
+                    </label>
+                    <label>
+                      Writing style default
+                      <select value={register} onChange={(e) => setRegister(e.target.value)}>
+                        <option value="default">Default</option>
+                        <option value="exec">Executive</option>
+                        <option value="dev">Technical</option>
+                        <option value="creator">Creator</option>
+                        <option value="eli5">Plain language</option>
+                      </select>
+                    </label>
+                    <label>
+                      Store command
+                      <input value={storeArgs} onChange={(e) => setStoreArgs(e.target.value)} />
+                    </label>
+                    <button
+                      type="button"
+                      className="btn compact"
+                      onClick={() => {
+                        void fetchJson<{ stdout: string; stderr: string }>(`${API}/store`, {
+                          method: "POST",
+                          body: JSON.stringify({ args: storeArgs.trim().split(/\s+/).filter(Boolean) }),
+                        }).then((d) => setDoctorOut(`${d.stdout}\n${d.stderr}`));
+                      }}
+                    >
+                      Run store command
+                    </button>
+                    <label>
+                      Briefing command
+                      <input value={briefArgs} onChange={(e) => setBriefArgs(e.target.value)} />
+                    </label>
+                    <button
+                      type="button"
+                      className="btn compact"
+                      onClick={() => {
+                        void fetchJson<{ stdout: string; stderr: string }>(`${API}/briefings`, {
+                          method: "POST",
+                          body: JSON.stringify({ args: briefArgs.trim().split(/\s+/).filter(Boolean) }),
+                        }).then((d) => setDoctorOut(`${d.stdout}\n${d.stderr}`));
+                      }}
+                    >
+                      Run briefing command
+                    </button>
+                  </div>
+                </details>
                 {!status?.config?.setupComplete ? (
                   <div className="row">
                     <button
@@ -1420,7 +1701,6 @@ function App() {
                     Close
                   </button>
                 </div>
-                <pre className="result-box">{JSON.stringify(status?.config || {}, null, 2)}</pre>
               </div>
             </div>
           </div>

@@ -1,5 +1,5 @@
 /**
- * Subprocess runner for the vendored last30days engine (SC-only hardened).
+ * Subprocess runner for the vendored last30days engine (hardened: no cookies / yt-dlp / XAI).
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
+  defaultMemoryDir,
   DIRECT_LLM_ENV_KEYS,
   FORBIDDEN_ENV_KEYS,
   pickInheritedProcessEnv,
@@ -17,11 +18,14 @@ import {
   resolvePythonBin,
   resolveReasoningEnv,
   resolveScrapeCreatorsRelayEnv,
-  scrapeCreatorsRelayConfigured,
+  resolveXquikRelayEnv,
+  XQUIK_RELAY_SENTINEL,
   resolveWebBackendChoice,
   sanitizePathNoYtdlp,
 } from "./config.js";
 import { exportLast30DaysRunReport, notifyLast30DaysRunSession } from "./runDelivery.js";
+import { appendWatchSnapshot, snapshotFromStdout, WATCH_WINDOW_DAYS } from "./watchSnapshots.js";
+import { last30daysRunsDir, last30daysShareDir, migrateLegacyLast30daysState } from "./statePaths.js";
 
 export type Last30DaysRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
@@ -50,6 +54,8 @@ export type Last30DaysRunRecord = {
   hermesSessionId?: string;
   /** Path under JOSHU_FILES_ROOT after markdown export. */
   outputRelativePath?: string;
+  /** When set, this run is a watch snapshot (not a one-shot report). */
+  watchTopic?: string;
 };
 
 export type SpawnEngineOpts = {
@@ -62,6 +68,7 @@ export type SpawnEngineOpts = {
     topic?: string;
     hermesSessionKey?: string;
     hermesSessionId?: string;
+    watchTopic?: string;
   };
 };
 
@@ -76,7 +83,7 @@ let runsRootDir: string | null = null;
 let hydratedFromDisk = false;
 
 function runsDir(projectRoot: string): string {
-  return path.join(projectRoot, ".joshu", "last30days", "runs");
+  return last30daysRunsDir(projectRoot);
 }
 
 function isRunStatus(value: unknown): value is Last30DaysRunStatus {
@@ -110,6 +117,7 @@ function coercePersistedRun(raw: unknown): Last30DaysRunRecord | null {
     hermesSessionKey: typeof o.hermesSessionKey === "string" ? o.hermesSessionKey : undefined,
     hermesSessionId: typeof o.hermesSessionId === "string" ? o.hermesSessionId : undefined,
     outputRelativePath: typeof o.outputRelativePath === "string" ? o.outputRelativePath : undefined,
+    watchTopic: typeof o.watchTopic === "string" ? o.watchTopic : undefined,
   };
 }
 
@@ -147,6 +155,7 @@ function hydrateRunsFromDisk(): void {
 
 /** Call once at route registration so Recent runs survive Joshu restarts. */
 export function initRunStore(projectRoot: string): void {
+  migrateLegacyLast30daysState(projectRoot);
   runsRootDir = runsDir(projectRoot);
   hydratedFromDisk = false;
   hydrateRunsFromDisk();
@@ -198,25 +207,37 @@ function pruneRuns(): void {
 /** Build child env: per-box keys + app config + scrub forbidden keys + no yt-dlp PATH. */
 export function buildHardenedEnv(
   projectRoot: string,
-  configDir = resolveConfigDir(),
+  configDir = resolveConfigDir(undefined, projectRoot),
   extra: Record<string, string> = {},
 ): NodeJS.ProcessEnv {
-  const fileEnv = readConfigFile(configDir);
+  migrateLegacyLast30daysState(projectRoot);
+  const resolvedConfigDir = configDir || resolveConfigDir(undefined, projectRoot);
+  const fileEnv = readConfigFile(resolvedConfigDir);
   const reasoningEnv = resolveReasoningEnv(projectRoot, fileEnv);
   const scRelayEnv = resolveScrapeCreatorsRelayEnv();
+  const xquikRelayEnv = resolveXquikRelayEnv();
   const { key: exaKey } = resolveExaApiKey(projectRoot, fileEnv);
   const mergedFileEnv = { ...fileEnv };
   if (scRelayEnv.SCRAPECREATORS_API_KEY) {
     delete mergedFileEnv.SCRAPECREATORS_API_KEY;
     delete mergedFileEnv.SCRAPE_CREATORS_API_KEY;
   }
+  if (xquikRelayEnv.XQUIK_API_KEY) {
+    delete mergedFileEnv.XQUIK_API_KEY;
+  }
+  // Persist engine store + memory onto the Aroz volume (not /root XDG overlay).
+  const shareDir = last30daysShareDir(projectRoot);
+  const memoryDir = fileEnv.LAST30DAYS_MEMORY_DIR?.trim() || defaultMemoryDir(projectRoot);
   const env: NodeJS.ProcessEnv = {
     ...pickInheritedProcessEnv(),
     ...mergedFileEnv,
     ...reasoningEnv,
     ...scRelayEnv,
+    ...xquikRelayEnv,
     ...extra,
-    LAST30DAYS_CONFIG_DIR: configDir,
+    LAST30DAYS_CONFIG_DIR: resolvedConfigDir,
+    LAST30DAYS_SHARE_DIR: shareDir,
+    LAST30DAYS_MEMORY_DIR: memoryDir,
     PATH: sanitizePathNoYtdlp(process.env.PATH || ""),
     // Never signal host native search — Exa (or keyless) grounding stays in-engine.
     LAST30DAYS_NATIVE_SEARCH: "",
@@ -235,12 +256,19 @@ export function buildHardenedEnv(
   // Empty string delete for native search
   delete env.LAST30DAYS_NATIVE_SEARCH;
 
-  // Belt-and-suspenders: never inherit cookies from host Hermes even if set.
+  // Belt-and-suspenders: never inherit cookies / XAI from host Hermes.
   delete env.FROM_BROWSER;
   delete env.AUTH_TOKEN;
   delete env.CT0;
   delete env.XAI_API_KEY;
-  delete env.XQUIK_API_KEY;
+  // Host-shell XQUIK must not leak; relay sentinel or app-file key only.
+  if (!xquikRelayEnv.XQUIK_API_KEY && !fileEnv.XQUIK_API_KEY?.trim()) {
+    delete env.XQUIK_API_KEY;
+  }
+  if (xquikRelayEnv.XQUIK_API_KEY || fileEnv.XQUIK_API_KEY?.trim()) {
+    env.LAST30DAYS_X_BACKEND = "xquik";
+    if (xquikRelayEnv.XQUIK_API_KEY) env.XQUIK_API_KEY = XQUIK_RELAY_SENTINEL;
+  }
 
   // OPENROUTER must come from resolveReasoningEnv (box secrets / app file), not host spread.
   if (!reasoningEnv.OPENROUTER_API_KEY) {
@@ -386,6 +414,7 @@ export function spawnEngine(opts: SpawnEngineOpts): Last30DaysRunRecord {
     topic: opts.meta?.topic?.trim() || topicFromRunArgv([python, script, ...argv]),
     hermesSessionKey: opts.meta?.hermesSessionKey?.trim() || undefined,
     hermesSessionId: opts.meta?.hermesSessionId?.trim() || undefined,
+    watchTopic: opts.meta?.watchTopic?.trim() || undefined,
   };
   runs.set(id, run);
   pruneRuns();
@@ -452,6 +481,20 @@ export function spawnEngine(opts: SpawnEngineOpts): Last30DaysRunRecord {
       void notifyLast30DaysRunSession(opts.projectRoot, run, exportResult).catch((err: Error) => {
         console.warn(`[last30days] session delivery failed: ${err.message}`);
       });
+      if (run.status === "completed" && run.watchTopic) {
+        const snap = snapshotFromStdout(run.stdout, {
+          topic: run.watchTopic,
+          runId: run.id,
+          windowDays: WATCH_WINDOW_DAYS,
+        });
+        if (snap) {
+          try {
+            appendWatchSnapshot(opts.projectRoot, snap);
+          } catch (err) {
+            console.warn(`[last30days] watch snapshot failed: ${(err as Error).message}`);
+          }
+        }
+      }
     }
     pushEvent(run, {
       type: "done",

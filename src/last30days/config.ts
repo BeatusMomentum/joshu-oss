@@ -1,35 +1,42 @@
 /**
- * last30days config + SC-only hardening for the Joshu desktop app.
+ * last30days config + hardening for the Joshu desktop app.
  *
  * Policy (non-negotiable):
  * - No yt-dlp (PATH sanitized at spawn)
- * - No browser cookies / Bird / FROM_BROWSER
- * - No XAI / Xquik
+ * - No browser cookies / Bird / FROM_BROWSER / XAI
+ * - X via xquik (fleet CP relay or self-host XQUIK_API_KEY) — never cookies
  * - ScrapeCreators for YouTube + creator sources
  * - Web: Exa when EXA_API_KEY is on the box (fleet CP); else keyless DuckDuckGo
  * - Brave / Serper / Parallel stay scrubbed (not part of Joshu fleet web path)
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveBoxSecret } from "../boxSecrets/resolve.js";
 import { JOSHU_OPENROUTER_HINDSIGHT_LLM_MODEL } from "../joshuOpenRouterDefaults.js";
 import { joshuConfigDir } from "../nylas/paths.js";
 import { provisionEnvTrim } from "../provisionInstanceEnv.js";
+import {
+  last30daysConfigDir,
+  last30daysMemoryDir,
+  migrateLegacyLast30daysState,
+} from "./statePaths.js";
 
 /** Sentinel value — engine sees SC as configured; http.py relay shim handles auth. */
 export const SCRAPECREATORS_RELAY_SENTINEL = "relay";
 
+/** Sentinel — engine sees Xquik as configured; http.py relay shim handles auth. */
+export const XQUIK_RELAY_SENTINEL = "relay";
+
 export type ScrapeCreatorsMode = "relay" | "direct" | "off";
+export type XquikMode = "relay" | "direct" | "off";
 
 export const FORBIDDEN_ENV_KEYS = [
   "FROM_BROWSER",
   "AUTH_TOKEN",
   "CT0",
   "XAI_API_KEY",
-  "XQUIK_API_KEY",
   "BRAVE_API_KEY",
   // EXA_API_KEY intentionally allowed — fleet web / grounding via CP DEFAULT_EXA_API_KEY
   "SERPER_API_KEY",
@@ -70,9 +77,10 @@ export const SAFE_INHERITED_ENV_KEYS = [
   "CURL_CA_BUNDLE",
 ] as const;
 
-/** Env keys the Joshu app may persist into ~/.config/last30days/.env */
+/** Env keys the Joshu app may persist into `.joshu/last30days/config/.env`. */
 export const ALLOWED_CONFIG_KEYS = [
   "SCRAPECREATORS_API_KEY",
+  "XQUIK_API_KEY",
   "INCLUDE_SOURCES",
   "EXCLUDE_SOURCES",
   "LAST30DAYS_MEMORY_DIR",
@@ -96,19 +104,27 @@ export const RECOMMENDED_INCLUDE_SOURCES =
 export const EVERYTHING_INCLUDE_SOURCES =
   `${RECOMMENDED_INCLUDE_SOURCES},threads,pinterest,linkedin`;
 
-export function defaultConfigDir(): string {
-  return path.join(os.homedir(), ".config", "last30days");
+/** Persisted Settings dir under the Aroz user tree (survives stack recreate). */
+export function defaultConfigDir(projectRoot = process.cwd()): string {
+  migrateLegacyLast30daysState(projectRoot);
+  return last30daysConfigDir(projectRoot);
 }
 
-export function resolveConfigDir(override?: string): string {
+export function resolveConfigDir(override?: string, projectRoot = process.cwd()): string {
   if (override && override.trim()) return path.resolve(override.trim());
   const fromEnv = process.env.LAST30DAYS_CONFIG_DIR;
   if (fromEnv !== undefined) {
     // Empty string = no-config mode (engine convention); treat as default dir for our app.
-    if (!fromEnv.trim()) return defaultConfigDir();
+    if (!fromEnv.trim()) return defaultConfigDir(projectRoot);
     return path.resolve(fromEnv.trim());
   }
-  return defaultConfigDir();
+  return defaultConfigDir(projectRoot);
+}
+
+/** Default engine memory/corpus dir (was ~/Documents/Last30Days). */
+export function defaultMemoryDir(projectRoot = process.cwd()): string {
+  migrateLegacyLast30daysState(projectRoot);
+  return last30daysMemoryDir(projectRoot);
 }
 
 export function configEnvPath(configDir = resolveConfigDir()): string {
@@ -137,8 +153,8 @@ export function parseDotEnv(text: string): Record<string, string> {
 
 export function serializeDotEnv(entries: Record<string, string>): string {
   const lines = [
-    "# Managed by Joshu last30days app — do not store browser cookies or XAI/Xquik keys here.",
-    "# YouTube uses ScrapeCreators (no yt-dlp). Web uses keyless DuckDuckGo.",
+    "# Managed by Joshu last30days app — do not store browser cookies or XAI keys here.",
+    "# YouTube uses ScrapeCreators (no yt-dlp). X uses xquik (self-host key or fleet relay).",
     "",
   ];
   for (const key of ALLOWED_CONFIG_KEYS) {
@@ -176,7 +192,7 @@ export function writeConfigFile(
 
   for (const key of Object.keys(updates)) {
     if ((FORBIDDEN_ENV_KEYS as readonly string[]).includes(key)) {
-      throw new Error(`Config key forbidden by Joshu SC-only policy: ${key}`);
+      throw new Error(`Config key forbidden by Joshu last30days policy: ${key}`);
     }
     if (!(ALLOWED_CONFIG_KEYS as readonly string[]).includes(key)) {
       throw new Error(`Unknown or unsupported config key: ${key}`);
@@ -190,6 +206,15 @@ export function writeConfigFile(
       String(value).trim() !== ""
     ) {
       throw new Error("ScrapeCreators API keys cannot be stored in fleet relay mode");
+    }
+    if (
+      key === "XQUIK_API_KEY" &&
+      xquikRelayConfigured() &&
+      value !== undefined &&
+      value !== null &&
+      String(value).trim() !== ""
+    ) {
+      throw new Error("Xquik API keys cannot be stored in fleet relay mode");
     }
     if (value === undefined || value === null || value === "") {
       delete next[key];
@@ -355,6 +380,52 @@ export function resolveScrapeCreatorsRelayEnv(): Record<string, string> {
   return out;
 }
 
+/** Fleet Xquik shipping mode from provision env / process env. Default off unless set. */
+export function resolveXquikMode(): XquikMode {
+  const fromProvision = (provisionEnvTrim("JOSHU_XQUIK_MODE") || "").toLowerCase();
+  if (fromProvision === "relay" || fromProvision === "direct" || fromProvision === "off") {
+    return fromProvision;
+  }
+  const fromProcess = (process.env.JOSHU_XQUIK_MODE || "").trim().toLowerCase();
+  if (fromProcess === "relay" || fromProcess === "direct" || fromProcess === "off") {
+    return fromProcess;
+  }
+  return "off";
+}
+
+export function xquikRelayConfigured(): boolean {
+  const mode = resolveXquikMode();
+  if (mode !== "relay") return false;
+  const relayUrl =
+    provisionEnvTrim("JOSHU_XQUIK_RELAY_URL") || process.env.JOSHU_XQUIK_RELAY_URL?.trim() || "";
+  return Boolean(relayUrl);
+}
+
+/**
+ * Child-process env for Xquik relay (no vendor key on disk).
+ * Pins LAST30DAYS_X_BACKEND=xquik so cookies/XAI stay unused.
+ */
+export function resolveXquikRelayEnv(): Record<string, string> {
+  if (!xquikRelayConfigured()) return {};
+  const relayUrl =
+    provisionEnvTrim("JOSHU_XQUIK_RELAY_URL") || process.env.JOSHU_XQUIK_RELAY_URL?.trim() || "";
+  const out: Record<string, string> = {
+    JOSHU_XQUIK_MODE: "relay",
+    JOSHU_XQUIK_RELAY_URL: relayUrl,
+    XQUIK_API_KEY: XQUIK_RELAY_SENTINEL,
+    LAST30DAYS_X_BACKEND: "xquik",
+  };
+  const instanceId =
+    provisionEnvTrim("JOSHU_INSTANCE_ID") || process.env.JOSHU_INSTANCE_ID?.trim() || "";
+  const agentToken =
+    provisionEnvTrim("INSTANCE_AGENT_TOKEN") || process.env.INSTANCE_AGENT_TOKEN?.trim() || "";
+  if (instanceId) out.JOSHU_INSTANCE_ID = instanceId;
+  if (agentToken) out.INSTANCE_AGENT_TOKEN = agentToken;
+  const cpUrl = provisionEnvTrim("CONTROL_PLANE_URL") || process.env.CONTROL_PLANE_URL?.trim() || "";
+  if (cpUrl) out.CONTROL_PLANE_URL = cpUrl;
+  return out;
+}
+
 export function pickInheritedProcessEnv(
   source: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
@@ -371,10 +442,16 @@ export function publicConfigView(
   projectRoot = process.cwd(),
 ): Record<string, unknown> {
   const relayActive = scrapeCreatorsRelayConfigured();
+  const xquikRelay = xquikRelayConfigured();
   const scFromFile = maskSecret(entries.SCRAPECREATORS_API_KEY);
+  const xquikFromFile = maskSecret(entries.XQUIK_API_KEY);
   const sc = relayActive
     ? { present: true, relay: true as const }
     : scFromFile;
+  const xquik = xquikRelay
+    ? { present: true, relay: true as const }
+    : xquikFromFile;
+  const xEnabled = xquikRelay || xquikFromFile.present;
   const or = openRouterKeyForBox(projectRoot, entries);
   const reasoningProvider = or.key ? "openrouter" : "local";
   const exa = resolveExaApiKey(projectRoot, entries);
@@ -383,7 +460,7 @@ export function publicConfigView(
     setupComplete: entries.SETUP_COMPLETE === "1" || entries.SETUP_COMPLETE === "true",
     includeSources: entries.INCLUDE_SOURCES || "",
     excludeSources: entries.EXCLUDE_SOURCES || "",
-    memoryDir: entries.LAST30DAYS_MEMORY_DIR || path.join(os.homedir(), "Documents", "Last30Days"),
+    memoryDir: entries.LAST30DAYS_MEMORY_DIR || defaultMemoryDir(projectRoot),
     store: entries.LAST30DAYS_STORE === "1" || entries.LAST30DAYS_STORE === "true",
     register: entries.LAST30DAYS_REGISTER || "default",
     defaultSearch: entries.LAST30DAYS_DEFAULT_SEARCH || "",
@@ -392,6 +469,11 @@ export function publicConfigView(
     scrapecreatorsRelay: {
       mode: resolveScrapeCreatorsMode(),
       configured: relayActive,
+    },
+    xquik,
+    xquikRelay: {
+      mode: resolveXquikMode(),
+      configured: xquikRelay,
     },
     openrouter: maskSecret(or.key),
     exa: { ...maskSecret(exa.key), source: exa.source },
@@ -421,7 +503,7 @@ export function publicConfigView(
       web: webBackend,
       youtube: relayActive || scFromFile.present ? "scrapecreators" : "scrapecreators-unconfigured",
       scrapecreators: relayActive ? "relay" : scFromFile.present ? "direct" : "unset",
-      x: "disabled-no-cookies",
+      x: xEnabled ? (xquikRelay ? "xquik-relay" : "xquik") : "disabled",
       cookies: false,
       ytdlp: false,
       reasoning: reasoningProvider,

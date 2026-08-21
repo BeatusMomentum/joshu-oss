@@ -67,7 +67,7 @@ Bundled into ArozOS by `scripts/dev-arozos.sh` and the VPS Docker image (`build:
 
 ## Agent recall vs jMail UI
 
-- **Humans** read/send in jMail via platform-data (Nylas API + Gmail mirror routes). Compose sends plain text; the Joshu API appends the companion HTML signature before Nylas delivery ([`src/nylas/routes.ts`](../src/nylas/routes.ts), [`@joshu/email-signature`](../packages/email-signature/)). jMail uses `platform.nylas.sendMessage()` with `X-Joshu-Mail-Client: jmail` — **not** gated (owner browser UI; see [`connectors.md`](connectors.md#action-guard-owner-approval-for-writes)).
+- **Humans** read/send in jMail via platform-data (Nylas API + Gmail mirror routes). Compose sends plain text / light markdown; the Joshu API converts to HTML (clickable URLs) and appends the companion signature before Nylas delivery ([`src/nylas/routes.ts`](../src/nylas/routes.ts), [`@joshu/email-signature`](../packages/email-signature/)). jMail uses `platform.nylas.sendMessage()` with `X-Joshu-Mail-Client: jmail` — **not** gated (owner browser UI; see [`connectors.md`](connectors.md#action-guard-owner-approval-for-writes)).
 - **Hermes** sends via **`mcp_joshu_connectors_nylas_send_message`** (same REST route, gated). Finds mail via **gbrain** over synced markdown mirrors first — skill **`joshu-mail`**. See [`connectors.md`](connectors.md#hermes) and [`file-brain.md`](file-brain.md#connector-mail-and-calendar-gbrain).
 
 Cron refreshes mirrors (Nylas + Gmail every **10m**) when `JOSHU_CONNECTORS_CRON=true` (default).

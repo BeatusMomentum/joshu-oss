@@ -67,7 +67,8 @@ function JTermApp() {
     const hostSizeChangedEnough = (force: boolean): boolean => {
       const w = host.clientWidth;
       const h = host.clientHeight;
-      if (!force && Math.abs(w - lastHostW) < 2 && Math.abs(h - lastHostH) < 2) {
+      // ≥4px — ArozOS float chrome + scrollbar gutters still jitter ~1–3px.
+      if (!force && Math.abs(w - lastHostW) < 4 && Math.abs(h - lastHostH) < 4) {
         return false;
       }
       lastHostW = w;
@@ -91,7 +92,7 @@ function JTermApp() {
     const scheduleResize = () => {
       window.clearTimeout(resizeTimer);
       // Debounce — ArozOS float drag fires many events; Hermes redraws on every SIGWINCH.
-      resizeTimer = window.setTimeout(() => sendResizeIfChanged(false), 120);
+      resizeTimer = window.setTimeout(() => sendResizeIfChanged(false), 200);
     };
 
     const connect = () => {

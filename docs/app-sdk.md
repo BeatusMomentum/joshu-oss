@@ -86,6 +86,8 @@ packages/app-sdk/                 # @joshu/app-sdk — validation + voice resolu
 3. Rsync into `arozos/subservice/<name>/app/` (automatic in `dev:arozos` / image build)
 4. Register desktop shortcut in `scripts/lib/arozos-desktop-shortcuts.sh`
 
+API-served HTML/PNG (not a Vite app) is a different lane: list the file in [`scripts/runtime-assets.json`](../scripts/runtime-assets.json) so it lands in `dist/`. See [`runtime-assets.md`](runtime-assets.md).
+
 ---
 
 ## `@joshu/app-sdk` package

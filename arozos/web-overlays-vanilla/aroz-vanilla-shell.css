@@ -19,6 +19,8 @@
   --vb-fw-title-plateau: #d0d0d0;
   --vb-fw-stripe-a: #bababa;
   --vb-fw-stripe-b: #cfcfcf;
+  --vb-jchat-dock-inset: 0.85rem;
+  --vb-jchat-dock-w: 400px;
 }
 
 body.whiteTheme,
@@ -570,6 +572,92 @@ body.darkTheme {
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.55);
   color: var(--vb-shell-ink);
+}
+
+/* Tray instance only — icon-launched jChat windows stay free-floating. */
+body:has(.floatWindow.jp-jchat-docked:not(.jp-jchat-dock-hidden)) #fwdragpanel,
+body:has(.floatWindow.jp-jchat-docked:not(.jp-jchat-dock-hidden)) #tfwdragpanel {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+.floatWindow.jp-jchat-docked {
+  position: fixed !important;
+  left: auto !important;
+  top: auto !important;
+  right: var(--vb-jchat-dock-inset) !important;
+  bottom: calc(var(--vb-nav-h) + var(--vb-jchat-dock-inset)) !important;
+  width: min(var(--vb-jchat-dock-w), calc(100vw - 1rem)) !important;
+  height: calc(100vh - var(--vb-nav-h) - var(--vb-jchat-dock-inset) - 0.35rem) !important;
+  max-height: calc(100vh - var(--vb-nav-h) - 0.35rem) !important;
+  z-index: 1100 !important;
+  margin: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  pointer-events: auto !important;
+  overflow: hidden !important;
+}
+
+.floatWindow.jp-jchat-docked.jp-jchat-dock-hidden {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+.floatWindow.jp-jchat-docked .controls.fwdragger {
+  position: relative !important;
+  top: auto !important;
+  left: auto !important;
+  z-index: 3 !important;
+  flex: 0 0 var(--vb-fw-title-h) !important;
+  width: 100% !important;
+  pointer-events: none !important;
+}
+
+.floatWindow.jp-jchat-docked .fwcontrol .buttons {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  z-index: 4 !important;
+}
+
+.floatWindow.jp-jchat-docked .iframewrapper {
+  position: relative !important;
+  top: auto !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  width: 100% !important;
+  height: auto !important;
+  z-index: 1 !important;
+  overflow: hidden !important;
+}
+
+.floatWindow.jp-jchat-docked .iframewrapper iframe {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  pointer-events: auto !important;
+}
+
+.floatWindow.jp-jchat-docked .iframewrapper .iframecover {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+.floatWindow.jp-jchat-docked .fwcontrol .buttons.mintoggle {
+  display: none !important;
+}
+
+.floatWindow.jp-jchat-docked .fwcontrol .buttons.maxtoggle::after {
+  content: "↗";
+  width: auto;
+  height: auto;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--vb-shell-ink);
+  transform: translate(-50%, -52%);
+  font-weight: 700;
 }
 
 .notificationbar {

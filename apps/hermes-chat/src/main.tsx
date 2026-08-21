@@ -17,7 +17,7 @@ import {
   type ChatSessionRow,
   type ChatTranscriptMessage,
 } from "./chatSessions";
-import { syncJChatTray } from "./traySync";
+import { requestJChatUndock, readJChatDockedFromFrame, syncJChatTray } from "./traySync";
 import { resolvePortraitUrl, useIdentity } from "./useIdentity";
 
 type HermesContentPart =
@@ -159,6 +159,7 @@ function App() {
   const [voiceSessionState, setVoiceSessionState] = useState("idle");
   const [voiceHint, setVoiceHint] = useState("");
   const [composioEnabled, setComposioEnabled] = useState(false);
+  const [docked, setDocked] = useState(() => readJChatDockedFromFrame());
 
   const s2sVoiceRef = useRef<{ stop: () => Promise<void> } | null>(null);
   const s2sAssistantIdRef = useRef<string | null>(null);
@@ -665,6 +666,23 @@ function App() {
     pushTrayVoiceState({ audioLevel: voiceInputOn ? trayAudioLevelRef.current : 0 });
   }, [voiceInputOn, s2sVoiceAvailable, pushTrayVoiceState]);
 
+  /** Follow the parent float window's docked class (icon vs tray instance). */
+  useEffect(() => {
+    try {
+      const frame = window.frameElement;
+      if (!frame || !(frame instanceof Element)) return;
+      const fw = frame.closest(".floatWindow");
+      if (!fw) return;
+      const sync = () => setDocked(fw.classList.contains("jp-jchat-docked"));
+      sync();
+      const observer = new MutationObserver(sync);
+      observer.observe(fw, { attributes: true, attributeFilter: ["class"] });
+      return () => observer.disconnect();
+    } catch {
+      return;
+    }
+  }, []);
+
   /** Persona for the desk bubble (name + portrait). */
   useEffect(() => {
     syncJChatTray({ assistantName: identity.name, portraitUrl });
@@ -736,6 +754,16 @@ function App() {
         }}
         headerActions={
           <>
+            {docked ? (
+              <button
+                type="button"
+                className="jchat-link-btn"
+                title="Open this chat in a regular window"
+                onClick={() => requestJChatUndock()}
+              >
+                Undock
+              </button>
+            ) : null}
             <button
               type="button"
               className={`jchat-pill-btn ${voiceInputOn ? "jchat-pill-btn-on" : ""}`}

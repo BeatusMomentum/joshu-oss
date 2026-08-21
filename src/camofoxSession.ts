@@ -128,6 +128,37 @@ export class CamofoxSessionCoordinator {
     if (!res.ok) throw new Error(`Camofox viewport fit failed: ${res.status}`);
   }
 
+  /**
+   * Scroll the HITL page via Playwright mouse.wheel — used when VNC wheel/buttons
+   * 4–5 do not reach Firefox (common with scaled noVNC + x11vnc).
+   */
+  async scrollPage(opts: { direction?: "up" | "down" | "left" | "right"; amount?: number } = {}): Promise<void> {
+    const tab = await this.currentTab();
+    if (!tab?.tabId) throw new Error("No Camofox tab");
+    const direction = opts.direction ?? "down";
+    const amount = Math.max(1, Math.min(8000, Math.floor(Number(opts.amount ?? 400) || 400)));
+    const res = await fetch(new URL(`/tabs/${tab.tabId}/scroll`, this.opts.camofoxUrl), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: this.opts.userId, direction, amount }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`Camofox scroll failed: ${res.status}`);
+  }
+
+  /** Send a key via Playwright (PageDown / ArrowDown / etc.) — VNC keysyms are flaky for nav. */
+  async pressKey(key: string): Promise<void> {
+    const tab = await this.currentTab();
+    if (!tab?.tabId) throw new Error("No Camofox tab");
+    const res = await fetch(new URL(`/tabs/${tab.tabId}/press`, this.opts.camofoxUrl), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: this.opts.userId, key }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) throw new Error(`Camofox press failed: ${res.status}`);
+  }
+
   async listTabs(): Promise<CamofoxTab[]> {
     const url = new URL("/tabs", this.opts.camofoxUrl);
     url.searchParams.set("userId", this.opts.userId);
@@ -253,11 +284,18 @@ export class CamofoxSessionCoordinator {
   }
 
   private async createTab(url?: string): Promise<CamofoxTab> {
+    // Camofox rejects about:* on POST /tabs when url is set — omit for blank start
+    // (same as deploy/scripts/vps-start.sh warm_camofox_browser).
+    const payload: { userId: string; sessionKey: string; url?: string } = {
+      userId: this.opts.userId,
+      sessionKey: this.opts.sessionKey,
+    };
+    if (url && !isBlankBrowserUrl(url)) payload.url = url;
     const res = await fetch(new URL("/tabs", this.opts.camofoxUrl), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: this.opts.userId, sessionKey: this.opts.sessionKey, url }),
-      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(120_000),
     });
     if (!res.ok) throw new Error(`Camofox create tab failed: ${res.status}`);
     const data = await res.json() as { tabId: string; url?: string; title?: string };

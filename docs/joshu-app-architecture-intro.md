@@ -293,6 +293,7 @@ npm run test:platform-architecture
 | Draft pasted in chat, not in compose | Missed `openCompose` guiAction | Skill: always `app_gui_action` after drafting |
 | `startReply` then `openCompose` | Two tools; reply threading lost | One `openCompose` with draft (+ expose `replyToMessageId` when you need threads) |
 | Langfuse shows no `bodyPreview` | `HERMES_LANGFUSE_MAX_CHARS` truncates system prompt | Full prompt still reached model; or log snapshot separately |
+| Works in `tsx` / local, 500 on the box | API-served HTML/PNG never copied into `dist/` | Add a row to [`runtime-assets.json`](../scripts/runtime-assets.json) — [`runtime-assets.md`](runtime-assets.md) |
 
 ---
 
@@ -302,6 +303,7 @@ npm run test:platform-architecture
 |------|-----|
 | Step-by-step embedded agent | [app-agent.md — Developer guide](app-agent.md#developer-guide--add-an-agent-to-your-app) |
 | Manifest fields & build pipeline | [app-sdk.md](app-sdk.md) |
+| API-served static (not Vite) | [runtime-assets.md](runtime-assets.md) |
 | Platform SDK API | [platform-data.md](platform-data.md) |
 | Layers & invoke API | [platform-architecture.md](platform-architecture.md) |
 | Voice on the box | [vps-sandbox/web-voice.md](vps-sandbox/web-voice.md) (fleet) · public OSS: `voice-realtime.md` |

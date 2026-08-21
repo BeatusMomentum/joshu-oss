@@ -538,7 +538,7 @@ export VNC_RESOLUTION="${VNC_RESOLUTION:-1024x768}"
 export CAMOFOX_VIEWPORT_WIDTH="${CAMOFOX_VIEWPORT_WIDTH:-1024}"
 export CAMOFOX_VIEWPORT_HEIGHT="${CAMOFOX_VIEWPORT_HEIGHT:-768}"
 export CAMOFOX_FF_VERSION="${CAMOFOX_FF_VERSION:-139}"
-export CAMOFOX_START_URL="${CAMOFOX_START_URL:-about:blank}"
+export CAMOFOX_START_URL="${CAMOFOX_START_URL:-https://joshu.me/}"
 # VNC clicks do not increment Camofox toolCalls — default 0 disables the inactivity tab reaper.
 export TAB_INACTIVITY_MS="${TAB_INACTIVITY_MS:-0}"
 export JOSHU_WARM_CAMOFOX="${JOSHU_WARM_CAMOFOX:-false}"
@@ -548,6 +548,8 @@ export HITL_CAMOFOX_SINGLE_TAB="${HITL_CAMOFOX_SINGLE_TAB:-true}"
 export CAMOFOX_USER_ID="${CAMOFOX_USER_ID:-${HITL_CAMOFOX_USER_ID}}"
 export CAMOFOX_SESSION_KEY="${CAMOFOX_SESSION_KEY:-${HITL_CAMOFOX_SESSION_KEY}}"
 export CAMOFOX_ADOPT_EXISTING_TAB="${CAMOFOX_ADOPT_EXISTING_TAB:-true}"
+# Idle-shutdown Firefox after no sessions (saves CPU). jWeb / fit-viewport warm
+# relaunches cleanly on next open — do not set 0 unless you need always-on VNC.
 export BROWSER_IDLE_TIMEOUT_MS="${BROWSER_IDLE_TIMEOUT_MS:-300000}"
 export SESSION_TIMEOUT_MS="${SESSION_TIMEOUT_MS:-1800000}"
 export MAX_TABS_PER_SESSION="${MAX_TABS_PER_SESSION:-1}"

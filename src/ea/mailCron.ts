@@ -79,7 +79,10 @@ export function buildMailIngressTaskBody(
   const fromEmail = parseEmailAddress(input.from);
   const slug = normalizeProjectSlug(input.classification.project_slug);
   const auth = input.classification.authorization;
-  const schedulingEligible = auth.scheduling_eligible && input.classification.scheduling_hint === true;
+  // Classifier may tag owner→agent asks as scheduling ("invite myself", "put this
+  // on my calendar"). Path D still owns that mail: owner-reply does the ask and
+  // nylas_send_message. Real meeting negotiation is handed off from that worker.
+  const schedulingHint = auth.scheduling_eligible && input.classification.scheduling_hint === true;
   const ownerReplyGate = isOwnerReplyEligible({
     provider: input.provider,
     agentInbox: input.provider === "nylas",
@@ -87,9 +90,10 @@ export function buildMailIngressTaskBody(
     ownerEmails: resolveOwnerEmails(input.projectRoot ?? process.cwd(), input.accountEmail),
     disposition: "track",
     category: input.classification.category,
-    schedulingPathA: schedulingEligible,
+    schedulingPathA: false,
   });
   const ownerReplyEligible = ownerReplyGate.eligible;
+  const schedulingEligible = schedulingHint && !ownerReplyEligible;
   const allowedActions = schedulingEligible
     ? "file,schedule"
     : ownerReplyEligible

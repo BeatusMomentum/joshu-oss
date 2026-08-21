@@ -41,12 +41,14 @@ API: `GET/POST /joshu/api/connectors/composio/slackbot/setup`, `GET …/slackbot
 
 Sideloaded Azure Bot (not Composio). Works with free/personal Teams.
 
-1. Open Connectors → **Teams bot** (`#teams-bot`).
+**Feature flag:** Connectors shows this card only when `JOSHU_TEAMS_BOT_UI_ENABLED=true` (default **off**). Backend messaging / bind APIs still work if credentials are already configured.
+
+1. Set `JOSHU_TEAMS_BOT_UI_ENABLED=true`, then open Connectors → **Teams bot** (`#teams-bot`).
 2. Create Azure Bot (F0) + Entra app; enable Teams channel; set Messaging endpoint to the URL Joshu shows.
 3. Paste App ID + client secret → Save; download the app package zip → Teams → Upload a custom app.
 4. From Chat sharing, copy `bind <uuid>` into a Teams chat with the bot.
 
-API: `GET/POST /joshu/api/share-chat/teams/setup`, `GET …/teams/manifest.zip`. See [share-chat.md](share-chat.md#microsoft-teams-bot-free--personal-teams).
+API: `GET/POST /joshu/api/share-chat/teams/setup` (includes `uiEnabled`), `GET …/teams/manifest.zip`. See [share-chat.md](share-chat.md#microsoft-teams-bot-free--personal-teams).
 
 ## Dev
 

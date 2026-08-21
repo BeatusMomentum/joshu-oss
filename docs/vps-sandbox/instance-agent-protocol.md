@@ -18,6 +18,7 @@ Base URL: `https://admin.example.com/api` (Vercel)
 | --- | --- | --- | --- |
 | `POST` | `/instances/register` | Agent (first boot) | Body: `{ instanceId, hostname, releaseVersion, vpsIpv4? }` → `{ ok, pollIntervalSec }` |
 | `POST` | `/instances/heartbeat` | Agent (every 30s) | Body: see below → `{ ok, commands[] }` |
+| `POST` | `/instances/box-password-reset` | Agent | Box login asked to email a desktop password reset; CP mails the owner. Always `{ ok: true }`. |
 | `GET` | `/instances/:id/commands/:commandId` | Agent | Fetch full command payload after heartbeat hint |
 
 Admin-only (session auth):
@@ -95,6 +96,13 @@ Returned inline from heartbeat response (max 1 in-flight per type):
 | `rotate_secrets` | `{ secrets: { KEY: "value" } }` | Write `/etc/joshu/instance.env`, restart joshu |
 | `sync_companion_identity` | `{ joshuName?, joshuImageUrl?, joshuAvatarUrl?, joshuVoiceId?, ownerDisplayName?, ownerEmail?, companionSoulMd? }` | Write `instance.env` + `/etc/joshu/secrets/companion-soul.md`, then `POST /joshu/api/instance/sync-companion-identity` (localhost, `forceSoul: true`); when `joshuVoiceId` is set and voice S2S is enabled, **`force-recreate voice-realtime`** so the new timbre loads. **`formatEnvValue()`** quotes values with spaces (e.g. `JOSHU_OWNER_NAME="Susan Paley"`) so `source instance.env` does not fail |
 | `send_owner_email` | `{ sendId, flowKey, to, subject, bodyPlain, llmModel?, generatedAt? }` | `POST /joshu/api/instance/send-owner-email` (localhost-only). Sends via the box Nylas agent mailbox (`{slug}@joshu.me`) with companion HTML signature; **bypasses action guard**. Recipient must match box owner email. Subject + body go through [telephone placeholder substitution](#owner-email-placeholders) first. Ack may include `result: { messageId, from, placeholders }`. |
+| `set_aroz_password` | `{ username, passwordHash, resetTokenId? }` | Brief `joshu-stack` **stop** (not `--force-recreate`), write `passhash/<JOSHU_AROZ_USER>` in `ao.db` from a SHA-512 hex `passwordHash`, rotate `auth/sessionkey` in the same Bolt tx, then start. Agent refuses if `username` does not match `JOSHU_AROZ_USER`. Hash is scrubbed from `ProvisionJob.payload` on ack. Queued as `ProvisionJob.type = update` with `payload.commandType = set_aroz_password` — **not** `commandType: update` (that auto-rollbacks) and **not** `rotate_secrets`. Does not set `Instance.status = updating`. |
+
+Public desktop is **502 / connection refused for ~2 minutes** while the stack reboots (ArozOS comes up before Joshu `:8788`). That is not a host crash. After a **completed** apply, old ArozOS cookies are invalid — log in with the new desktop password. Hermes health can stay 503 until MCP boot finishes.
+
+**`ao.db` visibility:** instance-agent has docker.sock + `/opt/joshu`, not `/var/lib/docker`. [`scripts/arozos-reset-password.sh`](../../scripts/arozos-reset-password.sh) must mount the **named volume** (`deploy_joshu_arozos` or `joshu_arozos`) at `/aroz` and write `/aroz/system/ao.db`. Using `docker volume inspect` host paths inside the agent fails with `ao.db not found` (first confirm **2026-08-18** — CP queued the job, hash never written, old login still valid). SSH on the VPS may still pass `AO_DB=` to that host path.
+
+**Share Chat after bounce:** stop/start does not delete host `dist/`. On **0.1.40** boxes that never received the `dist/shareChat/ui/` overlay, guests still 500 `Share chat UI missing` after the bounce — overlay that file (no recreate). See [troubleshooting #19b2](troubleshooting-and-lessons.md).
 | `collect_logs` | `{ sinceMinutes: 60 }` | Tar logs → presigned upload URL (future) |
 | `deprovision` | `{}` | Stop stack, signal control plane, wipe optional |
 

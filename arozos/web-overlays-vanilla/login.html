@@ -255,7 +255,12 @@
                 <div class="ui breadcrumb" style="margin-top:12px;">
                     <a class="section signup" style="cursor:pointer; display:none;" href="public/register/register.system" locale="login/signUp">Sign Up</a>
                     <div class="divider signup"> / </div>
-                    <a  id="forgetpw" class="section" style="cursor:pointer" href="reset.html" locale="login/forgotPassword" title="Requires an administrator to issue a temporary password">Forgot password?</a>
+                    <a id="forgetpw" class="section" style="cursor:pointer" href="#" locale="login/forgotPassword" title="Reset the desktop password">Forgot password?</a>
+                </div>
+                <div id="joshu-recovery-panel" class="joshu-recovery-panel" hidden>
+                    <p id="joshu-recovery-copy"></p>
+                    <button type="button" id="joshu-recovery-send" class="ui button themecolor" hidden>Email a reset link</button>
+                    <p id="joshu-recovery-status" class="joshu-recovery-status"></p>
                 </div>
                 <p style="margin-top:18px;color:#ff7a70; display:none;font-size:1.2em;"><i class="remove icon"></i><span id="errmsg" locale="login/errorIncorrect">Error. Incorrect username or password.</span></p>
                
@@ -563,6 +568,62 @@
             $("#aoLogin").removeAttr("style");
             $("#autoRedirectSegment").attr("style", "display:none");
         }
+
+        function joshuRecoveryApi(path) {
+            return "/joshu/api/auth/recovery" + (path || "");
+        }
+
+        function showJoshuRecoveryPanel() {
+            var $panel = $("#joshu-recovery-panel");
+            var $copy = $("#joshu-recovery-copy");
+            var $send = $("#joshu-recovery-send");
+            var $status = $("#joshu-recovery-status");
+            $panel.removeAttr("hidden").show();
+            $copy.text("Checking recovery options…");
+            $send.attr("hidden", "hidden").hide();
+            $status.text("");
+            $.ajax({
+                url: joshuRecoveryApi(""),
+                method: "GET",
+                timeout: 8000,
+                success: function(data) {
+                    if (data && data.mode === "email") {
+                        $copy.text("Email a reset link to the owner address on file. This is the password for this desk, not hello.joshu.me.");
+                        $send.removeAttr("hidden").show();
+                    } else {
+                        $copy.html("This desk does not email reset links. If you are locked out, SSH in as root and run <code>bash /opt/joshu/scripts/arozos-reset-password.sh YOUR_USERNAME 'new-password'</code>.");
+                        $send.attr("hidden", "hidden").hide();
+                    }
+                },
+                error: function() {
+                    $copy.text("Password recovery is not available on this desk right now. Try again in a minute, or contact Joshu support.");
+                    $send.attr("hidden", "hidden").hide();
+                }
+            });
+        }
+
+        $("#forgetpw").on("click", function(event) {
+            event.preventDefault();
+            showJoshuRecoveryPanel();
+        });
+
+        $("#joshu-recovery-send").on("click", function() {
+            var $send = $(this);
+            var $status = $("#joshu-recovery-status");
+            $send.prop("disabled", true);
+            $status.text("Sending…");
+            $.ajax({
+                url: joshuRecoveryApi("/request"),
+                method: "POST",
+                contentType: "application/json",
+                data: "{}",
+                timeout: 15000,
+                complete: function() {
+                    $send.prop("disabled", false);
+                    $status.text("If an account exists for this desk, a reset email is on its way. Check the owner inbox (and spam). The current desktop password still works until you finish the email link.");
+                }
+            });
+        });
 
         $(".thisyear").text(new Date().getFullYear());
 

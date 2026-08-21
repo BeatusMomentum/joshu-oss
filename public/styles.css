@@ -400,6 +400,8 @@ button:focus-visible {
   min-height: 0;
   overflow: hidden;
   position: relative;
+  overscroll-behavior: contain;
+  touch-action: none;
 }
 
 .vnc-screen > div {

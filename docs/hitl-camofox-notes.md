@@ -44,7 +44,8 @@ Joshu bypasses VNC for clipboard:
 | Action | UI | Joshu API | Camofox |
 |--------|----|-----------|---------|
 | Paste into focused field | **Paste into browser** | `POST /joshu/api/camofox/insert-text` | Playwright `/type` + `/press` (`insertText`) |
-| Copy selection / focused token | **Copy from browser** | `POST /joshu/api/camofox/copy-selection` | `POST /tabs/:tabId/selection` (HITL patch) |
+| Copy selection / focused token | **Copy from browser** | `POST /joshu/api/camofox/copy-selection` | `POST /tabs/:id/selection` (HITL patch) |
+| Wheel / arrow / Page keys | host bridge in jWeb | `POST /joshu/api/camofox/scroll` | Playwright `/scroll` or `/press` (VNC wheel often drops) |
 
 Wiring: `public/vnc-clipboard.js` (`pasteViaApi` / `copyViaApi`) ← `public/app.js` /
 `public/camofox-viewer.html`.
@@ -65,20 +66,44 @@ HITL patch behavior:
 - `TAB_INACTIVITY_MS` from env; **default `0` disables the reaper**
 - `GET /tabs` touches `lastAccess` / reaper counters (**HITL keepalive** — Joshu
   status polls this path)
-- Prefer `BROWSER_IDLE_TIMEOUT_MS=0` on long HITL sessions if you also need the
-  browser process itself to stay warm
+- Prefer a **timeout + warm-on-open** (default `BROWSER_IDLE_TIMEOUT_MS=300000`)
+  over always-on Firefox; set `0` only if you need VNC to never go cold
+  (CPU cost)
 
-VPS start exports `TAB_INACTIVITY_MS="${TAB_INACTIVITY_MS:-0}"`.
+VPS start exports `TAB_INACTIVITY_MS="${TAB_INACTIVITY_MS:-0}"` and
+`BROWSER_IDLE_TIMEOUT_MS="${BROWSER_IDLE_TIMEOUT_MS:-300000}"` (5 minutes).
+
+### jWeb idle shutdown vs “crash”
+
+**Intended lifecycle:** after ~5 minutes with no Camofox sessions, Firefox
+idle-shutdowns (`browser idle shutdown`) to free CPU/RAM. Opening jWeb (or
+`POST /joshu/api/camofox/fit-viewport`) creates a tab again and VNC reconnects.
+
+**Bug (validated on patrick, 2026-08-21):** idle shutdown worked, but jWeb only
+polled status and sat on “waiting for Camofox browser” — no warm path — so it
+looked crashed for hours.
+
+**Hardening (keep the timeout; make start/stop clean):**
+
+| Knob | Default | Why |
+|------|---------|-----|
+| `BROWSER_IDLE_TIMEOUT_MS` | `300000` (5m) | Shut Firefox down when unused |
+| `CAMOFOX_START_URL` | `https://joshu.me/` | Default jWeb home on warm |
+| jWeb UI | `fit-viewport` when browser down | Auto-warm + clear VNC backoff on open |
+
+Set `BROWSER_IDLE_TIMEOUT_MS=0` only if you truly need always-on VNC (accepts the
+CPU cost). Repair on a live box: update `/etc/joshu/instance.env`, recreate
+`joshu-stack`, then open jWeb once to confirm warm.
 
 ## `CAMOFOX_START_URL` / `about:blank`
 
-- VPS default is **`about:blank`** (do not force news.google).
+- VPS default is **`https://joshu.me/`**.
 - Joshu `normalizeHttpUrl` accepts `about:blank`; bootstrap does **not** navigate
   an existing non-blank tab unless `navigateExisting` is set.
 - Status polling must **not** call `ensureTab(START_URL)` on every tick (that
-  used to reset users back to News / Slack apps mid-session).
+  used to reset users mid-session).
 - Camofox patch `__hitlStartUrlFromEnv()` treats blank / empty as “no auto URL”
-  (never coerces to news.google).
+  (never coerces to a surprise site).
 
 Per-box overrides (Slack apps URL, etc.) belong in `instance.env` — do not
 hardcode customer sites in AGPL sources.
@@ -114,15 +139,16 @@ Restart Hermes gateway after config changes.
 |-------------------|------|
 | `VNC_RESOLUTION`, `CAMOFOX_VIEWPORT_WIDTH`, `CAMOFOX_VIEWPORT_HEIGHT` | Xvfb + viewport (apply at **container create**) |
 | `ENABLE_VNC` + Camofox `plugins.vnc.enabled` | noVNC on `:6080` — Camofox **1.6+** requires both (see troubleshooting) |
-| `CAMOFOX_START_URL` | Default tab URL when none exists (`about:blank` OK) |
+| `CAMOFOX_START_URL` | Default tab URL when none exists (`https://joshu.me/`) |
 | `TAB_INACTIVITY_MS` | Camofox tab reaper; **`0` for jWeb HITL** (default on VPS) |
-| `BROWSER_IDLE_TIMEOUT_MS` | Camofox process idle shutdown; often `0` with HITL |
+| `BROWSER_IDLE_TIMEOUT_MS` | Firefox idle shutdown; default **`300000`** — jWeb warm-on-open relaunches |
 | `PROXY_*` / `PROXY_COUNTRY` | Residential egress for Camofox (Decodo); geo optional |
 | `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, **selection route**, reaper/keepalive |
 | `scripts/ensure-camofox-container.sh` | Create/start container + wait for `/health` |
 | `POST /joshu/api/camofox/fit-viewport` | Bootstrap tab → Camofox viewport route |
 | `POST /joshu/api/camofox/insert-text` | Playwright paste into focused control |
 | `POST /joshu/api/camofox/copy-selection` | Read selection / focused Slack token |
+| `POST /joshu/api/camofox/scroll` | Wheel / Arrow / Page keys via Playwright (`public/vnc-scroll.js`; rate-limited) |
 | `public/app.js` `layoutLetterboxedScreen` | Keep jWeb VNC pane at **4:3** (1024×768) inside the float window |
 
 **Requires:** Joshu `dist/server.js` from `npm run build:deploy` before
@@ -135,6 +161,19 @@ Joshu listens on `:8788`; Docker healthchecks that endpoint. Killing only
 which drops in-container Camofox patches until `vps-start` / image rebuild
 re-applies them. Prefer image bake + `repair_camfox_server_js` over ad-hoc
 hotpatches.
+
+**Do not** start a second `node dist/server.js` while `vps-start.sh` is still
+booting — you get `EADDRINUSE :8788`, health fails, and the stack restart-loops
+(validated on patrick 2026-08-21). Wait for `healthy` or recreate once and let
+`vps-start` own the listen.
+
+**`public/` is image-baked** (not bind-mounted). Overlaying host `/opt/joshu/public/`
+is not enough — `docker cp` into the running container (or bake the next image).
+Recreate wipes those copies unless you re-apply.
+
+Wheel bridge (`vnc-scroll.js`) must stay **rate-limited** (coalesce + ≥180ms
+between Camofox scroll calls). An unbounded queue flooded Camofox, stalled
+health probes, and bounced the stack.
 
 ### Debug overlay (`?debugVnc=1`)
 

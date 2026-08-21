@@ -50,6 +50,8 @@ jobs:
         if: inputs.images != 'voice-only'
       - run: npm run build:deploy
         if: inputs.images != 'voice-only'
+      - run: npm run test:runtime-assets
+        if: inputs.images != 'voice-only'
       - run: npm run vps:sync-hermes-pin
         if: inputs.images != 'voice-only'
       - run: npm run vps:sync-camofox-pin

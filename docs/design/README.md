@@ -28,7 +28,8 @@ OSS default overlays (no proprietary brand pack):
 |----------|---------|
 | [`arozos/web-overlays-vanilla/aroz-vanilla-shell.css`](../../arozos/web-overlays-vanilla/aroz-vanilla-shell.css) | Desktop chrome |
 | [`arozos/web-overlays-vanilla/aroz-taskbar-focus.js`](../../arozos/web-overlays-vanilla/aroz-taskbar-focus.js) | Taskbar focus sync |
-| [`arozos/web-overlays-vanilla/aroz-jchat-tray.js`](../../arozos/web-overlays-vanilla/aroz-jchat-tray.js) | jChat tray hook |
+| [`arozos/web-overlays-vanilla/aroz-desktop-window-session.js`](../../arozos/web-overlays-vanilla/aroz-desktop-window-session.js) | Restore open float windows after desktop refresh (incl. jChat docked vs floating) |
+| [`arozos/web-overlays-vanilla/aroz-jchat-tray.js`](../../arozos/web-overlays-vanilla/aroz-jchat-tray.js) | jChat tray: docked companion vs icon-launched floating windows |
 | [`arozos/web-overlays-vanilla/SystemAO/file_system/share_to.html`](../../arozos/web-overlays-vanilla/SystemAO/file_system/share_to.html) | Share To picker (File sharing page / Chat with files → chat_share.html) |
 | [`arozos/web-overlays-vanilla/SystemAO/file_system/chat_share.html`](../../arozos/web-overlays-vanilla/SystemAO/file_system/chat_share.html) | Chat sharing dialog (public URL + Slack channel + Enable/Remove Sharing) |
 | [`arozos/web-overlays-vanilla/SystemAO/file_system/file_share.html`](../../arozos/web-overlays-vanilla/SystemAO/file_system/file_share.html) | Share dialog (float window; link + permissions; remove/enable toggle) |
@@ -39,7 +40,7 @@ OSS default overlays (no proprietary brand pack):
 
 Set `JOSHU_DESIGN_PACK` when building with a **private** design pack checkout (fleet branded chrome). OSS builds omit it and use Vanilla only.
 
-**File Share notes:** After changing share overlays, re-run theme apply and **close File Manager** before reopening (iframe JS stays stale until closed). Public share + share-chat pages use the same warm atmosphere / floating panel language as login, with a compact **joshu** wordmark + email-signature identity brandbar. Theme apply writes `web/script/joshu-public-persona.json` so identity still loads when `/joshu` is unreachable. Footers link to [joshu.me](https://joshu.me). Full fleet design doc: see private `joshu/docs/design/README.md` § File Share overlays and [`../share-chat.md`](../share-chat.md#public-guest-surfaces).
+**File Share notes:** After changing share overlays, re-run theme apply and **close File Manager** before reopening (iframe JS stays stale until closed). Public share + share-chat pages use the same warm atmosphere / floating panel language as login, with a compact **joshu** wordmark + email-signature identity brandbar. Theme apply writes `web/script/joshu-public-persona.json` so identity still loads when `/joshu` is unreachable. Footers link to [joshu.me](https://joshu.me). Guest Share Chat HTML is served by the Joshu API from `dist/shareChat/ui/` ([`../runtime-assets.md`](../runtime-assets.md)). Full fleet design doc: see private `joshu/docs/design/README.md` § File Share overlays and [`../share-chat.md`](../share-chat.md#public-guest-surfaces).
 
 When developing from a full local folder layout, `npm run dev:arozos` in the private monorepo auto-detects a sibling `joshu-design` checkout if present. Self-hosters without the design pack always get Vanilla — see [`../platform-architecture.md`](../platform-architecture.md) for app/platform docs (separate from shell branding).
 
@@ -48,3 +49,5 @@ When developing from a full local folder layout, `npm run dev:arozos` in the pri
 - [`../local-installation.md`](../local-installation.md) — `npm run dev:arozos`
 - [`../arozos-desktop-shortcuts.md`](../arozos-desktop-shortcuts.md) — desktop shortcut format
 - [`../hermes-chat-arozos-app.md`](../hermes-chat-arozos-app.md) — jChat shell
+- [`../share-chat.md`](../share-chat.md) — Chat with files guest page
+- [`../runtime-assets.md`](../runtime-assets.md) — API-served HTML must land in `dist/`

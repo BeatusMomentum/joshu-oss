@@ -142,3 +142,24 @@ body.jp-user-setup {
   color: var(--jp-auth-muted);
   font-size: 0.82rem;
 }
+
+.joshu-recovery-panel {
+  margin-top: 16px;
+  text-align: left;
+}
+
+.joshu-recovery-panel p {
+  color: var(--jp-auth-muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.joshu-recovery-panel code {
+  font-size: 0.82rem;
+  word-break: break-all;
+}
+
+.joshu-recovery-status {
+  margin-top: 8px;
+  color: var(--jp-auth-ink);
+}

@@ -7,7 +7,7 @@
         <title>Chat sharing</title>
         <link rel="stylesheet" href="../../script/semantic/semantic.min.css">
         <link rel="stylesheet" href="../../script/ao.css">
-        <link rel="stylesheet" href="../../script/joshu-share-dialogs.css?v=20260717f">
+        <link rel="stylesheet" href="../../script/joshu-share-dialogs.css?v=20260820a">
         <script src="../../script/jquery.min.js"></script>
         <script src="../../script/semantic/semantic.min.js"></script>
         <script src="../../script/ao_module.js"></script>
@@ -58,7 +58,10 @@
                 </div>
             </div>
             <div id="teamsBotSection" class="jp-share-section">
-                <div class="jp-share-label">Microsoft Teams (free OK)</div>
+                <div class="jp-share-label-row">
+                    <div class="jp-share-label">Microsoft Teams (free OK)</div>
+                    <span id="teamsBadge" class="jp-share-badge jp-share-badge-off">Off</span>
+                </div>
                 <p id="teamsBotHint" class="jp-share-muted">
                     Sideload the Joshu Share Chat bot, then bind this share in a Teams DM or group chat.
                     Works with free/personal Teams (not Composio). In groups, teammates @mention the bot.
@@ -77,6 +80,40 @@
                     </button>
                 </div>
             </div>
+            <div id="emailQaSection" class="jp-share-section">
+                <div class="jp-share-label-row">
+                    <div class="jp-share-label">Email Q&amp;A</div>
+                    <span id="emailQaBadge" class="jp-share-badge jp-share-badge-off">Off</span>
+                </div>
+                <p id="emailQaHint" class="jp-share-muted">
+                    Let specific people email your Joshu agent address with questions about these files only.
+                    Answers use the same scoped knowledge as the public chat link — not the full assistant inbox.
+                </p>
+                <p id="emailQaStatus"></p>
+                <div id="emailQaForm" style="display:none;">
+                    <label class="jp-share-field-label" for="emailAgentAddress">Agent email (share this address)</label>
+                    <div class="jp-share-email-box">
+                        <input id="emailAgentAddress" type="text" readonly aria-label="Agent email address">
+                        <button type="button" class="ui basic button" id="btnCopyAgentEmail" disabled>Copy</button>
+                    </div>
+                    <div class="jp-share-field-block">
+                        <label class="jp-share-field-label" for="emailAllowedSenders">Who can ask (one per line)</label>
+                        <textarea id="emailAllowedSenders" class="jp-share-textarea" rows="3" placeholder="@company.com&#10;person@company.com"></textarea>
+                    </div>
+                    <div class="jp-share-field-block">
+                        <label class="jp-share-field-label" for="emailCcList">CC on replies (optional)</label>
+                        <textarea id="emailCcList" class="jp-share-textarea" rows="2" placeholder="manager@company.com"></textarea>
+                    </div>
+                    <div class="email-actions" style="padding:0;margin:0;justify-content:flex-start;">
+                        <button type="button" class="ui primary button jp-share-primary" id="btnEmailSave" disabled>
+                            Save email Q&amp;A
+                        </button>
+                        <button type="button" class="ui basic button" id="btnEmailUnlink" disabled style="display:none;">
+                            Turn off email Q&amp;A
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
         <div class="actions jp-share-actions">
             <button type="button" class="ui basic button" id="btnCopy" disabled>Copy link</button>
@@ -88,7 +125,7 @@
 
         </div>
         <script>
-            var SHARE_DIALOG_CACHE_BUST = "20260717f";
+            var SHARE_DIALOG_CACHE_BUST = "20260820a";
             var shareingFileData = null;
             var shareCurrentEditingUUID = "";
             var chatSharingURL = "";
@@ -145,6 +182,7 @@
                 });
                 refreshSlackChannelUi(uuid);
                 refreshTeamsBotUi(uuid);
+                refreshEmailQaUi(uuid);
             }
 
             function clearChatLinkUi(message){
@@ -156,12 +194,161 @@
                 setToggleInactive();
                 resetSlackChannelUi();
                 resetTeamsBotUi();
+                resetEmailQaUi();
             }
 
             function resetSlackChannelUi(){
                 $("#slackChannelStatus").text("");
                 $("#slackChannelName").val("").hide();
                 $("#btnSlackCreate, #btnSlackUnlink, #btnOpenConnectors, #btnInviteOwner").hide().prop("disabled", true);
+            }
+
+            function setChannelBadge(el, on){
+                var $el = $(el);
+                if (on){
+                    $el.removeClass("jp-share-badge-off").addClass("jp-share-badge-on").text("Active");
+                } else {
+                    $el.removeClass("jp-share-badge-on").addClass("jp-share-badge-off").text("Off");
+                }
+            }
+
+            function resetEmailQaUi(){
+                $("#emailQaStatus").text("");
+                $("#emailQaForm").hide();
+                $("#emailAgentAddress").val("");
+                $("#emailAllowedSenders, #emailCcList").val("");
+                $("#btnCopyAgentEmail, #btnEmailSave").prop("disabled", true);
+                $("#btnEmailUnlink").hide().prop("disabled", true);
+                setChannelBadge("#emailQaBadge", false);
+            }
+
+            function refreshEmailQaUi(uuid){
+                if (!uuid){
+                    resetEmailQaUi();
+                    return;
+                }
+                $("#emailQaStatus").html(`<i class="ui loading spinner icon"></i> Checking email Q&amp;A…`);
+                $.ajax({
+                    url: "/joshu/api/share-chat/" + encodeURIComponent(uuid) + "/email",
+                    method: "GET",
+                    xhrFields: { withCredentials: true },
+                    success: function(data){
+                        if (!data || !data.ok){
+                            $("#emailQaStatus").html(`<span style="color:#b00020;">Could not load email Q&amp;A status</span>`);
+                            return;
+                        }
+                        if (!data.agentEmail){
+                            setChannelBadge("#emailQaBadge", false);
+                            $("#emailQaForm").hide();
+                            $("#emailQaStatus").html(
+                                `Set up the <strong>agent mailbox</strong> in jMail first, then return here to allow senders.`
+                            );
+                            return;
+                        }
+                        $("#emailQaForm").show();
+                        $("#emailAgentAddress").val(data.agentEmail);
+                        $("#btnCopyAgentEmail, #btnEmailSave").prop("disabled", false);
+                        if (data.configured){
+                            setChannelBadge("#emailQaBadge", true);
+                            $("#emailAllowedSenders").val((data.allowedSenders || []).join("\n"));
+                            $("#emailCcList").val((data.cc || []).join("\n"));
+                            $("#btnEmailUnlink").show().prop("disabled", false);
+                            var senderCount = (data.allowedSenders || []).length;
+                            $("#emailQaStatus").html(
+                                `Active for <strong>${senderCount}</strong> allowlist ` +
+                                (senderCount === 1 ? "entry" : "entries") +
+                                `. Replies CC ${(data.cc && data.cc.length) ? data.cc.join(", ") : "nobody"}.` +
+                                ` Processed <strong>${data.processedCount || 0}</strong> message(s).`
+                            );
+                            return;
+                        }
+                        setChannelBadge("#emailQaBadge", false);
+                        $("#btnEmailUnlink").hide().prop("disabled", true);
+                        $("#emailAllowedSenders").val("");
+                        $("#emailCcList").val("");
+                        $("#emailQaStatus").html(
+                            data.hint || "Add allowed sender domains or addresses, then save."
+                        );
+                    },
+                    error: function(){
+                        $("#emailQaStatus").html(`<span style="color:#b00020;">Email Q&amp;A status unavailable</span>`);
+                    }
+                });
+            }
+
+            function saveEmailQa(){
+                if (!shareCurrentEditingUUID) return;
+                var allowed = ($("#emailAllowedSenders").val() || "").trim();
+                if (!allowed){
+                    $("#emailQaStatus").html(`<span style="color:#b00020;">Add at least one @domain or email address.</span>`);
+                    return;
+                }
+                var btn = $("#btnEmailSave");
+                btn.addClass("loading").prop("disabled", true);
+                $("#emailQaStatus").html(`<i class="ui loading spinner icon"></i> Saving…`);
+                $.ajax({
+                    url: "/joshu/api/share-chat/" + encodeURIComponent(shareCurrentEditingUUID) + "/email",
+                    method: "POST",
+                    contentType: "application/json",
+                    data: JSON.stringify({
+                        allowedSenders: allowed.split(/\n+/).map(function(s){ return s.trim(); }).filter(Boolean),
+                        cc: ($("#emailCcList").val() || "").split(/\n+/).map(function(s){ return s.trim(); }).filter(Boolean)
+                    }),
+                    xhrFields: { withCredentials: true },
+                    success: function(data){
+                        btn.removeClass("loading").prop("disabled", false);
+                        if (data && data.ok){
+                            refreshEmailQaUi(shareCurrentEditingUUID);
+                            return;
+                        }
+                        $("#emailQaStatus").html(`<span style="color:#b00020;">Save failed</span>`);
+                    },
+                    error: function(xhr){
+                        btn.removeClass("loading").prop("disabled", false);
+                        var err = (xhr.responseJSON && xhr.responseJSON.error) || ("HTTP " + xhr.status);
+                        var hint = (xhr.responseJSON && xhr.responseJSON.hint) || "";
+                        $("#emailQaStatus").html(
+                            `<span style="color:#b00020;">${escapeHtml(err)}${hint ? " — " + escapeHtml(hint) : ""}</span>`
+                        );
+                    }
+                });
+            }
+
+            function unlinkEmailQa(){
+                if (!shareCurrentEditingUUID) return;
+                if (!confirm("Turn off email Q&A for this share? Allowed senders will stop getting auto-replies.")) return;
+                var btn = $("#btnEmailUnlink");
+                btn.addClass("loading").prop("disabled", true);
+                $.ajax({
+                    url: "/joshu/api/share-chat/" + encodeURIComponent(shareCurrentEditingUUID) + "/email/unlink",
+                    method: "POST",
+                    contentType: "application/json",
+                    data: JSON.stringify({}),
+                    xhrFields: { withCredentials: true },
+                    success: function(){
+                        btn.removeClass("loading");
+                        refreshEmailQaUi(shareCurrentEditingUUID);
+                    },
+                    error: function(xhr){
+                        btn.removeClass("loading").prop("disabled", false);
+                        alert("Could not turn off email Q&A (" + xhr.status + ")");
+                    }
+                });
+            }
+
+            function copyAgentEmail(){
+                var addr = $("#emailAgentAddress").val() || "";
+                if (!addr) return;
+                if (navigator.clipboard && navigator.clipboard.writeText){
+                    navigator.clipboard.writeText(addr).then(function(){
+                        $("#btnCopyAgentEmail").text("Copied");
+                        setTimeout(function(){ $("#btnCopyAgentEmail").text("Copy"); }, 1200);
+                    });
+                    return;
+                }
+                var el = document.getElementById("emailAgentAddress");
+                el.select();
+                try { document.execCommand("copy"); } catch (e) {}
             }
 
             function resetTeamsBotUi(){
@@ -203,6 +390,7 @@
                             return;
                         }
                         if (data.configured && data.conversationId){
+                            setChannelBadge("#teamsBadge", true);
                             $("#teamsBindCommand").hide();
                             $("#btnTeamsCopyBind, #btnOpenConnectorsTeams").hide().prop("disabled", true);
                             $("#btnTeamsUnlink").show().prop("disabled", false);
@@ -214,6 +402,7 @@
                             return;
                         }
                         $("#btnTeamsUnlink").hide().prop("disabled", true);
+                        setChannelBadge("#teamsBadge", false);
                         if (!data.botConfigured){
                             $("#teamsBindCommand").hide();
                             $("#btnTeamsCopyBind").hide().prop("disabled", true);
@@ -589,6 +778,9 @@
                 $("#btnTeamsCopyBind").on("click", copyTeamsBindCommand);
                 $("#btnTeamsUnlink").on("click", unlinkTeamsChat);
                 $("#btnOpenConnectorsTeams").on("click", openConnectorsTeamsBot);
+                $("#btnEmailSave").on("click", saveEmailQa);
+                $("#btnEmailUnlink").on("click", unlinkEmailQa);
+                $("#btnCopyAgentEmail").on("click", copyAgentEmail);
                 // Create / reuse share immediately (like File Share).
                 enableSharing($("#btnToggle"));
             });

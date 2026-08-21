@@ -20,3 +20,24 @@ export function syncJChatTray(payload: JChatTrayPayload): void {
     /* cross-origin or standalone dev */
   }
 }
+
+/** True when this iframe lives in the taskbar-docked ArozOS float window. */
+export function readJChatDockedFromFrame(): boolean {
+  try {
+    const frame = window.frameElement;
+    if (!frame || !(frame instanceof Element)) return false;
+    const fw = frame.closest(".floatWindow");
+    return Boolean(fw && fw.classList.contains("jp-jchat-docked"));
+  } catch {
+    return false;
+  }
+}
+
+/** Ask the ArozOS shell to pop this docked window into a free-floating one. */
+export function requestJChatUndock(): void {
+  try {
+    window.parent.postMessage({ type: "jchat:undock" }, "*");
+  } catch {
+    /* standalone */
+  }
+}

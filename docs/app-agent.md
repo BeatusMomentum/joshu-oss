@@ -219,6 +219,8 @@ npm run build:my-app       # before shipping in subservice
 
 Hard-reload your app window after changing the bridge or `@joshu/app-agent`.
 
+If the Joshu API itself `readFile`s HTML/PNG (not a Vite app), list it in [`scripts/runtime-assets.json`](../scripts/runtime-assets.json) so it lands in `dist/` — see [`runtime-assets.md`](runtime-assets.md). Local `tsx` will not catch a missing copy.
+
 ### Step 7 — Verify (first compose/navigation test)
 
 1. **Gateway** includes `app_gui_action`:

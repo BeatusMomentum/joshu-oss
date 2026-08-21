@@ -64,7 +64,7 @@ Order is preserved in `deploy/scripts/vps-start.sh`:
 - Base: `camofoxBase` from [`deploy/RELEASE.json`](../../deploy/RELEASE.json) (`ARG CAMOFOX_BASE`) + apt packages (ffmpeg, postgres client, go for ArozOS build)
 - Hermes: pinned `hermesRef` / `HERMES_AGENT_REF` from [`deploy/RELEASE.json`](../../deploy/RELEASE.json), venv, image extras parity
 - ArozOS: build from `vendor/arozos` → `/opt/arozos-template`
-- Joshu: `npm run build:deploy`, app bundles → template subservices
+- Joshu: `npm run build:deploy` (includes `copy-runtime-assets.mjs` → `dist/`), app bundles → template subservices
 - Camofox patch: `patch-camofox-single-tab.mjs` at build time
 
 Build locally:

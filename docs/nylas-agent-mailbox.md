@@ -59,7 +59,7 @@ Grant file: `${AROZ_DATA}/files/users/<user>/.joshu/nylas/agent.json` (`grantId`
 | GET | `/joshu/api/nylas/messages` | List/search (`q`, `unread`, `limit`) |
 | GET | `/joshu/api/nylas/messages/:id` | Full message (body, headers) |
 | PATCH | `/joshu/api/nylas/messages/:id` | Update (`unread`, `starred`) |
-| POST | `/joshu/api/nylas/messages/send` | Outbound mail (plain `body`; API appends HTML signature). Optional `replyToMessageId`, `sourcePath` / `source_path`, `cc`, `bcc` |
+| POST | `/joshu/api/nylas/messages/send` | Outbound mail (plain / light-markdown `body` → HTML with linkified URLs; API appends HTML signature). Optional `replyToMessageId`, `sourcePath` / `source_path`, `cc`, `bcc` |
 | POST | `/joshu/api/nylas/test-send` | `{ "to": "you@…" }` smoke test |
 | GET | `/joshu/api/nylas/profile` | Read agent profile |
 | POST | `/joshu/api/nylas/profile` | Update agent profile (incl. EA dials: `spendingThreshold`, `urgentChannel`, `workingHoursStart`, `workingHoursEnd`) |
@@ -86,7 +86,7 @@ Grant file: `${AROZ_DATA}/files/users/<user>/.joshu/nylas/agent.json` (`grantId`
 
 **Thread replies:** when `replyToMessageId` is set, `subject` must match the parent message (only `Re:` / `Fwd:` prefix differences allowed). Decorating the subject (availability, names, task titles) returns **`400` `reply_subject_mismatch`** with `expectedSubject` + `hint` — the API does **not** mutate the subject ([`src/nylas/replySubject.ts`](../src/nylas/replySubject.ts)). Gmail/Google fork conversations when the subject changes even if reply headers are set. Retry with the exact parent subject from the thread mirror.
 
-Outbound sends always use the provisioned agent address as `from`. The Joshu API **appends a branded HTML signature** on every send (companion name, `{owner}'s Joshu`, signup link) — built from instance identity at send time, inlined into the Nylas message `body`. Configure identity via Welcome / `identity.json` — see [self-host.md](self-host.md#identity-without-control-plane).
+Outbound sends always use the provisioned agent address as `from`. The Joshu API converts the agent `body` to email HTML ([`plainTextToSimpleEmailHtml`](../packages/email-signature/src/joshuEmailSignature.ts): paragraphs, lists, `**bold**` / `*italic*` / `` `code` ``, `[label](url)` and bare `https://` links) and **appends a branded HTML signature** (companion name, `{owner}'s Joshu`, signup link) — built from instance identity at send time, inlined into the Nylas message `body`. Pass message content only (not signature markup). Configure identity via Welcome / `identity.json` — see [self-host.md](self-host.md#identity-without-control-plane).
 
 **EA v2:** owner Gmail (Composio) and agent Nylas are **separate** polled mirrors — no forward-from-owner setup ([`ea-for-joshu.md`](executive-assistant.md)). Calendar CRUD uses the same Nylas grant as the agent mailbox.
 

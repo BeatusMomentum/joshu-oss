@@ -26,6 +26,8 @@
         min-height: 0;
         overflow: hidden;
         position: relative;
+        overscroll-behavior: contain;
+        touch-action: none;
       }
       #vnc-screen > div {
         width: 100% !important;
@@ -134,6 +136,7 @@
     </div>
     <script type="module">
       import { attachVncClipboard } from "./vnc-clipboard.js";
+      import { attachVncScrollBridge } from "./vnc-scroll.js";
       const DEBUG_VNC = new URLSearchParams(location.search).get("debugVnc") === "1";
       const statusEl = document.getElementById("status");
       const debugEl = document.getElementById("vnc-debug");
@@ -142,6 +145,7 @@
       const fb = { width: 1024, height: 768 };
       let rfb = null;
       let clipboardDetach = null;
+      let scrollDetach = null;
 
       function readMaxWidthPx() {
         const raw = getComputedStyle(document.documentElement).getPropertyValue("--joshu-vnc-max-width").trim();
@@ -263,6 +267,8 @@
             hint: document.getElementById("vnc-clipboard-hint"),
           },
         });
+        scrollDetach?.();
+        scrollDetach = attachVncScrollBridge(screenEl);
         rfb.addEventListener("connect", () => {
           const fw = rfb._fbWidth;
           const fh = rfb._fbHeight;

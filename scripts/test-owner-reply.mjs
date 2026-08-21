@@ -154,6 +154,40 @@ assert.match(ingressBody, /owner_reply_list_tasks/);
 assert.match(ingressBody, /Path D spawn only/);
 assert.match(ingressBody, /do not research or nylas_send_message on ea-mail-ingress/);
 
+{
+  // Owner mailed the agent; classifier tagged scheduling ("invite myself").
+  // Path D still wins — confirmation lives on ea-owner-reply, not ea-scheduling.
+  const schedulingOwnerAsk = buildMailIngressTaskBody(
+    {
+      filesRoot: "/tmp",
+      provider: "nylas",
+      threadId: "thread-self-reminder",
+      sourcePath: "connectors/mail/nylas/threads/thread-self-reminder.md",
+      from: `Andrew <${owner}>`,
+      messageId: "msg-self-reminder",
+      classification: {
+        category: "scheduling",
+        project_slug: "sales-business-development",
+        is_new_track: false,
+        reason: "owner asked for a calendar reminder",
+        scheduling_hint: true,
+        authorization: {
+          agent_authorized: true,
+          scheduling_eligible: true,
+          reason: "agent_on_recipients",
+        },
+      },
+    },
+    null,
+    "finn@joshu.me",
+  );
+  assert.match(schedulingOwnerAsk, /owner_reply_eligible: true/);
+  assert.match(schedulingOwnerAsk, /scheduling_eligible: false/);
+  assert.match(schedulingOwnerAsk, /allowed_actions: file,reply/);
+  assert.match(schedulingOwnerAsk, /owner_reply_list_tasks/);
+  assert.doesNotMatch(schedulingOwnerAsk, /scheduling_create_meeting_task/);
+}
+
 const skipLines = ownerReplyIngressPlaybookLines(false);
 assert.equal(skipLines.length, 0);
 

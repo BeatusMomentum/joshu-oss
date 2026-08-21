@@ -32,6 +32,9 @@ echo "[vps-build] GBRAIN_REF=${GBRAIN_REF}"
 echo "[vps-build] sandbox=${IMAGE_REF}"
 echo "[vps-build] voice-realtime=${VOICE_IMAGE_REF} push=${PUSH}"
 
+# Fail closed: listed runtime files must exist in source *and* dist/ (npm run build).
+node scripts/copy-runtime-assets.mjs --check-source --check
+
 SANDBOX_BUILD_ARGS=(
   --platform linux/amd64
   -f deploy/Dockerfile

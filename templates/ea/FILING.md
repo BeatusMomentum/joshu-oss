@@ -92,7 +92,7 @@ Manual ingest: `npm run kb:ingest-pdf`. Details: Joshu **`docs/file-brain.md`** 
 
 ## Outbound email
 
-Joshu sends from the **agent Nylas** mailbox only (`POST /joshu/api/nylas/messages/send`). Owner Gmail is read/sync only. The API appends the companion HTML signature automatically — pass message content only in `body`.
+Joshu sends from the **agent Nylas** mailbox only (`POST /joshu/api/nylas/messages/send`). Owner Gmail is read/sync only. The API converts `body` to HTML (linkified URLs, light markdown) and appends the companion signature — pass message content only.
 
 ## Page types (gbrain)
 

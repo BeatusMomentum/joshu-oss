@@ -19,55 +19,65 @@
             </div>
             <div class="ui divider"></div>
             <div class="ui text container">
-                <p>Reset your password on <strong>{{host_name}}</strong></p>
-                <p style="color:#5c5c5c;font-size:0.92rem;line-height:1.45;">
-                    Joshu does not email reset links. An administrator must reset your account first
-                    (System Settings → Users → <em>Reset password</em>), then give you a
-                    <strong>temporary password</strong> or a link with <code>acc</code> and <code>rkey</code> parameters.
-                </p>
+                <p>Reset the desktop password on <strong>{{host_name}}</strong></p>
+                <div id="joshu-recovery-panel" class="joshu-recovery-panel">
+                    <p id="joshu-recovery-copy">Checking recovery options…</p>
+                    <button type="button" id="joshu-recovery-send" class="ui button themecolor" hidden>Email a reset link</button>
+                    <p id="joshu-recovery-status" class="joshu-recovery-status"></p>
+                </div>
             </div>
             <div class="ui divider"></div>
-            <form class="ui form" onsubmit="handleFormSubmit(event, this);">
-                <div class="field">
-                    <label>Username</label>
-                    <input type="text" name="username" placeholder="Username" autocomplete="username">
-                </div>
-                <div class="field">
-                    <label>Temporary password</label>
-                    <input type="password" name="resetkey" placeholder="From your administrator" autocomplete="current-password">
-                    <small>Enter the one-time password your administrator generated — not your old password.</small>
-                </div>
-                <button id="submitbtn" class="ui primary button" type="submit">Continue</button>
-            </form>
-            <div id="errmsg" class="ui red inverted segment" style="display:none;">
-                <i class="remove icon"></i> <span id="errtext">Internal Server Error</span>
-            </div>
-            <div class="ui divider"></div>
-            <p class="joshu-auth-footer">Self-hosting? Locked out without another admin — recover via SSH on the box. <span class="joshu-auth-version">v{{joshu_release_version}}</span></p>
+            <p class="joshu-auth-footer"><span class="joshu-auth-version">v{{joshu_release_version}}</span></p>
             <p>Back to <a href="login.html">Sign in</a></p>
         </div>
     </div>
 
     <script>
-        function handleFormSubmit(event, object){
-            event.preventDefault();
-            var username = object.username.value;
-            var rkey = object.resetkey.value;
+        function joshuRecoveryApi(path) {
+            return "/joshu/api/auth/recovery" + (path || "");
+        }
+
+        function showJoshuRecovery(mode) {
+            var $copy = $("#joshu-recovery-copy");
+            var $send = $("#joshu-recovery-send");
+            if (mode === "email") {
+                $copy.text("Email a reset link to the owner address on file. This is the password for this desk, not hello.joshu.me.");
+                $send.removeAttr("hidden").show();
+            } else {
+                $copy.html("This desk does not email reset links. If you are locked out, SSH in as root and run <code>bash /opt/joshu/scripts/arozos-reset-password.sh YOUR_USERNAME 'new-password'</code>.");
+                $send.attr("hidden", "hidden").hide();
+            }
+        }
+
+        $.ajax({
+            url: joshuRecoveryApi(""),
+            method: "GET",
+            timeout: 8000,
+            success: function(data) {
+                showJoshuRecovery(data && data.mode === "email" ? "email" : "ssh");
+            },
+            error: function() {
+                $("#joshu-recovery-copy").text("Password recovery is not available on this desk right now. Try again in a minute, or contact Joshu support.");
+            }
+        });
+
+        $("#joshu-recovery-send").on("click", function() {
+            var $send = $(this);
+            var $status = $("#joshu-recovery-status");
+            $send.prop("disabled", true);
+            $status.text("Sending…");
             $.ajax({
-                url: "system/reset/validateResetKey",
-                data: {username: username, rkey: rkey},
+                url: joshuRecoveryApi("/request"),
                 method: "POST",
-                success: function(data){
-                    if (data.error !== undefined){
-                        $("#errtext").text(data.error);
-                        $("#errmsg").show();
-                    }else{
-                        $("#errmsg").hide();
-                        window.location.href = location.protocol + '//' + location.host + location.pathname + "?acc=" + encodeURIComponent(username) + "&rkey=" + encodeURIComponent(rkey);
-                    }
+                contentType: "application/json",
+                data: "{}",
+                timeout: 15000,
+                complete: function() {
+                    $send.prop("disabled", false);
+                    $status.text("If an account exists for this desk, a reset email is on its way. Check the owner inbox (and spam). The current desktop password still works until you finish the email link.");
                 }
             });
-        }
+        });
     </script>
     </body>
 </html>

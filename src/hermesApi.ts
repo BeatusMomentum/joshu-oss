@@ -82,6 +82,17 @@ const DEFAULT_JOSHU_HERMES_MODEL = JOSHU_OPENROUTER_DEFAULT_MODEL;
 const DEFAULT_JOSHU_HERMES_PROVIDER = "openrouter";
 const DEFAULT_JOSHU_HERMES_TOOLSETS =
   '["mcp-gbrain", "mcp-joshu-connectors", "kanban", "hermes-cli", "browser"]';
+/** Cap concurrent Hermes cron agent runs (env > config.yaml > unbounded in upstream Hermes). */
+const DEFAULT_JOSHU_HERMES_CRON_MAX_PARALLEL = 2;
+
+function getJoshuHermesCronMaxParallel(): number {
+  const raw =
+    envString("JOSHU_HERMES_CRON_MAX_PARALLEL") ||
+    envString("HERMES_CRON_MAX_PARALLEL") ||
+    String(DEFAULT_JOSHU_HERMES_CRON_MAX_PARALLEL);
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_JOSHU_HERMES_CRON_MAX_PARALLEL;
+}
 
 export type ComposioMcpEndpoint = {
   url: string;
@@ -1751,6 +1762,15 @@ export class HermesApiRunner extends EventEmitter {
     }
     config.kanban = kanban;
 
+    const desiredCronMaxParallel = getJoshuHermesCronMaxParallel();
+    const cron = asRecord(config.cron);
+    const cronMaxParallel = Number(cron.max_parallel_jobs);
+    if (!Number.isFinite(cronMaxParallel) || cronMaxParallel !== desiredCronMaxParallel) {
+      cron.max_parallel_jobs = desiredCronMaxParallel;
+      changed = true;
+    }
+    config.cron = cron;
+
     if (syncInteractivePlatformKanbanToolsets(config)) {
       changed = true;
     }
@@ -1906,6 +1926,7 @@ export class HermesApiRunner extends EventEmitter {
     if (ownerTz && isValidIanaTimezone(ownerTz)) {
       dotenvSync.HERMES_TIMEZONE = ownerTz;
     }
+    dotenvSync.HERMES_CRON_MAX_PARALLEL = String(getJoshuHermesCronMaxParallel());
 
     const connectorsApiBase = envString(
       "JOSHU_CONNECTORS_API_BASE",
