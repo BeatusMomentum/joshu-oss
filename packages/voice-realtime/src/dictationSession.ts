@@ -23,6 +23,37 @@ export type DictationSessionState = {
 const DICTATION_DONE_RE =
   /\b(that'?s\s+(it|all|everything)(\s+for\s+now)?|i'?m\s+done|all\s+done|end\s+of\s+(the\s+)?(list|notes?|dictation)|finish(ed)?\s+(dictat|the\s+list)|stop\s+dictat)\b/i;
 
+/**
+ * Explicit dump preamble — dictation starts only on this, never on inferred
+ * task intent ("calendar reminders", "make a list of websites").
+ * Example: "I am about to tell you a bunch of things so just wait for me to finish."
+ */
+const DICTATION_START_RE = new RegExp(
+  [
+    String.raw`\b(start|begin)\s+(a\s+)?dictation\b`,
+    String.raw`\btake\s+(this|these|a)\s+(down|dictation)\b`,
+    String.raw`\bbrain[\s-]?dump\b`,
+    String.raw`\bdon'?t\s+interrupt\b`,
+    String.raw`\bjust\s+listen\b`,
+    String.raw`\bjust\s+wait(\s+(for\s+me|until|till|while))\b`,
+    String.raw`\bwait\s+(until|till|for)\s+(i'?m\s+(done|finished)|i\s+finish|me\s+to\s+finish)\b`,
+    String.raw`\bwait\s+for\s+me\s+to\s+finish\b`,
+    String.raw`\blet\s+me\s+(finish|dump|rattle|list|get\s+(this|it)\s+out)\b`,
+    String.raw`\bi('?m|\s+am)\s+(about\s+to|gonna|going\s+to)\s+(list|dump|rattle|dictate)\b`,
+    String.raw`\bi('?m|\s+am)\s+(about\s+to|gonna|going\s+to)\s+(tell|give|read)\s+(you\s+)?(a\s+)?(bunch|list|several|lot)\b`,
+    String.raw`\bwrite\s+(this|these|it)\s+down\s+(as\s+i|while\s+i)\b`,
+    String.raw`\bhold\s+on\s+while\s+i\s+(list|give|tell|dump|rattle)\b`,
+    String.raw`\bi'?ll\s+(give|list|tell|dump|rattle)\s+(you\s+)?(a\s+)?(bunch|list|several)\b`,
+    String.raw`\ba\s+bunch\s+of\s+(things|items|reminders|notes|sites|urls)\b.{0,48}\b(wait|listen|finish|done|interrupt)\b`,
+    String.raw`\b(wait|listen|finish|done|interrupt).{0,48}\ba\s+bunch\s+of\s+(things|items|reminders|notes)\b`,
+  ].join("|"),
+  "i",
+);
+
+/** Tool-output copy when start_dictation is rejected (model should think instead). */
+export const DICTATION_NOT_EXPLICIT_MESSAGE =
+  "The caller did not explicitly start a dictation dump. Do not buffer. Use think for this request (calendar, reminders, a single note, lookup). Only call start_dictation when they clearly ask you to wait/listen until they finish a bunch of items — e.g. \"I am about to tell you a bunch of things, just wait for me to finish.\"";
+
 export function parseDictationFormat(raw: unknown): DictationFormat {
   const s = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   if (s === "cleanup" || s === "list" || s === "lists") return "cleanup";
@@ -61,6 +92,24 @@ export function appendDictationChunk(
 
 export function looksLikeDictationDone(text: string): boolean {
   return DICTATION_DONE_RE.test(text.trim());
+}
+
+/** True when the speaker asked Joshu to wait/listen through a multi-item dump. */
+export function looksLikeExplicitDictationStart(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return DICTATION_START_RE.test(t);
+}
+
+/** STT-only gate: ignore model-invented user_quote; check recent user lines. */
+export function recentUserSpeechLooksLikeDictationStart(
+  texts: Array<string | undefined | null>,
+): boolean {
+  return looksLikeExplicitDictationStart(
+    texts
+      .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+      .join("\n"),
+  );
 }
 
 export function formatGuidance(format: DictationFormat): string {

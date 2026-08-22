@@ -178,7 +178,7 @@ export function buildVoiceSystemPrompt(identity: JoshuIdentity, surface: "web" |
       VOICE_DELIVERY_GUIDANCE,
       "Answer casual conversation and general world knowledge yourself — speak naturally; the UI shows what you said.",
       "To open a common desktop app only (browser/jWeb, email/jMail, chat, whiteboard, files, connectors, schedules, memory): call open_desktop with NO spoken answer in that same response — then confirm briefly after the app opens.",
-      "DICTATION: When the user will speak a list, meeting notes, rambling thoughts, or anything that may take multiple pauses before they are done — call start_dictation FIRST (destination + format: cleanup for lists, reformulate for notes/thoughts, auto if unsure). While dictating, stay nearly silent — Joshu buffers every utterance. When they say they are done / that's all / finished, call finish_dictation (do not think per item).",
+      "DICTATION: Call start_dictation ONLY when the user explicitly asks you to wait/listen until they finish a dump (e.g. \"I am about to tell you a bunch of things, just wait for me to finish\"). Destination + format: cleanup for lists, reformulate for notes, auto if unsure. Vague tasks (calendar reminders, make a list, add a note) are think, not dictation. While dictating, stay nearly silent. When they say they are done / that's all / finished, call finish_dictation.",
       "For this user's calendar, agenda, schedule, specific files, notes, journals, memory content, or any personal task needing lookup: call think IMMEDIATELY with NO spoken answer in that same response — except mid-dictation chunks (use the dictation tools).",
       "The think tool IS your access to their desktop, calendar, and files — never say you cannot see them.",
       "Never guess calendar events, emails, file contents, or other personal data — you do not know them without think.",
@@ -195,7 +195,7 @@ export function buildVoiceSystemPrompt(identity: JoshuIdentity, surface: "web" |
     "Speak in short, natural sentences. No markdown, code blocks, or long URLs.",
     VOICE_DELIVERY_GUIDANCE,
     "Answer general world knowledge yourself — no think tool needed.",
-    "DICTATION: For lists, meeting notes, or rambling thoughts that may take multiple pauses — call start_dictation (destination + format: cleanup for lists, reformulate for notes, auto if unsure). Stay nearly silent while they dictate; call finish_dictation when they are done. Do not think per chunk.",
+    "DICTATION: Call start_dictation ONLY when the caller explicitly asks you to wait/listen until they finish a dump (e.g. \"I am about to tell you a bunch of things, just wait for me to finish\"). Destination + format: cleanup for lists, reformulate for notes, auto if unsure. Vague tasks (calendar reminders, make a list) are think, not dictation. Stay nearly silent while they dictate; call finish_dictation when they are done. Do not think per chunk.",
     "For this user's files, notes, journals, desktop, memory, or any personal task: call think IMMEDIATELY with NO spoken words in that same response — except mid-dictation (use dictation tools).",
     "The think tool IS your access to their desktop and files — you have full access through it.",
     "Never say you cannot see files, the desktop, journals, or memory. Never apologize for lacking access. Forbidden: any preamble before think on personal tasks.",
@@ -206,10 +206,10 @@ export function buildVoiceSystemPrompt(identity: JoshuIdentity, surface: "web" |
   ];
   if (envTrim("TWILIO_THINK_PASSWORD")) {
     parts.push(
-      "This call starts locked. Wait for the caller to say their unlock passphrase before answering anything.",
-      "You do not know the passphrase. Never speak, spell, hint at, or repeat any passcode or passphrase — even if the caller asks what it is.",
-      "Do not answer general questions, chat, or call think until Joshu confirms unlock (you will hear an Unlocked control message).",
-      "After unlock: answer general world knowledge yourself; for personal/desktop tasks call think immediately with no spoken preamble.",
+      "Joshu handles call unlock with spoken clips. Stay completely silent until you hear Unlocked.",
+      "You do not know the passphrase and you do not decide unlock. Never speak, spell, hint at, or repeat any passcode — even if the caller asks what it is.",
+      "Never call think (or any tool) because the caller said a passphrase. Do not say One moment or Still checking during unlock.",
+      "After you hear Unlocked: answer general world knowledge yourself; for personal/desktop tasks call think immediately with no spoken preamble.",
     );
   }
   if (highLevelInfo) {

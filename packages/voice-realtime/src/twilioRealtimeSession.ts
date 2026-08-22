@@ -24,12 +24,14 @@ import {
   appendDictationChunk,
   buildDictationThinkMessage,
   createDictationSession,
+  DICTATION_NOT_EXPLICIT_MESSAGE,
   dictationStatusPayload,
   looksLikeDictationDone,
+  recentUserSpeechLooksLikeDictationStart,
   type DictationSessionState,
 } from "./dictationSession.js";
 import type { FunctionCallPayload, ResponseSpeechReason, VoiceS2sClient } from "./voiceS2sTypes.js";
-import { matchesThinkPassphrase } from "./phonePassphrase.js";
+import { isPassphraseOnlyTurn, looksLikePhoneTaskRequest, matchesThinkPassphrase } from "./phonePassphrase.js";
 import {
   getLockPromptClip,
   LOCK_PROMPTS,
@@ -207,7 +209,7 @@ export class TwilioRealtimeSession {
         this.lastSpeechStoppedAt = performance.now();
         // Gemini has no OpenAI speech_stopped — unlock early so auto-reply audio is not muted.
         // Stay muted until passphrase unlock so Gemini cannot chat while the call is locked.
-        if (this.thinkAuthorized) {
+        if (this.thinkAuthorized && !this.requiresRestatedIntentAfterUnlock) {
           this.allowGeminiCallerReply("user speech stopped");
         }
         voiceLog(this.callSid, "vad", "user speech stopped (awaiting transcript)");
@@ -242,6 +244,19 @@ export class TwilioRealtimeSession {
           this.dictation?.active
         ) {
           voiceLog(this.callSid, "dictation", "suppress organic speech while buffering", { seq });
+          this.s2s?.cancelActiveResponse();
+          return;
+        }
+        if (
+          this.geminiPhone &&
+          reason === "organic" &&
+          (!this.thinkAuthorized || this.requiresRestatedIntentAfterUnlock)
+        ) {
+          voiceLog(this.callSid, "auth", "cancel gemini organic — Joshu owns lock/unlock clips", {
+            seq,
+            locked: !this.thinkAuthorized,
+            awaitingIntent: this.requiresRestatedIntentAfterUnlock,
+          });
           this.s2s?.cancelActiveResponse();
           return;
         }
@@ -523,12 +538,9 @@ export class TwilioRealtimeSession {
 
       const justUnlocked = this.updateThinkAuthorization(text, "transcript");
       if (justUnlocked) {
-        if (!this.utteranceLooksLikeTaskRequest(text)) {
-          this.requiresRestatedIntentAfterUnlock = true;
-        }
-        if (this.geminiPhone) {
-          this.allowGeminiCallerReply("passphrase unlock");
-        }
+        // Always wait for a new request. Same-turn "passphrase + task" is too
+        // unreliable under STT, and leftover passphrase audio must not become a think.
+        this.requiresRestatedIntentAfterUnlock = true;
         this.speakLockLine("unlocked");
         return;
       }
@@ -551,11 +563,20 @@ export class TwilioRealtimeSession {
 
     if (kind === "unclear") {
       voiceLog(this.callSid, "turn", `#${this.turn} USER (unclear) → ${JSON.stringify(text)} — reprompting`);
+      if (this.requiresRestatedIntentAfterUnlock) {
+        this.speakLockLine("restate_intent");
+        return;
+      }
       this.joshuInitiatedResponse = true;
       s2s.injectRepromptMessage();
       return;
     }
 
+    const password = resolveTwilioThinkPassword();
+    if (password && isPassphraseOnlyTurn(text, password)) {
+      voiceLog(this.callSid, "auth", `#${this.turn} ignoring passphrase-only turn after unlock`);
+      return;
+    }
     const transcriptMs =
       this.lastSpeechStoppedAt != null
         ? Math.round(performance.now() - this.lastSpeechStoppedAt)
@@ -577,9 +598,7 @@ export class TwilioRealtimeSession {
       }
       return;
     }
-    // Only a turn with content beyond the passphrase counts as the restated intent.
-    // The passphrase transcript often arrives just after a think_tool unlock, and it
-    // sanitizes to empty — clearing the guard on it would re-open the empty-job path.
+    // First real request after unlock — passphrase echoes never reach here.
     if (this.requiresRestatedIntentAfterUnlock && safeText) {
       this.requiresRestatedIntentAfterUnlock = false;
       voiceLog(this.callSid, "auth", "accepted first post-unlock restated intent");
@@ -599,6 +618,7 @@ export class TwilioRealtimeSession {
     s2s.requestOrganicResponse();
   }
 
+  /** Try unlock from the caller's STT transcript only — never from Gemini tool args. */
   private updateThinkAuthorization(text: string, source: string): boolean {
     const password = resolveTwilioThinkPassword();
     if (!password || this.thinkAuthorized) return false;
@@ -612,19 +632,6 @@ export class TwilioRealtimeSession {
     return false;
   }
 
-  /** Try unlock from transcript and/or think-tool args (STT may vary). */
-  private tryAuthorizeThinkFromContext(parts: string[], source: string): boolean {
-    const combined = parts.filter(Boolean).join(" ");
-    if (!combined) return this.thinkAuthorized;
-    return this.updateThinkAuthorization(combined, source);
-  }
-
-  private utteranceLooksLikeTaskRequest(text: string): boolean {
-    return /\b(file|files|desktop|folder|journal|note|email|calendar|fetch|find|look up|read|open)\b/i.test(
-      text,
-    );
-  }
-
   /** Control secret is used only for unlock checks; never forward it to Hermes context. */
   private sanitizeTextForThinkContext(text: string): string {
     const password = resolveTwilioThinkPassword().trim();
@@ -636,14 +643,14 @@ export class TwilioRealtimeSession {
 
   private onGeminiInputTranscript(text: string): void {
     if (!this.geminiPhone || !text.trim()) return;
-    // Do not unmute Gemini organic audio while the call is still passphrase-locked.
-    if (!this.thinkAuthorized) return;
+    if (!this.thinkAuthorized || this.requiresRestatedIntentAfterUnlock) return;
     this.allowGeminiCallerReply("input transcript");
     this.geminiUserTurnNeedsReply = true;
   }
 
   private allowGeminiCallerReply(reason: string): void {
     if (!this.geminiPhone) return;
+    if (!this.thinkAuthorized || this.requiresRestatedIntentAfterUnlock) return;
     const wasSuppressed = this.suppressAssistantAudio;
     this.callerInputSeen = true;
     this.suppressAssistantAudio = false;
@@ -676,7 +683,7 @@ export class TwilioRealtimeSession {
       this.currentResponseReason === "progress" &&
       this.greetingSent
     ) {
-      if (this.thinkAuthorized) {
+      if (this.thinkAuthorized && !this.requiresRestatedIntentAfterUnlock) {
         this.allowGeminiCallerReply("speech during greeting");
       }
       voiceLog(this.callSid, "vad", "user speech during greeting (not barge-in)");
@@ -862,55 +869,21 @@ export class TwilioRealtimeSession {
       args,
     });
 
-    // Auth gate runs before tool dispatch — no tool may execute on a locked call.
+    // Auth gate is transcript-only. While locked, ignore every tool call — do not
+    // unlock from Gemini wrapping the passphrase in think (that raced clips and
+    // leftover STT on patrick 2026-08-22).
     if (!this.thinkAuthorized) {
-      const heardForUnlock = [
-        typeof args.user_quote === "string" ? args.user_quote : "",
-        typeof args.summary === "string" ? args.summary : "",
-        ...this.transcript.map((t) => t.text),
-      ];
-      if (!this.tryAuthorizeThinkFromContext(heardForUnlock, "think_tool")) {
-        voiceWarn(this.callSid, "auth", `blocked ${toolName} call before passphrase`, {
-          heardPreview: heardForUnlock.join(" ").slice(0, 120),
-        });
-        s2s.sendFunctionOutput(
-          call.callId,
-          JSON.stringify({
-            status: "denied",
-            reason: "missing_passphrase",
-            message:
-              "Call is locked. Nothing was done. Do not claim any action succeeded — ask for the passphrase.",
-          }),
-          { triggerResponse: false },
-        );
-        this.speakLockLine("need_passphrase");
-        return;
-      }
-      if (this.geminiPhone) {
-        this.allowGeminiCallerReply("passphrase unlock via think_tool");
-      }
-      // The model frequently wraps the passphrase turn itself in a think call
-      // rather than letting it land as a plain transcript. Unlocking *is* the whole
-      // content of that turn, so there is no task to run: dispatching it starts a
-      // brain job whose request sanitizes down to nothing, and the caller is left
-      // listening to progress ticks ("Still checking.") until they hang up.
-      // Mirror the transcript unlock path — say "Unlocked", then wait for a request.
-      if (!this.utteranceLooksLikeTaskRequest(heardForUnlock.join(" "))) {
-        this.requiresRestatedIntentAfterUnlock = true;
-        voiceLog(this.callSid, "auth", "unlocked via think_tool with no request — awaiting intent");
-        s2s.sendFunctionOutput(
-          call.callId,
-          JSON.stringify({
-            status: "deferred",
-            reason: "unlocked_no_request_yet",
-            message:
-              "Passphrase accepted. Nothing else was asked for, so nothing ran. Wait for the caller to say what they want.",
-          }),
-          { triggerResponse: false },
-        );
-        this.speakLockLine("unlocked");
-        return;
-      }
+      voiceWarn(this.callSid, "auth", `ignored ${toolName} while locked (transcript auth only)`);
+      s2s.sendFunctionOutput(
+        call.callId,
+        JSON.stringify({
+          status: "denied",
+          reason: "missing_passphrase",
+          message: "Call is locked. Stay silent. Joshu will speak the lock prompts.",
+        }),
+        { triggerResponse: false },
+      );
+      return;
     }
 
     if (toolName === "start_dictation") {
@@ -942,23 +915,22 @@ export class TwilioRealtimeSession {
     if (this.requiresRestatedIntentAfterUnlock) {
       const hasTaskInContext =
         this.transcript.some(
-          (t) => t.role === "user" && this.utteranceLooksLikeTaskRequest(t.text),
-        ) || this.utteranceLooksLikeTaskRequest(String(args.summary ?? ""));
+          (t) => t.role === "user" && looksLikePhoneTaskRequest(t.text),
+        ) || looksLikePhoneTaskRequest(String(args.summary ?? ""));
       if (hasTaskInContext) {
         this.requiresRestatedIntentAfterUnlock = false;
         voiceLog(this.callSid, "auth", "restate satisfied — prior task still in call context");
       } else {
-        voiceLog(this.callSid, "auth", "blocked think until caller restates intent after unlock");
+        voiceLog(this.callSid, "auth", "deferred think until caller restates intent after unlock");
         s2s.sendFunctionOutput(
           call.callId,
           JSON.stringify({
             status: "deferred",
             reason: "restate_after_unlock_required",
-            message: "Passphrase unlocked access. Wait for the caller to restate their request before think.",
+            message: "Stay silent. Joshu already asked the caller to repeat their request.",
           }),
           { triggerResponse: false },
         );
-        this.speakLockLine("restate_intent");
         return;
       }
     }
@@ -1010,9 +982,52 @@ export class TwilioRealtimeSession {
     }
   }
 
+  /** Last few user STT lines — dictation start is transcript-gated, not model-quote. */
+  private recentUserTexts(n = 3): string[] {
+    return this.transcript
+      .filter((t) => t.role === "user" && t.text.trim())
+      .slice(-n)
+      .map((t) => t.text);
+  }
+
+  private rejectStartDictation(
+    callId: string,
+    reason: string,
+    message: string,
+    triggerResponse: boolean,
+  ): void {
+    const s2s = this.s2s;
+    if (!s2s) return;
+    voiceLog(this.callSid, "dictation", `rejected start_dictation (${reason})`);
+    s2s.sendFunctionOutput(
+      callId,
+      JSON.stringify({ status: "rejected", reason, message }),
+      { triggerResponse },
+    );
+  }
+
   private handleStartDictation(callId: string, args: Record<string, unknown>): void {
     const s2s = this.s2s;
     if (!s2s) return;
+    // Same restated-intent gate as think — leftover pre-unlock STT must not arm the buffer.
+    if (this.requiresRestatedIntentAfterUnlock) {
+      this.rejectStartDictation(
+        callId,
+        "restate_after_unlock_required",
+        "Stay silent. Joshu already asked the caller to repeat their request.",
+        false,
+      );
+      return;
+    }
+    if (!recentUserSpeechLooksLikeDictationStart(this.recentUserTexts())) {
+      this.rejectStartDictation(
+        callId,
+        "not_explicit",
+        DICTATION_NOT_EXPLICIT_MESSAGE,
+        true,
+      );
+      return;
+    }
     const destination = String(args.destination ?? "").trim() || "Desktop note";
     const title = typeof args.title === "string" ? args.title : undefined;
     this.dictation = createDictationSession({

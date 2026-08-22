@@ -80,3 +80,20 @@ export function matchesThinkPassphrase(transcript: string, password: string): bo
   }
   return hits / passTokens.length >= 0.7;
 }
+
+/** Personal/desktop work language — not a passphrase-only unlock turn. */
+const PHONE_TASK_REQUEST_RE =
+  /\b(file|files|desktop|folder|journal|note|notes|email|mail|calendar|agenda|fetch|find|look up|lookup|read|open|write|send|remind|schedule|what's on|whats on)\b/i;
+
+export function looksLikePhoneTaskRequest(text: string): boolean {
+  return PHONE_TASK_REQUEST_RE.test(text);
+}
+
+/**
+ * True when STT is the passphrase (or a near-miss of it) and nothing else.
+ * Used so leftover unlock audio is not treated as a Hermes/Gemini request.
+ */
+export function isPassphraseOnlyTurn(transcript: string, password: string): boolean {
+  if (!matchesThinkPassphrase(transcript, password)) return false;
+  return !looksLikePhoneTaskRequest(transcript);
+}

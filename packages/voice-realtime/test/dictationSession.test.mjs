@@ -6,7 +6,9 @@ import {
   buildDictationThinkMessage,
   createDictationSession,
   looksLikeDictationDone,
+  looksLikeExplicitDictationStart,
   parseDictationFormat,
+  recentUserSpeechLooksLikeDictationStart,
 } from "../dist/dictationSession.js";
 
 describe("dictationSession", () => {
@@ -43,5 +45,44 @@ describe("dictationSession", () => {
     assert.match(msg.summary, /Meeting notes\.md/);
     assert.match(msg.userQuote, /shipping voice/);
     assert.match(msg.userQuote, /EA role/);
+  });
+
+  it("requires an explicit wait-until-done dump cue to start dictation", () => {
+    assert.equal(
+      looksLikeExplicitDictationStart(
+        "I am about to tell you a bunch of things so just wait for me to finish.",
+      ),
+      true,
+    );
+    assert.equal(looksLikeExplicitDictationStart("just wait for me to finish"), true);
+    assert.equal(looksLikeExplicitDictationStart("don't interrupt, I have a list"), true);
+    assert.equal(looksLikeExplicitDictationStart("start dictation"), true);
+    assert.equal(looksLikeExplicitDictationStart("take this down"), true);
+    assert.equal(looksLikeExplicitDictationStart("I'm going to list a bunch of sites, just listen"), true);
+    assert.equal(
+      looksLikeExplicitDictationStart("I'm going to give you some calendar reminders"),
+      false,
+    );
+    assert.equal(
+      looksLikeExplicitDictationStart("I want to give you some calendar reminders"),
+      false,
+    );
+    assert.equal(looksLikeExplicitDictationStart("what's on my calendar"), false);
+    assert.equal(looksLikeExplicitDictationStart("I have a bunch of meetings tomorrow"), false);
+    assert.equal(looksLikeExplicitDictationStart("make a list of the websites we talked about"), false);
+    assert.equal(looksLikeExplicitDictationStart("write this down: buy milk"), false);
+    assert.equal(
+      recentUserSpeechLooksLikeDictationStart([
+        "I want to give you some calendar reminders",
+      ]),
+      false,
+    );
+    assert.equal(
+      recentUserSpeechLooksLikeDictationStart([
+        "I want to give you some calendar reminders",
+        "actually wait until I'm done, I have a bunch of things",
+      ]),
+      true,
+    );
   });
 });

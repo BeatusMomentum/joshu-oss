@@ -167,7 +167,7 @@ jChat uses **speech-to-speech** via `@joshu/voice-client` when voice-realtime is
 | **Chat UI (voice)** | S2S transcript on casual turns; Hermes brain stream after `think` or `finish_dictation` |
 | **Voice** | OpenAI Realtime / Gemini Live — direct answers, `open_desktop`, dictation buffer (`start_dictation` → `finish_dictation`), or co-present summary after `think` |
 
-Dictation (lists, meeting notes, rambling): see [voice-think-speak.md — Dictation sessions](vps-sandbox/voice-think-speak.md#dictation-sessions-lists-notes-rambling).
+Dictation (lists, meeting notes, rambling) starts only when the speaker explicitly asks Joshu to wait until they finish — see [voice-think-speak.md — Dictation sessions](vps-sandbox/voice-think-speak.md#dictation-sessions-lists-notes-rambling).
 
 `npm run dev:arozos` autostarts voice-realtime on `:8792` when a voice API key (`OPENAI_API_KEY` or `GEMINI_API_KEY` with `JOSHU_VOICE_PROVIDER=gemini_live`) and `HERMES_API_KEY` are set.
 

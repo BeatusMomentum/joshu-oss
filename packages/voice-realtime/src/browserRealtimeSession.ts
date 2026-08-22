@@ -25,8 +25,10 @@ import {
   appendDictationChunk,
   buildDictationThinkMessage,
   createDictationSession,
+  DICTATION_NOT_EXPLICIT_MESSAGE,
   dictationStatusPayload,
   looksLikeDictationDone,
+  recentUserSpeechLooksLikeDictationStart,
   type DictationSessionState,
 } from "./dictationSession.js";
 import type { FunctionCallPayload, ResponseSpeechReason } from "./voiceS2sTypes.js";
@@ -628,6 +630,24 @@ export class BrowserRealtimeSession {
   private handleStartDictation(callId: string, args: Record<string, unknown>): void {
     const s2s = this.s2s;
     if (!s2s) return;
+    const recent = this.transcript
+      .filter((t) => t.role === "user" && t.text.trim())
+      .slice(-3)
+      .map((t) => t.text);
+    if (this.pendingUserQuote) recent.push(this.pendingUserQuote);
+    if (!recentUserSpeechLooksLikeDictationStart(recent)) {
+      voiceLog(this.sessionId, "dictation", "rejected start_dictation (not_explicit)");
+      s2s.sendFunctionOutput(
+        callId,
+        JSON.stringify({
+          status: "rejected",
+          reason: "not_explicit",
+          message: DICTATION_NOT_EXPLICIT_MESSAGE,
+        }),
+        { triggerResponse: true },
+      );
+      return;
+    }
     const destination = String(args.destination ?? "").trim() || "Desktop note";
     const title = typeof args.title === "string" ? args.title : undefined;
     this.dictation = createDictationSession({

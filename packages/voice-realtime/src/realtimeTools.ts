@@ -22,7 +22,7 @@ export const REALTIME_TOOL_DEFINITIONS = [
     type: "function" as const,
     name: "start_dictation",
     description:
-      "Begin a multi-turn voice dictation session. Use when the user will speak a list, meeting notes, rambling thoughts, or any content that may pause between chunks before they are done. Joshu buffers every subsequent utterance until finish_dictation (or the user says they are done). Do NOT call think for each list item. Call with zero spoken preamble, then confirm briefly that you are ready.",
+      "Begin a multi-turn voice dictation session ONLY when the user explicitly asks you to wait/listen until they finish a dump — e.g. \"I am about to tell you a bunch of things, just wait for me to finish\", \"don't interrupt\", \"start dictation\", \"take this down\". Do NOT infer dictation from a task (calendar reminders, make a list, add notes) — use think for those. Joshu buffers every subsequent utterance until finish_dictation. Call with zero spoken preamble.",
     parameters: {
       type: "object",
       properties: {
