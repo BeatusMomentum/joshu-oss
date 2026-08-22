@@ -149,7 +149,6 @@ rm -rf \
   "${OUT_DIR}/scripts/refresh-vps-ghcr-login.sh" \
   "${OUT_DIR}/scripts/diff-factory-skill-with-learning.sh" \
   "${OUT_DIR}/scripts/lib/ensure-hermes-learning-git.sh" \
-  "${OUT_DIR}/src/hermesLearningGitCron.ts" \
   "${OUT_DIR}/.github/workflows/fleet-sync-check.yml" \
   "${OUT_DIR}/.github/workflows/joshu-sandbox-image.yml" \
   "${OUT_DIR}/deploy/.env.vps.example.oss" \
