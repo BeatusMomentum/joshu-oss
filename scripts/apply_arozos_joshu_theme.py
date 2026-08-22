@@ -33,7 +33,8 @@ def _resolve_theme_paths(root: Path) -> tuple[Path, str, Path, bool]:
     """Return (overlay_dir, theme_file, asset_root, branded).
 
     Branding is image-intrinsic: an explicit JOSHU_DESIGN_PACK wins, otherwise we
-    auto-detect the baked fleet pack at /opt/joshu-design. Both sources fall back to
+    auto-detect the baked fleet pack at /opt/joshu-design, then a sibling
+    `joshu-design` checkout (same as dev-arozos.sh). Both sources fall back to
     the vanilla shell when the branded CSS is missing (OSS images, absent pack), so a
     stale host vps-start.sh or a missing env export can no longer silently revert
     fleet chrome to vanilla.
@@ -41,6 +42,10 @@ def _resolve_theme_paths(root: Path) -> tuple[Path, str, Path, bool]:
     design_pack = os.environ.get("JOSHU_DESIGN_PACK", "").strip()
     if not design_pack and _has_branded_overlay(Path(BAKED_DESIGN_PACK_DIR)):
         design_pack = BAKED_DESIGN_PACK_DIR
+    if not design_pack:
+        sibling = root.parent / "joshu-design"
+        if _has_branded_overlay(sibling):
+            design_pack = str(sibling)
     if design_pack:
         asset_root = Path(design_pack).resolve()
         if _has_branded_overlay(asset_root):
@@ -51,8 +56,10 @@ def _resolve_theme_paths(root: Path) -> tuple[Path, str, Path, bool]:
 
 
 # Bump when Share / File Manager overlays must bust browser iframe caches.
-OVERLAY_VERSION = "20260821a"
-SHARE_DIALOG_CACHE_BUST = "20260717d"
+# Keep SHARE_DIALOG_CACHE_BUST in lockstep so File Manager / desktop Share
+# floats reload HTML whenever overlay CSS is redeployed.
+OVERLAY_VERSION = "20260822a"
+SHARE_DIALOG_CACHE_BUST = OVERLAY_VERSION
 DESKTOP_SHARE_TO_MARKER = "/* joshu-desktop-share-to */"
 FOLDER_ICON_VERSION = "2"
 FWCSS_NEEDLE = '<link id="fwcss" rel="stylesheet" href="./script/ao.css">'
@@ -75,6 +82,11 @@ AUTH_WORDMARK_WEB_PATH = "img/public/joshu-wordmark.svg"
 AUTH_ICON_WEB_PATH = "img/public/joshu-icon.svg"
 PUBLIC_PAGES_CSS = "joshu-public-pages.css"
 PUBLIC_PAGES_CSS_WEB_PATH = "script/joshu-public-pages.css"
+# Owner float dialogs (Share To / File Share / Chat sharing). Lives under
+# ArozOS `script/` like auth + public-page CSS — not the Joshu subservice,
+# so the `joshu-*.css` prefix is safe here.
+SHARE_DIALOGS_CSS = "joshu-share-dialogs.css"
+SHARE_DIALOGS_CSS_WEB_PATH = "script/joshu-share-dialogs.css"
 PUBLIC_IDENTITY_JS = "joshu-public-identity.js"
 PUBLIC_IDENTITY_JS_WEB_PATH = "script/joshu-public-identity.js"
 PUBLIC_PERSONA_JSON_WEB_PATH = "script/joshu-public-persona.json"
@@ -359,6 +371,20 @@ def _copy_file_share_dialog(web: Path, overlay: Path, root: Path) -> None:
         ("SystemAO/locale/file_share.json", web / "SystemAO" / "locale" / "file_share.json"),
     )
     vanilla = root / "arozos" / "web-overlays-vanilla"
+
+    # Owner-dialog CSS is required: without it Share To / File Share / Chat
+    # sharing render as unstyled HTML (Semantic UI alone is not enough).
+    css_src = overlay / SHARE_DIALOGS_CSS
+    if not css_src.is_file():
+        css_src = vanilla / SHARE_DIALOGS_CSS
+    if css_src.is_file():
+        css_dest = web / SHARE_DIALOGS_CSS_WEB_PATH
+        css_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(css_src, css_dest)
+        print(f"[joshu] applied share dialog CSS -> {css_dest}")
+    else:
+        print(f"[joshu] share dialog CSS missing: {SHARE_DIALOGS_CSS}", file=sys.stderr)
+
     for rel, dest in names:
         src = overlay / rel
         if not src.is_file():
@@ -375,6 +401,12 @@ def _copy_file_share_dialog(web: Path, overlay: Path, root: Path) -> None:
                 content,
                 count=1,
             )
+        # Keep CSS query aligned so iframe reloads pick up the copied file
+        content = re.sub(
+            r"joshu-share-dialogs\.css\?v=[^\"']+",
+            f"joshu-share-dialogs.css?v={OVERLAY_VERSION}",
+            content,
+        )
         dest.write_text(content, encoding="utf-8")
     print(f"[joshu] applied share dialogs -> {web / 'SystemAO' / 'file_system'}")
 

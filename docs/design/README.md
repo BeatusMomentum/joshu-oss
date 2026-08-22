@@ -33,6 +33,7 @@ OSS default overlays (no proprietary brand pack):
 | [`arozos/web-overlays-vanilla/SystemAO/file_system/share_to.html`](../../arozos/web-overlays-vanilla/SystemAO/file_system/share_to.html) | Share To picker (File sharing page / Chat with files → chat_share.html) |
 | [`arozos/web-overlays-vanilla/SystemAO/file_system/chat_share.html`](../../arozos/web-overlays-vanilla/SystemAO/file_system/chat_share.html) | Chat sharing dialog (public URL + Slack channel + Enable/Remove Sharing) |
 | [`arozos/web-overlays-vanilla/SystemAO/file_system/file_share.html`](../../arozos/web-overlays-vanilla/SystemAO/file_system/file_share.html) | Share dialog (float window; link + permissions; remove/enable toggle) |
+| [`arozos/web-overlays-vanilla/joshu-share-dialogs.css`](../../arozos/web-overlays-vanilla/joshu-share-dialogs.css) | Owner float dialog CSS → `script/joshu-share-dialogs.css` (copied by theme apply) |
 | [`arozos/web-overlays-vanilla/system/share/`](../../arozos/web-overlays-vanilla/system/share/) | Public `/share/*` pages (brandbar + identity; login-aligned `joshu-public-pages.css`) |
 | [`arozos/web-overlays-vanilla/joshu-public-pages.css`](../../arozos/web-overlays-vanilla/joshu-public-pages.css) | Shared guest CSS for File Share + Share Chat |
 | [`arozos/web-overlays-vanilla/joshu-public-identity.js`](../../arozos/web-overlays-vanilla/joshu-public-identity.js) | Client hydrator for companion portrait / `{owner}'s Joshu` on File Share |

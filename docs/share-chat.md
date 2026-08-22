@@ -62,6 +62,7 @@ Share Chat injects identity **server-side** in [`src/shareChat/routes.ts`](../sr
 | Source | Dest |
 |--------|------|
 | `arozos/web-overlays-vanilla/joshu-public-pages.css` | `web/script/joshu-public-pages.css` |
+| `arozos/web-overlays-vanilla/joshu-share-dialogs.css` | `web/script/joshu-share-dialogs.css` (owner Share To / File Share / Chat sharing floats) |
 | `arozos/web-overlays-vanilla/joshu-public-identity.js` | `web/script/joshu-public-identity.js` |
 | (generated) persona snapshot | `web/script/joshu-public-persona.json` |
 | `arozos/web-overlays-vanilla/system/share/*.html` | `system/share/` |
@@ -279,6 +280,7 @@ Fetch a starter manifest: `GET .../slack/manifest`.
 | `apps/share-chat/index.html` | Public chat page (brandbar + server-injected identity) |
 | `dist/shareChat/ui/index.html` | Bundled copy (`npm run build`) so VPS `dist/` bind-mounts still serve the UI |
 | `arozos/web-overlays-vanilla/joshu-public-pages.css` | Shared guest CSS (File Share + Share Chat) |
+| `arozos/web-overlays-vanilla/joshu-share-dialogs.css` | Owner float dialog CSS (Share To / File Share / Chat sharing) |
 | `arozos/web-overlays-vanilla/joshu-public-identity.js` | Client identity hydrator for `/share/*` |
 | `arozos/web-overlays-vanilla/SystemAO/file_system/share_to.html` | Share To picker |
 | `arozos/web-overlays-vanilla/SystemAO/file_system/chat_share.html` | Owner dialog (public URL + Slack channel + Remove Sharing) |

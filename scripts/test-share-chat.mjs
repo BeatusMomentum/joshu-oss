@@ -498,6 +498,33 @@ function makeScope(partial) {
 }
 
 {
+  const cssPath = path.resolve(
+    process.cwd(),
+    "arozos/web-overlays-vanilla/joshu-share-dialogs.css",
+  );
+  assert(fs.existsSync(cssPath), "joshu-share-dialogs.css exists");
+  const applySrc = fs.readFileSync(
+    path.resolve(process.cwd(), "scripts/apply_arozos_joshu_theme.py"),
+    "utf8",
+  );
+  assert(
+    applySrc.includes("joshu-share-dialogs.css"),
+    "theme apply copies owner share-dialog CSS into web/script/",
+  );
+  assert(
+    applySrc.includes("SHARE_DIALOGS_CSS_WEB_PATH"),
+    "theme apply has share-dialog CSS dest path",
+  );
+  for (const name of ["share_to.html", "chat_share.html", "file_share.html"]) {
+    const html = fs.readFileSync(
+      path.resolve(process.cwd(), "arozos/web-overlays-vanilla/SystemAO/file_system", name),
+      "utf8",
+    );
+    assert(html.includes("joshu-share-dialogs.css"), `${name} links share dialog CSS`);
+  }
+}
+
+{
   const uiPath = path.resolve(process.cwd(), "apps/share-chat/index.html");
   assert(fs.existsSync(uiPath), "apps/share-chat/index.html must exist for public Chat with files");
   const html = fs.readFileSync(uiPath, "utf8");
