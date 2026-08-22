@@ -1,12 +1,12 @@
-# Hetzner Ubuntu quickstart (self-host)
+# Ubuntu VPS quickstart (Hetzner / DigitalOcean)
 
-Step-by-step: create a Hetzner VPS, download Joshu from GitHub, set your hostname, run the installer, open the desktop. **API keys** (OpenRouter) are added in the **Welcome** app after first login — not on the command line.
+Step-by-step: create an Ubuntu VPS, download Joshu from GitHub, set your hostname, run the installer, open the desktop. **API keys** (OpenRouter) are added in the **Welcome** app after first login — not on the command line.
 
 No proprietary control plane — this is **standalone self-host** only. Control-plane managed boxes skip Welcome's Connect AI step (keys are provisioned automatically).
 
 **You need before you start:**
 
-- A [Hetzner Cloud](https://console.hetzner.cloud/) account
+- A [Hetzner Cloud](https://console.hetzner.cloud/) or [DigitalOcean](https://cloud.digitalocean.com/) account
 - A domain you control (for HTTPS), e.g. `mybox.example.com`
 
 **Example values used below** (replace with yours):
@@ -19,7 +19,11 @@ No proprietary control plane — this is **standalone self-host** only. Control-
 
 ---
 
-## Step 1 — Create the Hetzner server
+## Step 1 — Create the Ubuntu server (8 GB RAM)
+
+Pick one provider. The rest of this guide is the same.
+
+### Hetzner
 
 1. Open [Hetzner Cloud Console](https://console.hetzner.cloud/) → your project → **Add server**.
 2. **Image:** Ubuntu **24.04**
@@ -29,6 +33,20 @@ No proprietary control plane — this is **standalone self-host** only. Control-
 6. **Firewall (recommended):** allow inbound **22**, **80**, **443**
 7. Click **Create & buy now**
 8. Copy the server **IPv4** address from the dashboard.
+
+### DigitalOcean
+
+1. Open [DigitalOcean](https://cloud.digitalocean.com/) → **Create** → **Droplets**.
+2. **Image:** Ubuntu **24.04 LTS**
+3. **Size:** 4 vCPU / **8 GB RAM** (`s-4vcpu-8gb`) or larger — same class as Hetzner CPX31. 2 GB droplets OOM under Postgres + Hermes + Camofox.
+4. **Region:** close to you (`nyc3`, `sfo3`, `ams3`, …)
+5. **Authentication:** SSH key (you will `ssh root@…`)
+6. **Firewall (recommended):** **Networking → Firewalls** — inbound TCP **22**, **80**, **443**; outbound **all**. With no firewall, DO allows all inbound, which also works.
+7. Create the droplet and copy the public **IPv4**.
+
+If your SSH agent has several keys, pin the one you uploaded: `ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes root@…`.
+
+DigitalOcean Ubuntu often runs `unattended-upgrades` for a minute after first boot. If bootstrap fails with `Could not get lock /var/lib/dpkg/lock-frontend`, wait and re-run Step 6 (the installer now retries apt).
 
 ---
 
@@ -66,6 +84,8 @@ All remaining steps run on the server as `root`.
 
 ## Step 4 — Install `git` and clone Joshu
 
+Ubuntu images often already have `git`. The extra `apt-get` is harmless.
+
 ```bash
 apt-get update && apt-get install -y git
 
@@ -73,6 +93,8 @@ git clone --depth 1 --branch main \
   https://github.com/db-aeon/joshu-oss.git \
   /opt/joshu
 ```
+
+If `apt-get` says the dpkg lock is held, wait ~30s and retry (DigitalOcean first boot).
 
 ---
 
@@ -88,20 +110,23 @@ chmod 600 /etc/joshu/instance.env
 nano /etc/joshu/instance.env
 ```
 
-Set **only** these (search with **Ctrl+W** in `nano`):
+Set **these** fields (search with **Ctrl+W** in `nano`). Copy the version pins from [`deploy/RELEASE.json`](../../deploy/RELEASE.json) — do not leave the example file's older tags.
 
 ```dotenv
 CUSTOMER_DOMAIN=mybox.example.com
 VPS_IPV4=203.0.113.50
 ACME_EMAIL=you@example.com
+# Same username you will type on the first-visit "Create account" page:
+JOSHU_AROZ_USER=yourname
 
 JOSHU_RELEASE_VERSION=0.1.41
 JOSHU_IMAGE_REF=ghcr.io/db-aeon/joshu-oss:0.1.41
+JOSHU_VOICE_IMAGE_REF=ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.41
 ```
 
 Save: **Ctrl+O** Enter, **Ctrl+X**.
 
-You do **not** need to set `OPENROUTER_API_KEY`, `HERMES_API_KEY`, or `API_SERVER_KEY` here — bootstrap generates gateway secrets; Welcome collects OpenRouter after login.
+You do **not** need to set `OPENROUTER_API_KEY`, `HERMES_API_KEY`, or `API_SERVER_KEY` here — bootstrap generates gateway secrets; Welcome collects OpenRouter after login. `JOSHU_AROZ_USER` must match the ArozOS username you create in Step 7 (VPS file-brain paths require it).
 
 ---
 
@@ -118,7 +143,7 @@ Bootstrap will:
 2. Generate `HERMES_API_KEY`, `API_SERVER_KEY`, and `JOSHU_HERMES_DASHBOARD_PASSWORD` if missing
 3. Pull the Joshu image and start the stack
 
-First run takes **10–20 minutes**.
+First run takes **10–20 minutes**. If it fails immediately on `Could not get lock /var/lib/dpkg/lock-frontend`, wait for unattended-upgrades and run the same command again.
 
 Optional — view Hermes admin password (auto-generated):
 
@@ -132,15 +157,17 @@ grep JOSHU_HERMES_DASHBOARD_PASSWORD /etc/joshu/instance.env
 
 In a browser: `https://mybox.example.com/`
 
-Log in to ArozOS. **Welcome** opens automatically and asks for your **OpenRouter** API key (Connect AI step). Paste a key from [openrouter.ai/keys](https://openrouter.ai/keys) to enable jChat. On the same step you can optionally add a [Gemini API key](https://aistudio.google.com/apikey) for the microphone in jChat (voice uses Gemini Live, not OpenAI).
+**First visit** (no users yet): ArozOS redirects to **Create account** (`/user.html`). Use the **same username** as `JOSHU_AROZ_USER`, pick the `administrator` group, then sign in. **Welcome** opens and asks for your **OpenRouter** API key (Connect AI step). Paste a key from [openrouter.ai/keys](https://openrouter.ai/keys) to enable jChat. On the same step you can optionally add a [Gemini API key](https://aistudio.google.com/apikey) for the microphone in jChat (voice uses Gemini Live, not OpenAI).
 
 You can skip Connect AI and add keys later by reopening **Welcome** from the desktop (Review step shows Gemini if you skipped voice).
 
 Health check (laptop):
 
 ```bash
-curl -fsS https://mybox.example.com/joshu/api/instance/health
+curl -sS https://mybox.example.com/joshu/api/instance/health
 ```
+
+Before Connect AI, overall `"healthy": false` is normal (`hermes` / `hindsight` / `gbrain` wait on keys). `curl -fsS` (fail on HTTP 503) is the wrong check at this stage. Expect `components.joshu.ok` and `components.arozos.ok` to be `true`. After OpenRouter + Gemini in Welcome, re-check until `"healthy": true`.
 
 ---
 
@@ -230,13 +257,16 @@ Joshu overlays no longer use `validateResetKey`. If another admin is still signe
 
 | Problem | What to check |
 | --- | --- |
+| `Could not get lock /var/lib/dpkg/lock-frontend` | First-boot unattended-upgrades (common on DigitalOcean). Wait and re-run bootstrap. |
 | `docker pull` → `registry: denied` | Image tag not published yet, or GHCR package still private. Confirm tag in [`deploy/RELEASE.json`](../../deploy/RELEASE.json). After a release build, `docker pull` should work without login. If building from source instead: run `bash scripts/ensure-vendor-for-build.sh` first (OSS clone has no `vendor/`). |
-| Certificate error in browser | DNS not pointing at VPS yet |
-| Health `curl` fails | Ports 80/443 open; wait a few minutes after bootstrap |
+| Joshu API crash: `Cannot find module '.../dist/excalidraw/errors.js'` | **0.1.41** — Vite wiped tsc CWM JS in `dist/excalidraw/`. Rebuilt GHCR tags include the files. If host `dist/` was synced from the old image: `docker pull` the pin, `bash scripts/sync-dist-from-image.sh`, recreate `joshu-stack`. `deploy/hotfixes/cwm-backend-js/` is a git fallback if the image still lacks `errors.js`. |
+| Certificate error in browser | DNS not pointing at VPS yet; records must be **DNS-only** (grey cloud), not proxied, for Caddy HTTP-01 |
+| Health `curl` fails with **503** | Expected until Welcome → Connect AI. Use `curl -sS` and check `components.joshu.ok` / `arozos.ok`. |
 | Chat empty / 401 | Add OpenRouter in **Welcome → Connect AI**, or check gateway keys in `instance.env` |
+| `JOSHU_AROZ_USER is required on VPS` | Set `JOSHU_AROZ_USER` to your ArozOS username and recreate `joshu-stack`. |
 | Desktop icons broken (placeholder images) | `img/joshu/*.png` missing from ArozOS `web/` — re-run theme apply + icon copy (image **0.1.30+** or host `git pull` + restart). See below. |
 | Desktop has icons but no window chrome | `aroz-vanilla-shell.css` not applied — same fix; hard-refresh after restart |
-| Site works then **502** / box “down” for minutes | Usually **not** Hetzner sleep — `joshu-stack` crash loop (failed healthcheck). Check `docker compose logs joshu-stack` and restart count. Common on **0.1.29** without host `git pull`: missing `packages/email-signature/dist` bind mount + broken Camofox `server.js`. Fix below. |
+| Site works then **502** / box “down” for minutes | Usually **not** provider sleep — `joshu-stack` crash loop (failed healthcheck). Check `docker compose logs joshu-stack` and restart count. Common on **0.1.29** without host `git pull`: missing `packages/email-signature/dist` bind mount + broken Camofox `server.js`. Fix below. |
 | Locked out of ArozOS login | No email reset — use SSH script or admin temporary password. See [Forgot ArozOS password](#forgot-arozos-password-self-host). |
 | Hermes Admin **Cannot GET /joshu/hermes-admin/** | VPS uses **direct mode** — open `https://hermes-admin.mybox.example.com/` (not `/joshu/`). Add DNS **A** record ([Step 2](#step-2--point-dns-at-the-server)). See [Hermes Admin](#hermes-admin-desktop-shortcut). |
 | `git clone` fails | Outbound HTTPS from VPS |
@@ -258,7 +288,7 @@ docker compose -f docker-compose.yml --env-file /etc/joshu/instance.env up -d --
 
 Wait for health: `curl -fsS http://127.0.0.1:8788/joshu/api/instance/health | head -c 200`
 
-Use **CPX31 (8 GB RAM)** or larger — CX/2 GB hosts OOM under Postgres + Hermes + Camofox.
+Use **CPX31 / `s-4vcpu-8gb` (8 GB RAM)** or larger — 2 GB hosts OOM under Postgres + Hermes + Camofox.
 
 ### Desktop icons or missing chrome
 

@@ -33,6 +33,14 @@ trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
 echo "[sync-dist-from-image] copying dist -> ${DIST_DIR}"
 docker cp "${CID}:/opt/joshu/dist/." "$DIST_DIR/"
 
+# 0.1.41 image: Vite `build:excalidraw` emptied tsc's `dist/excalidraw/*.js` (CWM API).
+# Restore from git hotfix if the pulled image still lacks errors.js.
+if [[ ! -f "${DIST_DIR}/excalidraw/errors.js" && -f "${INSTALL_DIR}/deploy/hotfixes/cwm-backend-js/errors.js" ]]; then
+  mkdir -p "${DIST_DIR}/excalidraw"
+  cp -a "${INSTALL_DIR}/deploy/hotfixes/cwm-backend-js/." "${DIST_DIR}/excalidraw/"
+  echo "[sync-dist-from-image] restored CWM backend JS into dist/excalidraw (0.1.41 image hotfix)"
+fi
+
 if docker cp "${CID}:/opt/joshu/packages/app-sdk/dist/." "$APP_SDK_DIST/" 2>/dev/null; then
   echo "[sync-dist-from-image] app-sdk dist synced"
 else

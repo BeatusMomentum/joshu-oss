@@ -2,7 +2,7 @@
 
 Give your Joshu box a real phone number with **Twilio Programmable Voice** + Media Streams. This guide is for **standalone OSS self-host** (you own the Twilio account). Managed fleet boxes get Twilio from the control plane automatically.
 
-**Prerequisites:** a working VPS from [`vps-quickstart.md`](../vps-quickstart.md) (HTTPS hostname, `voice-rt` image running, Gemini or OpenAI key for voice). Browser mic in jChat does **not** require Twilio.
+**Prerequisites:** a working VPS from [`hetzner-quickstart.md`](hetzner-quickstart.md) (HTTPS hostname, `voice-rt` image running, Gemini or OpenAI key for voice). Browser mic in jChat does **not** require Twilio.
 
 Architecture and call UX (passphrase, lock clips): [`voice-realtime.md`](voice-realtime.md) · [`voice-think-speak.md`](voice-think-speak.md) · [`telephone-arozos-app.md`](../telephone-arozos-app.md).
 
@@ -234,5 +234,5 @@ Treat the number like any public voice channel: follow Twilio / carrier rules on
 | [`voice-realtime.md`](voice-realtime.md) | S2S service, passphrase UX, lock clips |
 | [`voice-think-speak.md`](voice-think-speak.md) | When Realtime speaks vs Hermes `think` |
 | [`telephone-arozos-app.md`](../telephone-arozos-app.md) | Number display + passphrase UI |
-| [`vps-quickstart.md`](../vps-quickstart.md) | Box install before Twilio |
+| [`hetzner-quickstart.md`](hetzner-quickstart.md) | Box install before Twilio |
 | [`.env.example`](../../.env.example) / [`deploy/.env.vps.example`](../../deploy/.env.vps.example) | Env knobs |

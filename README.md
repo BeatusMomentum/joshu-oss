@@ -75,7 +75,7 @@ Joshu ships as public Docker images for a standalone VPS (no control plane requi
 
 | Path | Doc |
 |------|-----|
-| **Hetzner / Ubuntu walkthrough** | [docs/vps-sandbox/hetzner-quickstart.md](docs/vps-sandbox/hetzner-quickstart.md) |
+| **Ubuntu VPS walkthrough (Hetzner / DigitalOcean)** | [docs/vps-sandbox/hetzner-quickstart.md](docs/vps-sandbox/hetzner-quickstart.md) |
 | Self-host overview | [docs/self-host.md](docs/self-host.md) |
 | Deploy / image env | [deploy/README.md](deploy/README.md) |
 

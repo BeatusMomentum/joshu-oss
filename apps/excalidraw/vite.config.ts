@@ -12,6 +12,8 @@ export default defineConfig({
   base: "./",
   root: appRoot,
   build: {
+    // Shares dist/excalidraw with tsc output from src/excalidraw/*.ts.
+    // emptyOutDir wipes errors.js/service.js/etc — `npm run build:excalidraw` re-runs tsc after Vite.
     outDir: "../../dist/excalidraw",
     emptyOutDir: true,
     rollupOptions: {

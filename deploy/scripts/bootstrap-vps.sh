@@ -2,21 +2,36 @@
 # Cloud-init / first-boot script for a fresh VPS.
 set -euo pipefail
 
-JOSHU_REPO="${JOSHU_REPO:-https://github.com/your-org/joshu.git}"
+JOSHU_REPO="${JOSHU_REPO:-https://github.com/db-aeon/joshu-oss.git}"
 JOSHU_REF="${JOSHU_REF:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/joshu}"
 ENV_FILE="${ENV_FILE:-/etc/joshu/instance.env}"
 
-apt-get update
-apt-get install -y ca-certificates curl git gettext-base
+# DigitalOcean (and some Hetzner images) run unattended-upgrades on first boot.
+# Retry apt when dpkg is locked instead of failing the whole bootstrap.
+apt_retry() {
+  local n=0
+  until "$@"; do
+    n=$((n + 1))
+    if [[ "${n}" -ge 24 ]]; then
+      echo "[bootstrap-vps] apt still locked after ${n} tries" >&2
+      return 1
+    fi
+    echo "[bootstrap-vps] apt busy (try ${n}); waiting 5s"
+    sleep 5
+  done
+}
+
+apt_retry apt-get update
+apt_retry apt-get install -y ca-certificates curl git gettext-base
 
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
   > /etc/apt/sources.list.d/docker.list
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+apt_retry apt-get update
+apt_retry apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 mkdir -p /etc/joshu
 chmod 700 /etc/joshu
@@ -42,7 +57,7 @@ if [[ -f "${ENV_FILE}" ]]; then
 fi
 
 # Pull prebuilt image (OSS default) or build on host when JOSHU_BUILD_IMAGE=1
-IMAGE_REF="${JOSHU_IMAGE_REF:-ghcr.io/your-org/joshu-oss:latest}"
+IMAGE_REF="${JOSHU_IMAGE_REF:-ghcr.io/db-aeon/joshu-oss:latest}"
 if [[ "${JOSHU_BUILD_IMAGE:-0}" == "1" ]]; then
   echo "[bootstrap-vps] building ${IMAGE_REF} from Dockerfile"
   docker build -f deploy/Dockerfile -t "${IMAGE_REF}" .

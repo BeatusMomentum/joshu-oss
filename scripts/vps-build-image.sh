@@ -35,6 +35,12 @@ echo "[vps-build] voice-realtime=${VOICE_IMAGE_REF} push=${PUSH}"
 # Fail closed: listed runtime files must exist in source *and* dist/ (npm run build).
 node scripts/copy-runtime-assets.mjs --check-source --check
 
+if [[ ! -f dist/excalidraw/errors.js || ! -f dist/excalidraw/service.js ]]; then
+  echo "[vps-build] ERROR: dist/excalidraw CWM backend JS missing (Vite emptyOutDir vs tsc)." >&2
+  echo "  Run: npm run vps:predeploy  (build:excalidraw must re-run tsc after Vite)" >&2
+  exit 1
+fi
+
 SANDBOX_BUILD_ARGS=(
   --platform linux/amd64
   -f deploy/Dockerfile

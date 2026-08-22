@@ -28,7 +28,7 @@
     "dev:jterm": "vite --config apps/jterm/vite.config.ts --host 127.0.0.1 --port 3011",
     "dev:telephone": "vite --config apps/telephone/vite.config.ts --host 127.0.0.1 --port 3012",
     "build": "npm run build -w @joshu/email-signature && npm run build -w @joshu/platform-data && npm run build -w @joshu/app-sdk && npm run build -w @joshu/jchat-ui && npm run build -w @joshu/app-agent && npm run build -w @joshu/box-state && npm run build -w @joshu/whiteboard-cwm && tsc -p tsconfig.json && node scripts/copy-runtime-assets.mjs",
-    "build:excalidraw": "node scripts/ensure-excalidraw-vendor.mjs && vite build --config apps/excalidraw/vite.config.ts",
+    "build:excalidraw": "node scripts/ensure-excalidraw-vendor.mjs && vite build --config apps/excalidraw/vite.config.ts && tsc -p tsconfig.json",
     "build:hermes-chat": "vite build --config apps/hermes-chat/vite.config.ts",
     "build:hindsight-viewer": "vite build --config apps/hindsight-viewer/vite.config.ts",
     "build:file-brain-viewer": "vite build --config apps/file-brain-viewer/vite.config.ts",

@@ -10,7 +10,7 @@ Managed hosting with zero-touch provisioning: [joshu.me](https://joshu.me).
 
 ## Quick start
 
-### Option A — Hetzner / Ubuntu VPS (recommended)
+### Option A — Ubuntu VPS (Hetzner or DigitalOcean)
 
 Full numbered walkthrough: [vps-sandbox/hetzner-quickstart.md](vps-sandbox/hetzner-quickstart.md) (create server → DNS → `git clone` → configure → bootstrap).
 
