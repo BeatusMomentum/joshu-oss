@@ -1,31 +1,16 @@
 /**
- * Bidirectional clipboard bridge for noVNC (Camofox / x11vnc).
+ * jWeb clipboard: Mac ↔ Camofox page fields.
  *
- * Button + textarea UI is the reliable path (explicit user gesture for navigator.clipboard).
- * Keyboard shortcuts are kept as a convenience but may be flaky on canvas focus.
+ * x11vnc clipboard/keysyms mangle braces and drop Cmd+C. This bridge never uses
+ * the RFB clipboard protocol. Paste/copy go through Joshu → Playwright
+ * (pasteViaApi / copyViaApi).
+ *
+ * Stable paths:
+ *   1. Cmd+V while the VNC page is focused — uses the paste event's clipboardData
+ *      (no clipboard-read permission needed; works in ArozOS iframes).
+ *   2. Paste into field — Mac clipboard, else the visible buffer textarea.
+ *   3. Copy from browser — Playwright selection / focused field → Mac + textarea.
  */
-
-const XK_CONTROL_L = 0xffe3;
-const XK_SHIFT_L = 0xffe1;
-const XK_RETURN = 0xff0d;
-const XK_TAB = 0xff09;
-const XK_V = 0x0076;
-const XK_C = 0x0063;
-const XK_A = 0x0061;
-
-/** US keyboard — shifted symbol → base key */
-const US_SHIFT = {
-  "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8",
-  "(": "9", ")": "0", "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\",
-  ":": ";", '"': "'", "<": ",", ">": ".", "?": "/", "~": "`",
-};
-
-const EXTENDED_CLIPBOARD_FORMAT_TEXT = 1;
-const EXTENDED_CLIPBOARD_ACTION_NOTIFY = 1 << 27;
-
-const ECHO_MS = 750;
-const PASTE_PROVIDE_TIMEOUT_MS = 500;
-const PASTE_FALLBACK_MS = 40;
 
 function readHostClipboard() {
   if (navigator.clipboard?.readText) {
@@ -44,327 +29,129 @@ async function writeLocalClipboard(text) {
   }
 }
 
-function sendRemoteCtrlV(rfb) {
-  if (rfb._rfbConnectionState !== "connected" || rfb.viewOnly) return;
-  rfb.sendKey(XK_CONTROL_L, "ControlLeft", true);
-  rfb.sendKey(XK_V, "KeyV", true);
-  rfb.sendKey(XK_V, "KeyV", false);
-  rfb.sendKey(XK_CONTROL_L, "ControlLeft", false);
-}
-
-function sendRemoteCtrlC(rfb) {
-  if (rfb._rfbConnectionState !== "connected" || rfb.viewOnly) return;
-  rfb.sendKey(XK_CONTROL_L, "ControlLeft", true);
-  rfb.sendKey(XK_C, "KeyC", true);
-  rfb.sendKey(XK_C, "KeyC", false);
-  rfb.sendKey(XK_CONTROL_L, "ControlLeft", false);
-}
-
-function sendRemoteCtrlA(rfb) {
-  if (rfb._rfbConnectionState !== "connected" || rfb.viewOnly) return;
-  rfb.sendKey(XK_CONTROL_L, "ControlLeft", true);
-  rfb.sendKey(XK_A, "KeyA", true);
-  rfb.sendKey(XK_A, "KeyA", false);
-  rfb.sendKey(XK_CONTROL_L, "ControlLeft", false);
-}
-
-/** Keystroke injection — works in Firefox chrome (address bar) where VNC clipboard paste does not. */
-function typeTextToRemote(rfb, text, { selectAll = false } = {}) {
-  if (rfb.viewOnly || rfb._rfbConnectionState !== "connected") return false;
-  if (typeof text !== "string" || text.length === 0) return false;
-
-  if (selectAll) sendRemoteCtrlA(rfb);
-
-  for (const ch of text) {
-    // Newlines / tabs — required for Slack app-manifest JSON (clipboard paste is often a no-op on x11vnc).
-    if (ch === "\n" || ch === "\r") {
-      rfb.sendKey(XK_RETURN, "Enter");
-      continue;
-    }
-    if (ch === "\t") {
-      rfb.sendKey(XK_TAB, "Tab");
-      continue;
-    }
-
-    const keysym = ch.charCodeAt(0);
-    // Prefer Latin-1 keysyms (same as Unicode for printable ASCII). Synthesizing
-    // Shift+[ for `{` often loses Shift over VNC and types `[` instead.
-    if (keysym >= 0x20 && keysym <= 0x7e) {
-      rfb.sendKey(keysym);
-      continue;
-    }
-  }
-  return true;
-}
-
-function usesExtendedClipboard(rfb) {
-  return Boolean(
-    rfb._clipboardServerCapabilitiesFormats?.[EXTENDED_CLIPBOARD_FORMAT_TEXT] &&
-      rfb._clipboardServerCapabilitiesActions?.[EXTENDED_CLIPBOARD_ACTION_NOTIFY],
-  );
-}
-
-function isPasteShortcut(event) {
-  if (event.repeat || event.altKey || event.shiftKey) return false;
-  const key = event.key?.toLowerCase();
-  if (key !== "v") return false;
-  return event.metaKey || event.ctrlKey;
-}
-
-function isCopyShortcut(event) {
-  if (event.repeat || event.altKey || event.shiftKey) return false;
-  const key = event.key?.toLowerCase();
-  if (key !== "c") return false;
-  return event.metaKey || event.ctrlKey;
-}
-
-function stopHostClipboardEvent(event) {
-  event.preventDefault();
-  event.stopPropagation();
-  if (typeof event.stopImmediatePropagation === "function") {
-    event.stopImmediatePropagation();
-  }
-}
-
-/**
- * Core paste/copy logic for one RFB session.
- * @param {object} rfb
- */
-export function createVncClipboardBridge(rfb) {
-  let lastSentToRemote = "";
-  let lastSentAt = 0;
-  let pasteFallbackTimer = 0;
-  let provideWatch = 0;
-
-  const clearPasteTimers = () => {
-    if (pasteFallbackTimer) {
-      window.clearTimeout(pasteFallbackTimer);
-      pasteFallbackTimer = 0;
-    }
-    if (provideWatch) {
-      window.cancelAnimationFrame(provideWatch);
-      provideWatch = 0;
-    }
-  };
-
-  const scheduleRemotePaste = () => {
-    clearPasteTimers();
-    sendRemoteCtrlV(rfb);
-  };
-
-  const pasteToRemote = (text) => {
-    if (typeof text !== "string" || text.length === 0) return false;
-    if (rfb.viewOnly || rfb._rfbConnectionState !== "connected") return false;
-
-    lastSentToRemote = text;
-    lastSentAt = Date.now();
-    clearPasteTimers();
-    rfb.clipboardPasteFrom(text);
-
-    if (!usesExtendedClipboard(rfb)) {
-      pasteFallbackTimer = window.setTimeout(scheduleRemotePaste, PASTE_FALLBACK_MS);
-      return true;
-    }
-
-    const deadline = Date.now() + PASTE_PROVIDE_TIMEOUT_MS;
-    const waitForProvide = () => {
-      provideWatch = 0;
-      if (rfb._rfbConnectionState !== "connected") return;
-      if (rfb._clipboardText === null || Date.now() >= deadline) {
-        scheduleRemotePaste();
-        return;
-      }
-      provideWatch = window.requestAnimationFrame(waitForProvide);
-    };
-    provideWatch = window.requestAnimationFrame(waitForProvide);
-    return true;
-  };
-
-  const requestRemoteCopy = () => {
-    if (rfb.viewOnly || rfb._rfbConnectionState !== "connected") return false;
-    sendRemoteCtrlC(rfb);
-    return true;
-  };
-
-  const typeToRemote = (text, opts = {}) => {
-    if (typeof text !== "string" || text.length === 0) return false;
-    lastSentToRemote = text;
-    lastSentAt = Date.now();
-    return typeTextToRemote(rfb, text, opts);
-  };
-
-  const shouldAcceptRemoteText = (text) => {
-    if (typeof text !== "string" || text.length === 0) return false;
-    return !(text === lastSentToRemote && Date.now() - lastSentAt < ECHO_MS);
-  };
-
-  const destroy = () => {
-    clearPasteTimers();
-  };
-
-  return { pasteToRemote, typeToRemote, requestRemoteCopy, shouldAcceptRemoteText, destroy };
+function isEditableTarget(node) {
+  if (!node || !(node instanceof Element)) return false;
+  const tag = node.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return Boolean(node.isContentEditable);
 }
 
 /**
  * @param {object} rfb
- * @param {{ targetEl?: HTMLElement, ui?: Record<string, HTMLElement | null>, pasteViaApi?: (text: string) => Promise<boolean>, copyViaApi?: () => Promise<string> }} options
+ * @param {{
+ *   targetEl?: HTMLElement,
+ *   ui?: Record<string, HTMLElement | null>,
+ *   pasteViaApi?: (text: string) => Promise<boolean>,
+ *   copyViaApi?: () => Promise<string>,
+ * }} options
  */
 export function attachVncClipboard(rfb, options = {}) {
   const { targetEl, ui = {}, pasteViaApi, copyViaApi } = options;
-  const bridge = createVncClipboardBridge(rfb);
-  let vncEngaged = false;
   const cleanups = [];
+  let vncEngaged = false;
+  let busy = false;
 
   const setHint = (message) => {
     if (ui.hint) ui.hint.textContent = message;
   };
 
-  const onRemoteClipboard = (event) => {
-    const text = event.detail?.text;
-    if (!bridge.shouldAcceptRemoteText(text)) return;
-    void writeLocalClipboard(text);
-    if (ui.textarea) ui.textarea.value = text;
-    setHint("Copied from Camofox — also on your Mac clipboard.");
+  const setBusy = (next) => {
+    busy = next;
+    for (const btn of [ui.pasteBtn, ui.copyBtn]) {
+      if (btn) btn.disabled = next;
+    }
   };
 
-  rfb.addEventListener("clipboard", onRemoteClipboard);
-  cleanups.push(() => rfb.removeEventListener("clipboard", onRemoteClipboard));
+  const syncBuffer = (text) => {
+    if (ui.textarea && typeof text === "string") ui.textarea.value = text;
+  };
+
+  const insertIntoPage = async (text) => {
+    if (typeof pasteViaApi !== "function") {
+      setHint("Paste API is not wired.");
+      return false;
+    }
+    const trimmed = typeof text === "string" ? text : "";
+    if (!trimmed.trim()) {
+      setHint("Nothing to paste — Cmd+V into the box, then Paste into field.");
+      return false;
+    }
+    syncBuffer(trimmed);
+    setBusy(true);
+    try {
+      const ok = await pasteViaApi(trimmed);
+      if (ok) {
+        setHint("Pasted into the focused field.");
+        return true;
+      }
+      setHint("Paste did not land — click a text field in the page, then try again.");
+      return false;
+    } catch (err) {
+      setHint(err?.message || "Paste failed.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (ui.pasteBtn) {
     const onPasteClick = () => {
+      if (busy) return;
       void (async () => {
-        let text = ui.textarea?.value ?? "";
-        if (!text.trim()) {
-          text = await readHostClipboard();
-          if (ui.textarea && text) ui.textarea.value = text;
+        const buffer = ui.textarea?.value ?? "";
+        let text = "";
+        // Prefer the visible buffer when the user is editing it; otherwise Mac clipboard.
+        if (document.activeElement === ui.textarea && String(buffer).trim()) {
+          text = buffer;
+        } else {
+          try {
+            text = await readHostClipboard();
+          } catch {
+            text = "";
+          }
+          if (!String(text).trim()) text = buffer;
         }
-        if (!text.trim()) {
-          setHint("Nothing to paste — type here or use Load from Mac.");
+        if (!String(text).trim()) {
+          ui.textarea?.focus?.();
+          setHint("Mac clipboard was empty — Cmd+V into this box, then Paste into field.");
           return;
         }
-        // Prefer Playwright insert (keeps `{`/`}`). VNC keysyms are mangled by x11vnc.
-        if (typeof pasteViaApi === "function") {
-          try {
-            const ok = await pasteViaApi(text);
-            if (ok) {
-              setHint("Inserted via Camofox (braces preserved).");
-              if (targetEl) targetEl.querySelector("canvas")?.focus?.();
-              return;
-            }
-          } catch (err) {
-            setHint(`Camofox insert failed — falling back to VNC: ${err?.message || err}`);
-          }
-        }
-        if (bridge.typeToRemote(text, { selectAll: true })) {
-          setHint("Typed via VNC (may mangle braces) — click JSON field first.");
-          if (targetEl) targetEl.querySelector("canvas")?.focus?.();
-        } else if (bridge.pasteToRemote(text)) {
-          setHint("Pasted into page field (clipboard).");
-          if (targetEl) targetEl.querySelector("canvas")?.focus?.();
-        } else {
-          setHint("VNC not connected.");
-        }
+        await insertIntoPage(text);
       })();
     };
     ui.pasteBtn.addEventListener("click", onPasteClick);
     cleanups.push(() => ui.pasteBtn.removeEventListener("click", onPasteClick));
   }
 
-  if (ui.typeBtn) {
-    const onTypeClick = () => {
-      void (async () => {
-        let text = ui.textarea?.value ?? "";
-        if (!text.trim()) {
-          text = await readHostClipboard();
-          if (ui.textarea && text) ui.textarea.value = text;
-        }
-        if (!text.trim()) {
-          setHint("Nothing to type — click the address bar in Camofox first, then try again.");
-          return;
-        }
-        const selectAll = ui.typeSelectAll?.checked !== false;
-        if (bridge.typeToRemote(text, { selectAll })) {
-          setHint(selectAll ? "Typed into Camofox (replaced selection)." : "Typed into Camofox.");
-          if (targetEl) targetEl.querySelector("canvas")?.focus?.();
-        } else {
-          setHint("VNC not connected.");
-        }
-      })();
-    };
-    ui.typeBtn.addEventListener("click", onTypeClick);
-    cleanups.push(() => ui.typeBtn.removeEventListener("click", onTypeClick));
-  }
-
   if (ui.copyBtn) {
     const onCopyClick = () => {
+      if (busy) return;
       void (async () => {
-        if (typeof copyViaApi === "function") {
-          try {
-            const text = await copyViaApi();
-            if (text?.trim()) {
-              if (ui.textarea) ui.textarea.value = text;
-              const ok = await writeLocalClipboard(text);
-              setHint(ok
-                ? "Copied from Camofox → Mac clipboard (and panel)."
-                : "Copied into panel — click Copy to Mac if needed.");
-              return;
-            }
-            setHint("Nothing selected — click the token field / select text, then try again.");
-            return;
-          } catch (err) {
-            setHint(`Camofox copy failed — falling back to VNC: ${err?.message || err}`);
-          }
+        if (typeof copyViaApi !== "function") {
+          setHint("Copy API is not wired.");
+          return;
         }
-        if (bridge.requestRemoteCopy()) {
-          setHint("Requested copy — select text in Camofox first, then try again if empty.");
-        } else {
-          setHint("VNC not connected.");
+        setBusy(true);
+        try {
+          const text = await copyViaApi();
+          if (!text?.trim()) {
+            setHint("Nothing to copy — click a field or select text in the page first.");
+            return;
+          }
+          syncBuffer(text);
+          const ok = await writeLocalClipboard(text);
+          setHint(ok
+            ? "Copied from the page → Mac clipboard."
+            : "Copied into the box — select it and Cmd+C if needed.");
+        } catch (err) {
+          setHint(err?.message || "Copy failed.");
+        } finally {
+          setBusy(false);
         }
       })();
     };
     ui.copyBtn.addEventListener("click", onCopyClick);
     cleanups.push(() => ui.copyBtn.removeEventListener("click", onCopyClick));
-  }
-
-  if (ui.loadMacBtn) {
-    const onLoadMac = () => {
-      void readHostClipboard().then((text) => {
-        if (!text) {
-          setHint("Mac clipboard empty or permission denied.");
-          return;
-        }
-        if (ui.textarea) ui.textarea.value = text;
-        setHint("Loaded from Mac — click Paste into browser.");
-      });
-    };
-    ui.loadMacBtn.addEventListener("click", onLoadMac);
-    cleanups.push(() => ui.loadMacBtn.removeEventListener("click", onLoadMac));
-  }
-
-  if (ui.saveMacBtn) {
-    const onSaveMac = () => {
-      const text = ui.textarea?.value ?? "";
-      if (!text.trim()) {
-        setHint("Nothing to copy to Mac.");
-        return;
-      }
-      void writeLocalClipboard(text).then((ok) => {
-        setHint(ok ? "Copied to Mac clipboard." : "Could not write Mac clipboard.");
-      });
-    };
-    ui.saveMacBtn.addEventListener("click", onSaveMac);
-    cleanups.push(() => ui.saveMacBtn.removeEventListener("click", onSaveMac));
-  }
-
-  if (ui.toggleBtn && ui.panel) {
-    const onToggle = () => {
-      const open = ui.panel.hasAttribute("hidden");
-      if (open) ui.panel.removeAttribute("hidden");
-      else ui.panel.setAttribute("hidden", "");
-      ui.toggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
-    };
-    ui.toggleBtn.addEventListener("click", onToggle);
-    cleanups.push(() => ui.toggleBtn.removeEventListener("click", onToggle));
   }
 
   if (targetEl) {
@@ -376,7 +163,10 @@ export function attachVncClipboard(rfb, options = {}) {
       if (target instanceof Node && targetEl.contains(target)) return;
       vncEngaged = false;
     };
-    const shouldHandleInVnc = (event) => {
+    const vncShouldTakeClipboard = (event) => {
+      if (busy) return false;
+      if (isEditableTarget(event.target)) return false;
+      if (isEditableTarget(document.activeElement)) return false;
       if (vncEngaged) return true;
       const active = document.activeElement;
       if (active && (active === targetEl || targetEl.contains(active))) return true;
@@ -385,39 +175,39 @@ export function attachVncClipboard(rfb, options = {}) {
       return false;
     };
 
-    const onLocalPasteKey = (event) => {
-      if (!isPasteShortcut(event) || !shouldHandleInVnc(event)) return;
-      stopHostClipboardEvent(event);
-      void readHostClipboard().then((text) => {
-        if (!text) return;
-        if (ui.textarea) ui.textarea.value = text;
-        bridge.pasteToRemote(text);
-        setHint("Pasted into Camofox (keyboard).");
-      });
+    // Native paste event carries the Mac clipboard without a permissions prompt.
+    const onPaste = (event) => {
+      if (!vncShouldTakeClipboard(event)) return;
+      const text = event.clipboardData?.getData("text/plain") || "";
+      if (!text) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void insertIntoPage(text);
     };
 
-    const onLocalCopyKey = (event) => {
-      if (!isCopyShortcut(event) || !shouldHandleInVnc(event)) return;
-      stopHostClipboardEvent(event);
-      bridge.requestRemoteCopy();
+    const onCopy = (event) => {
+      if (!vncShouldTakeClipboard(event)) return;
+      if (typeof copyViaApi !== "function") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (ui.copyBtn) ui.copyBtn.click();
     };
 
     targetEl.addEventListener("pointerdown", onVncEngage, true);
     targetEl.addEventListener("focusin", onVncEngage, true);
     document.addEventListener("pointerdown", onVncDisengage, true);
-    document.addEventListener("keydown", onLocalPasteKey, true);
-    document.addEventListener("keydown", onLocalCopyKey, true);
+    document.addEventListener("paste", onPaste, true);
+    document.addEventListener("copy", onCopy, true);
     cleanups.push(() => {
       targetEl.removeEventListener("pointerdown", onVncEngage, true);
       targetEl.removeEventListener("focusin", onVncEngage, true);
       document.removeEventListener("pointerdown", onVncDisengage, true);
-      document.removeEventListener("keydown", onLocalPasteKey, true);
-      document.removeEventListener("keydown", onLocalCopyKey, true);
+      document.removeEventListener("paste", onPaste, true);
+      document.removeEventListener("copy", onCopy, true);
     });
   }
 
   return () => {
     for (const fn of cleanups) fn();
-    bridge.destroy();
   };
 }

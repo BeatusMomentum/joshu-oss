@@ -39,20 +39,29 @@ Desktop shortcuts: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 JSON get mangled on keystroke paste; Cmd+C inside Camofox does not reach the
 host clipboard.
 
-Joshu bypasses VNC for clipboard:
+Joshu bypasses VNC entirely. One visible buffer + two buttons:
 
 | Action | UI | Joshu API | Camofox |
 |--------|----|-----------|---------|
-| Paste into focused field | **Paste into browser** | `POST /joshu/api/camofox/insert-text` | Playwright `/type` + `/press` (`insertText`) |
-| Copy selection / focused token | **Copy from browser** | `POST /joshu/api/camofox/copy-selection` | `POST /tabs/:id/selection` (HITL patch) |
+| Paste into focused field | **Paste into field**, or **Cmd+V** on the page | `POST /joshu/api/camofox/insert-text` | HITL `POST /tabs/:id/insert-text` (DOM insert at caret) |
+| Copy selection / focused field | **Copy from browser**, or **Cmd+C** on the page | `POST /joshu/api/camofox/copy-selection` | `evaluate` + HITL `POST /tabs/:id/selection` |
 | Wheel / arrow / Page keys | host bridge in jWeb | `POST /joshu/api/camofox/scroll` | Playwright `/scroll` or `/press` (VNC wheel often drops) |
 
-Wiring: `public/vnc-clipboard.js` (`pasteViaApi` / `copyViaApi`) ← `public/app.js` /
-`public/camofox-viewer.html`.
+Cmd+V on the VNC pane uses the browser **paste event** (`clipboardData`) so it
+does not need clipboard-read permission inside the ArozOS iframe. The textarea
+is a fallback when the Mac clipboard API is blocked: paste into the box, then
+**Paste into field**.
 
-The Camofox **selection** route is not upstream — it is injected by
-`scripts/patch-camofox-single-tab.mjs` (`HITL_SELECTION_ROUTE`). Without that
-patch, copy-selection returns **502**.
+Wiring: `public/vnc-clipboard.js` (`pasteViaApi` / `copyViaApi`) ← `public/app.js` /
+`public/camofox-viewer.html`. Do **not** send VNC `clipboardPasteFrom` / Ctrl+V
+keysyms — that path mangles `{`/`}` and is no longer used.
+
+The Camofox **insert-text** and **selection** routes are not upstream — they are
+injected by `scripts/patch-camofox-single-tab.mjs` (`HITL_INSERT_TEXT_ROUTE`,
+`HITL_SELECTION_ROUTE`). `vps-start` re-applies the patch when either marker is
+missing. Without insert-text, Joshu falls back to `/evaluate`.
+
+Live-box UI hotpatch: `public/` is image-baked — after recreate, `docker cp` the clipboard HTML/JS into `/opt/joshu/public/`, or bake the next image.
 
 ## Tab reaper / blank-page resets
 
@@ -82,6 +91,14 @@ idle-shutdowns (`browser idle shutdown`) to free CPU/RAM. Opening jWeb (or
 **Bug (validated on patrick, 2026-08-21):** idle shutdown worked, but jWeb only
 polled status and sat on “waiting for Camofox browser” — no warm path — so it
 looked crashed for hours.
+
+**Bug (validated on patrick, 2026-08-22):** warm-on-open relaunched Firefox, but
+Camofox `vnc-watcher` only attaches x11vnc when the **Xvfb display number**
+changes. Idle shutdown kills Xvfb; the next tab recreates **`:99`**, so the
+watcher never starts x11vnc again. noVNC gets **1011** (`connection refused` on
+`:5900`) — jWeb looks like it **instantly crashes**. Overlay:
+`scripts/camofox-vnc-watcher.sh` via `scripts/patch-camofox-vnc-watcher.sh`
+(image build + `vps-start`).
 
 **Hardening (keep the timeout; make start/stop clean):**
 
@@ -143,11 +160,12 @@ Restart Hermes gateway after config changes.
 | `TAB_INACTIVITY_MS` | Camofox tab reaper; **`0` for jWeb HITL** (default on VPS) |
 | `BROWSER_IDLE_TIMEOUT_MS` | Firefox idle shutdown; default **`300000`** — jWeb warm-on-open relaunches |
 | `PROXY_*` / `PROXY_COUNTRY` | Residential egress for Camofox (Decodo); geo optional |
-| `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, **selection route**, reaper/keepalive |
+| `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, **insert-text + selection routes**, reaper/keepalive |
+| `scripts/camofox-vnc-watcher.sh` | Reattach x11vnc after idle shutdown (same `:99`) |
 | `scripts/ensure-camofox-container.sh` | Create/start container + wait for `/health` |
 | `POST /joshu/api/camofox/fit-viewport` | Bootstrap tab → Camofox viewport route |
-| `POST /joshu/api/camofox/insert-text` | Playwright paste into focused control |
-| `POST /joshu/api/camofox/copy-selection` | Read selection / focused Slack token |
+| `POST /joshu/api/camofox/insert-text` | Playwright paste into focused control (HITL insert-text / evaluate) |
+| `POST /joshu/api/camofox/copy-selection` | Read selection or focused field |
 | `POST /joshu/api/camofox/scroll` | Wheel / Arrow / Page keys via Playwright (`public/vnc-scroll.js`; rate-limited) |
 | `public/app.js` `layoutLetterboxedScreen` | Keep jWeb VNC pane at **4:3** (1024×768) inside the float window |
 
@@ -174,6 +192,13 @@ Recreate wipes those copies unless you re-apply.
 Wheel bridge (`vnc-scroll.js`) must stay **rate-limited** (coalesce + ≥180ms
 between Camofox scroll calls). An unbounded queue flooded Camofox, stalled
 health probes, and bounced the stack.
+
+**jWeb Camofox restart must not leave Hermes down (validated patrick, 2026-08-22):**
+`restartCamofox()` POSTs `/joshu/api/camofox/restart` then `/joshu/api/hermes/reset`.
+Reset used to SIGTERM the gateway and return. Instance health only **probes**
+`:8642` (no 180s `ensureApiServer` on that route), so jChat/Slack/cron/phone
+stayed dead. `HermesRunner.reset()` now stops then starts when auto-start is on;
+a 30s watchdog also respawns a dead gateway.
 
 ### Debug overlay (`?debugVnc=1`)
 

@@ -228,6 +228,7 @@ COPY deploy/RELEASE.json ${APP_DIR}/RELEASE.json
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && (patch --batch --forward -p1 -i patches/http-proxy+1.18.1.patch || true) \
     && node scripts/patch-camofox-single-tab.mjs /app/server.js \
+    && bash scripts/patch-camofox-vnc-watcher.sh /app/plugins/vnc/vnc-watcher.sh \
     && chmod +x ${APP_DIR}/scripts/vps-start.sh \
     && chmod +x ${APP_DIR}/scripts/bootstrap-joshu-files.sh \
     && chmod +x ${APP_DIR}/scripts/bootstrap-executive-assistant.sh \

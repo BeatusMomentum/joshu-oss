@@ -657,7 +657,7 @@ function buildAppRouter(): {
       const body = (req.body ?? {}) as { text?: unknown; selectAll?: unknown };
       const text = typeof body.text === "string" ? body.text : "";
       if (!text) return res.status(400).json({ error: "text is required" });
-      const selectAll = body.selectAll !== false;
+      const selectAll = body.selectAll === true;
       await camofoxSession.insertText(text, { selectAll });
       const tab = await camofoxSession.currentTab().catch(() => undefined);
       res.json({ ok: true, chars: text.length, tab });
@@ -705,6 +705,8 @@ function buildAppRouter(): {
     }
   });
 
+  // Clears HITL history and recycles the Hermes gateway (stop + start). Used by
+  // jWeb Camofox restart / forget-session — must not leave :8642 down.
   router.post("/api/hermes/reset", async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as { purgeTabs?: boolean };
     await runner.reset();

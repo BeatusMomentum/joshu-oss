@@ -302,7 +302,7 @@ button:focus-visible {
 .vnc-clipboard-bar {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.35rem;
   padding: 0.35rem 0.5rem;
   background: var(--color-surface-panel);
@@ -321,6 +321,7 @@ button:focus-visible {
   color: var(--color-ink-muted);
   cursor: pointer;
   white-space: nowrap;
+  align-self: center;
 }
 
 .vnc-clipboard-btn:hover:not(:disabled) {
@@ -328,46 +329,19 @@ button:focus-visible {
   color: var(--color-text-on-paper);
 }
 
+.vnc-clipboard-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
 .vnc-clipboard-btn-primary {
   font-weight: 600;
   color: var(--color-ink);
 }
 
-.vnc-clipboard-check {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.68rem;
-  color: var(--color-ink-muted);
-  cursor: pointer;
-  user-select: none;
-}
-
-.vnc-clipboard-check input {
-  margin: 0;
-}
-
-.vnc-clipboard-btn-icon {
-  margin-left: auto;
-  padding: 0.28rem 0.45rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-}
-
-.vnc-clipboard-panel {
-  flex: 1 1 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding-top: 0.15rem;
-}
-
-.vnc-clipboard-panel[hidden] {
-  display: none !important;
-}
-
 .vnc-clipboard-text {
-  width: 100%;
+  flex: 1 1 12rem;
+  min-width: 8rem;
   box-sizing: border-box;
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -376,16 +350,11 @@ button:focus-visible {
   border: var(--border-default);
   border-radius: var(--radius-field);
   resize: vertical;
-  min-height: 3.5rem;
-}
-
-.vnc-clipboard-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
+  min-height: 2.4rem;
 }
 
 .vnc-clipboard-hint {
+  flex: 1 1 100%;
   margin: 0;
   font-size: 0.68rem;
   line-height: 1.35;

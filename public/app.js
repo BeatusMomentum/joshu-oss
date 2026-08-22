@@ -53,14 +53,8 @@ const els = {
   reloadVnc: $("#reload-vnc"),
   openVnc: $("#open-vnc"),
   vncPasteRemote: $("#vnc-paste-remote"),
-  vncTypeRemote: $("#vnc-type-remote"),
-  vncTypeSelectAll: $("#vnc-type-select-all"),
   vncCopyRemote: $("#vnc-copy-remote"),
-  vncClipboardToggle: $("#vnc-clipboard-toggle"),
-  vncClipboardPanel: $("#vnc-clipboard-panel"),
   vncClipboardText: $("#vnc-clipboard-text"),
-  vncLoadMac: $("#vnc-load-mac"),
-  vncSaveMac: $("#vnc-save-mac"),
   vncClipboardHint: $("#vnc-clipboard-hint"),
   sessionPill: $("#session-pill"),
   forgetSession: $("#forget-session"),
@@ -360,7 +354,7 @@ async function connectVnc(novnc, { force = false } = {}) {
           const res = await fetch("api/camofox/insert-text", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, selectAll: true }),
+            body: JSON.stringify({ text }),
             cache: "no-store",
           });
           if (!res.ok) {
@@ -385,14 +379,8 @@ async function connectVnc(novnc, { force = false } = {}) {
         },
         ui: {
           pasteBtn: els.vncPasteRemote,
-          typeBtn: els.vncTypeRemote,
-          typeSelectAll: els.vncTypeSelectAll,
           copyBtn: els.vncCopyRemote,
-          toggleBtn: els.vncClipboardToggle,
-          panel: els.vncClipboardPanel,
           textarea: els.vncClipboardText,
-          loadMacBtn: els.vncLoadMac,
-          saveMacBtn: els.vncSaveMac,
           hint: els.vncClipboardHint,
         },
       });
@@ -478,7 +466,7 @@ async function resetConversation(reason, { purgeTabs = false } = {}) {
       body: JSON.stringify({ purgeTabs }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    appendLog("system", `${reason}; killed Hermes gateway and cleared app history`);
+    appendLog("system", `${reason}; recycled Hermes gateway and cleared app history`);
   } catch (err) {
     appendLog("stderr", `Hermes reset failed: ${err.message}`);
   }

@@ -42,45 +42,23 @@
             </div>
           </header>
           <div class="vnc-clipboard-bar" id="vnc-clipboard-bar">
-            <button type="button" id="vnc-paste-remote" class="vnc-clipboard-btn" title="Paste into page fields (forms, search boxes)">
+            <textarea
+              id="vnc-clipboard-text"
+              class="vnc-clipboard-text"
+              rows="2"
+              spellcheck="false"
+              placeholder="Paste here (Cmd+V), or Cmd+V directly on a field in the page"
+              aria-label="Clipboard buffer"
+            ></textarea>
+            <button type="button" id="vnc-paste-remote" class="vnc-clipboard-btn vnc-clipboard-btn-primary" title="Insert Mac clipboard (or this box) into the focused page field">
               Paste into field
             </button>
-            <button type="button" id="vnc-type-remote" class="vnc-clipboard-btn vnc-clipboard-btn-primary" title="Type keystrokes — use for the Firefox address bar">
-              Type into browser
-            </button>
-            <button type="button" id="vnc-copy-remote" class="vnc-clipboard-btn" title="Copy selection from Camofox (select text first)">
+            <button type="button" id="vnc-copy-remote" class="vnc-clipboard-btn" title="Copy the page selection or focused field to your Mac">
               Copy from browser
             </button>
-            <button
-              type="button"
-              id="vnc-clipboard-toggle"
-              class="vnc-clipboard-btn vnc-clipboard-btn-icon"
-              aria-expanded="false"
-              aria-controls="vnc-clipboard-panel"
-              title="Clipboard options"
-            >
-              ⋯
-            </button>
-            <div id="vnc-clipboard-panel" class="vnc-clipboard-panel" hidden>
-              <textarea
-                id="vnc-clipboard-text"
-                class="vnc-clipboard-text"
-                rows="3"
-                spellcheck="false"
-                placeholder="Clipboard bridge — edit text here, or use the buttons below"
-              ></textarea>
-              <div class="vnc-clipboard-actions">
-                <button type="button" id="vnc-load-mac" class="vnc-clipboard-btn">Load from Mac</button>
-                <button type="button" id="vnc-save-mac" class="vnc-clipboard-btn">Copy to Mac</button>
-              </div>
-              <label class="vnc-clipboard-check">
-                <input type="checkbox" id="vnc-type-select-all" checked />
-                Select all first (Ctrl+A)
-              </label>
-              <p id="vnc-clipboard-hint" class="vnc-clipboard-hint">
-                Address bar: click it in Camofox, then Type into browser. Page fields: Paste into field.
-              </p>
-            </div>
+            <p id="vnc-clipboard-hint" class="vnc-clipboard-hint">
+              Click a field in the page, then Paste — or Cmd+V while the page is focused.
+            </p>
           </div>
           <div id="vnc-frame" class="browser-viewport">
             <div id="vnc-screen" class="vnc-screen" aria-label="Camofox via noVNC"></div>

@@ -626,7 +626,7 @@ warm_camofox_browser() {
 }
 
 # 0.1.29 images shipped a broken Camofox viewport patch (`}););`). Repair in-place until next image cut.
-# Also re-apply HITL patch markers (selection / reaper) when the baked /app/server.js is missing them
+# Also re-apply HITL patch markers (insert-text / selection / reaper) when the baked /app/server.js is missing them
 # (older images, or writable-layer wipe after recreate before the next image cut).
 repair_camfox_server_js() {
   local f="${CAMOFOX_APP_DIR}/server.js"
@@ -642,14 +642,26 @@ repair_camfox_server_js() {
   if [[ -f "${patch_script}" ]]; then
     if ! grep -q 'HITL_SELECTION_ROUTE' "$f" 2>/dev/null; then
       needs_hitl_patch=1
+    elif ! grep -q 'HITL_INSERT_TEXT_ROUTE' "$f" 2>/dev/null; then
+      needs_hitl_patch=1
     elif ! grep -q 'window: \[__hitlVp.width, __hitlVp.height\]' "$f" 2>/dev/null; then
       needs_hitl_patch=1
     fi
   fi
   if [[ "${needs_hitl_patch}" -eq 1 ]]; then
-    echo "[vps-start] applying Camofox HITL patch (selection / reaper / keepalive / window size)" >&2
+    echo "[vps-start] applying Camofox HITL patch (insert-text / selection / reaper / keepalive / window size)" >&2
     node "${patch_script}" "$f" || echo "[vps-start] WARN: Camofox HITL patch failed" >&2
   fi
+}
+
+# Upstream vnc-watcher only reattaches x11vnc when the Xvfb *display number* changes.
+# Idle-shutdown + warm-on-open relaunches Xvfb on the same :99, so :5900 stays dead
+# and jWeb instant-disconnects (noVNC 1011). Overlay before Camofox starts the watcher.
+repair_camfox_vnc_watcher() {
+  local patch_script="${APP_DIR}/scripts/patch-camofox-vnc-watcher.sh"
+  local watcher="${CAMOFOX_APP_DIR}/plugins/vnc/vnc-watcher.sh"
+  [[ -x "${patch_script}" && -f "${watcher}" ]] || return 0
+  bash "${patch_script}" "${watcher}" || echo "[vps-start] WARN: Camofox vnc-watcher overlay failed" >&2
 }
 
 # Camofox 1.6+ gates noVNC behind plugins.vnc in camofox.config.json.
@@ -775,6 +787,7 @@ ensure_camofox_better_sqlite3() {
 echo "[vps-start] Camofox ${CAMOFOX_URL}"
 ensure_camofox_better_sqlite3 || true
 repair_camfox_server_js
+repair_camfox_vnc_watcher
 ensure_camofox_vnc
 ( cd "${CAMOFOX_APP_DIR}" && node --max-old-space-size="${MAX_OLD_SPACE_SIZE}" server.js ) &
 for _ in $(seq 1 90); do curl -fsS "${CAMOFOX_URL}/health" >/dev/null 2>&1 && break; sleep 1; done

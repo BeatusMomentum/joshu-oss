@@ -497,9 +497,86 @@ if (!source.includes(viewportFitCall)) {
 }
 
 // ---------------------------------------------------------------------------
-// HITL clipboard: POST /tabs/:tabId/selection (Joshu copy-selection API)
+// HITL clipboard: insert into the focused field (Joshu paste) and read selection.
 // x11vnc does not reliably sync Firefox clipboard to the Mac/host.
+// page.evaluate(fn, arg) avoids Camofox /type (needs a snapshot ref) and the
+// 64KB /evaluate expression cap.
 // ---------------------------------------------------------------------------
+const hitlClipboardNeedles = [
+  "// Press key\n/**\n * @openapi\n * /tabs/{tabId}/press:",
+  "app.post('/tabs/:tabId/press', async (req, res) => {",
+];
+
+if (!source.includes("HITL_INSERT_TEXT_ROUTE")) {
+  const insertRoute = `
+// HITL_INSERT_TEXT_ROUTE — paste into focused page control without VNC keysyms
+app.post('/tabs/:tabId/insert-text', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId, text, selectAll } = req.body || {};
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, tabId);
+    session.lastAccess = Date.now();
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+    const payload = { text: String(text || ''), selectAll: selectAll === true };
+    const result = await withTabLock(tabId, async () => {
+      return await tabState.page.evaluate(({ text, selectAll }) => {
+        let el = document.activeElement;
+        while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+        if (!el || el === document.body || el === document.documentElement) return { ok: false, reason: 'no-field' };
+        const tag = String(el.tagName || '').toUpperCase();
+        const type = tag === 'INPUT' ? String(el.type || 'text').toLowerCase() : '';
+        const skip = ['button', 'submit', 'checkbox', 'radio', 'file', 'image', 'reset', 'hidden', 'color', 'range'];
+        if (tag === 'INPUT' && skip.includes(type)) return { ok: false, reason: 'non-text-input' };
+        if (tag === 'INPUT' || tag === 'TEXTAREA') {
+          if (el.disabled || el.readOnly) return { ok: false, reason: 'readonly' };
+          const value = String(el.value || '');
+          const start = selectAll ? 0 : (el.selectionStart == null ? value.length : el.selectionStart);
+          const end = selectAll ? value.length : (el.selectionEnd == null ? start : el.selectionEnd);
+          const next = value.slice(0, start) + text + value.slice(end);
+          const proto = tag === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+          if (desc && desc.set) desc.set.call(el, next);
+          else el.value = next;
+          try { el.setSelectionRange(start + text.length, start + text.length); } catch (e) {}
+          el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: text }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return { ok: true, via: 'value', chars: text.length };
+        }
+        if (el.isContentEditable) {
+          el.focus();
+          if (selectAll) document.execCommand('selectAll', false, null);
+          const okEdit = document.execCommand('insertText', false, text);
+          return { ok: !!okEdit, via: 'execCommand', chars: text.length };
+        }
+        const okAny = document.execCommand('insertText', false, text);
+        if (okAny) return { ok: true, via: 'execCommand-fallback', chars: text.length };
+        return { ok: false, reason: 'not-a-field' };
+      }, payload);
+    });
+    res.json(result || { ok: false, reason: 'no-field' });
+  } catch (err) {
+    log('error', 'insert-text failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+`;
+  let insertInserted = false;
+  for (const needle of hitlClipboardNeedles) {
+    if (source.includes(needle)) {
+      source = source.replace(needle, insertRoute + needle);
+      insertInserted = true;
+      break;
+    }
+  }
+  if (!insertInserted) {
+    console.warn(`[joshu] insert-text route insertion point not found in ${target}; skipping`);
+  }
+}
+
 if (!source.includes("HITL_SELECTION_ROUTE")) {
   const selectionRoute = `
 // HITL_SELECTION_ROUTE — read focused/selected text without VNC clipboard (x11vnc drops it)
@@ -515,23 +592,20 @@ app.post('/tabs/:tabId/selection', async (req, res) => {
     tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
     const text = await withTabLock(tabId, async () => {
       return await tabState.page.evaluate(() => {
-        const el = document.activeElement;
+        let el = document.activeElement;
+        while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
         if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && typeof el.selectionStart === 'number') {
           const start = el.selectionStart ?? 0;
           const end = el.selectionEnd ?? 0;
           if (end > start) return String(el.value || '').slice(start, end);
-          const v = String(el.value || '').trim();
-          if (/^(xoxb-|xapp-|xoxe-|xoxp-)/.test(v)) return v;
+          return String(el.value || '');
         }
-        const sel = window.getSelection ? String(window.getSelection() || '') : '';
-        if (sel.trim()) return sel;
-        // Fallback: first visible bot/app token on the page (Slack Install / Socket Mode)
-        const nodes = Array.from(document.querySelectorAll('input, textarea, code, pre, [class*="token"]'));
-        for (const node of nodes) {
-          const v = String(node.value || node.textContent || '').trim();
-          if (/^(xoxb-|xapp-)/.test(v) && v.length > 20) return v;
+        if (el && el.isContentEditable) {
+          const inner = String(window.getSelection ? window.getSelection() : '') || '';
+          if (inner.trim()) return inner;
+          return String(el.innerText || el.textContent || '');
         }
-        return '';
+        return window.getSelection ? String(window.getSelection() || '') : '';
       });
     });
     res.json({ ok: true, text: text || '' });

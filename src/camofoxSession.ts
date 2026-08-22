@@ -77,6 +77,67 @@ const HITL_TAB_SHIM = `
 })()
 `;
 
+/** Shared with scripts/patch-camofox-single-tab.mjs HITL_INSERT_TEXT_ROUTE. */
+const HITL_INSERT_INTO_FOCUSED = `function (text, selectAll) {
+  var el = document.activeElement;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  if (!el || el === document.body || el === document.documentElement) return { ok: false, reason: 'no-field' };
+  var tag = String(el.tagName || '').toUpperCase();
+  var type = tag === 'INPUT' ? String(el.type || 'text').toLowerCase() : '';
+  var skip = ['button', 'submit', 'checkbox', 'radio', 'file', 'image', 'reset', 'hidden', 'color', 'range'];
+  if (tag === 'INPUT' && skip.indexOf(type) !== -1) return { ok: false, reason: 'non-text-input' };
+  if (tag === 'INPUT' || tag === 'TEXTAREA') {
+    if (el.disabled || el.readOnly) return { ok: false, reason: 'readonly' };
+    var value = String(el.value || '');
+    var start = selectAll ? 0 : (el.selectionStart == null ? value.length : el.selectionStart);
+    var end = selectAll ? value.length : (el.selectionEnd == null ? start : el.selectionEnd);
+    var next = value.slice(0, start) + text + value.slice(end);
+    var proto = tag === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) desc.set.call(el, next);
+    else el.value = next;
+    try { el.setSelectionRange(start + text.length, start + text.length); } catch (e) {}
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: text }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { ok: true, via: 'value', chars: text.length };
+  }
+  if (el.isContentEditable) {
+    el.focus();
+    if (selectAll) document.execCommand('selectAll', false, null);
+    var okEdit = document.execCommand('insertText', false, text);
+    return { ok: !!okEdit, via: 'execCommand', chars: text.length };
+  }
+  var okAny = document.execCommand('insertText', false, text);
+  if (okAny) return { ok: true, via: 'execCommand-fallback', chars: text.length };
+  return { ok: false, reason: 'not-a-field' };
+}`;
+
+const HITL_READ_FOCUSED_TEXT = `function () {
+  var el = document.activeElement;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && typeof el.selectionStart === 'number') {
+    var start = el.selectionStart || 0;
+    var end = el.selectionEnd || 0;
+    if (end > start) return { text: String(el.value || '').slice(start, end) };
+    return { text: String(el.value || '') };
+  }
+  if (el && el.isContentEditable) {
+    var innerSel = String(window.getSelection ? window.getSelection() : '') || '';
+    if (innerSel) return { text: innerSel };
+    return { text: String(el.innerText || el.textContent || '') };
+  }
+  var sel = String(window.getSelection ? window.getSelection() : '') || '';
+  return { text: sel };
+}`;
+
+function explainInsertFailure(reason?: string): string {
+  if (reason === "readonly") return "That field is read-only.";
+  if (reason === "no-field" || reason === "not-a-field" || reason === "non-text-input") {
+    return "Click a text field in the page first, then paste.";
+  }
+  return reason ? `Paste failed: ${reason}` : "Click a text field in the page first, then paste.";
+}
+
 export class CamofoxSessionCoordinator {
   constructor(
     private readonly opts: {
@@ -228,40 +289,55 @@ export class CamofoxSessionCoordinator {
   }
 
   /**
-   * Insert text into the focused page control via Playwright (not VNC keysyms).
-   * x11vnc maps `{` → `[` when Shift is dropped; browser-level typing keeps braces.
+   * Insert text into the focused page control (not VNC keysyms).
+   *
+   * Camofox `/type` needs a snapshot ref and used to no-op for jWeb paste.
+   * Prefer the HITL `/insert-text` route (patched Camofox); fall back to `/evaluate`.
+   * Native paste semantics: insert at the caret / replace the current selection.
+   * Pass selectAll only when the caller wants to replace the whole field.
    */
   async insertText(text: string, opts?: { selectAll?: boolean }): Promise<void> {
     const tab = await this.currentTab();
     if (!tab?.tabId) throw new Error("No Camofox tab");
-    if (opts?.selectAll !== false) {
-      const pressRes = await fetch(new URL(`/tabs/${tab.tabId}/press`, this.opts.camofoxUrl), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: this.opts.userId, key: "Control+a" }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!pressRes.ok) throw new Error(`Camofox select-all failed: ${pressRes.status}`);
-    }
-    // Playwright keyboard.type inserts Unicode at the page (not via x11vnc keysyms).
-    const typeRes = await fetch(new URL(`/tabs/${tab.tabId}/type`, this.opts.camofoxUrl), {
+    const selectAll = opts?.selectAll === true;
+
+    const insertUrl = new URL(`/tabs/${tab.tabId}/insert-text`, this.opts.camofoxUrl);
+    const insertRes = await fetch(insertUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId: this.opts.userId,
-        text,
-        mode: "keyboard",
-        delay: 0,
-      }),
-      signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify({ userId: this.opts.userId, text, selectAll }),
+      signal: AbortSignal.timeout(30_000),
     });
-    if (!typeRes.ok) throw new Error(`Camofox type failed: ${typeRes.status}`);
+    if (insertRes.ok) {
+      const data = (await insertRes.json()) as { ok?: boolean; reason?: string; error?: string };
+      if (data.ok) return;
+      throw new Error(explainInsertFailure(data.reason || data.error));
+    }
+    if (insertRes.status !== 404 && insertRes.status !== 405) {
+      const err = (await insertRes.json().catch(() => ({}))) as { error?: string };
+      throw new Error(err.error || `Camofox insert-text failed: ${insertRes.status}`);
+    }
+
+    // Unpatched Camofox: same DOM insert via evaluate (64KB expression cap).
+    const result = await this.evaluateJson<{ ok?: boolean; reason?: string }>(
+      tab.tabId,
+      `JSON.stringify((${HITL_INSERT_INTO_FOCUSED})(${JSON.stringify(text)}, ${selectAll}))`,
+    );
+    if (result?.ok) return;
+    throw new Error(explainInsertFailure(result?.reason));
   }
 
-  /** Read selection / focused token text via Playwright (x11vnc clipboard is unreliable). */
+  /** Read selection, or the whole focused field when nothing is selected. */
   async readSelection(): Promise<string> {
     const tab = await this.currentTab();
     if (!tab?.tabId) throw new Error("No Camofox tab");
+
+    const evaluated = await this.evaluateJson<{ text?: string }>(
+      tab.tabId,
+      `JSON.stringify((${HITL_READ_FOCUSED_TEXT})())`,
+    );
+    if (typeof evaluated?.text === "string" && evaluated.text.length > 0) return evaluated.text;
+
     const res = await fetch(new URL(`/tabs/${tab.tabId}/selection`, this.opts.camofoxUrl), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -271,6 +347,29 @@ export class CamofoxSessionCoordinator {
     if (!res.ok) throw new Error(`Camofox selection failed: ${res.status}`);
     const data = (await res.json()) as { text?: string };
     return typeof data.text === "string" ? data.text : "";
+  }
+
+  private async evaluateJson<T>(tabId: string, expression: string): Promise<T | undefined> {
+    const url = new URL(`/tabs/${tabId}/evaluate`, this.opts.camofoxUrl);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: this.opts.userId, expression }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as { result?: unknown };
+    const raw = data.result;
+    if (raw == null) return undefined;
+    if (typeof raw === "object") return raw as T;
+    if (typeof raw === "string") {
+      try {
+        return JSON.parse(raw) as T;
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
   }
 
   async installShim(tabId: string): Promise<void> {
