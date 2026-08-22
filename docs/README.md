@@ -26,7 +26,7 @@ Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 | Topic | Doc |
 |-------|-----|
 | Self-host (standalone Docker) | [`self-host.md`](self-host.md) |
-| **Release notes** | [`releases/0.1.38-0.1.40.md`](releases/0.1.38-0.1.40.md) · **0.1.40 → 0.1.41:** [`releases/0.1.40-0.1.41.md`](releases/0.1.40-0.1.41.md) |
+| **Releases** | [GitHub Releases](https://github.com/db-aeon/joshu-oss/releases) |
 | Box state / factory reset | [`box-state.md`](box-state.md) |
 | Local dev install | [`local-installation.md`](local-installation.md) |
 | Hermes integration (skills, gateway, env) | [`hermes-integration.md`](hermes-integration.md) |
