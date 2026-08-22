@@ -657,6 +657,7 @@ export class HermesApiRunner extends EventEmitter {
   private lastConnectorsMcpHealthy = true;
   private gatewayMcpReloadPending = false;
   private mcpGatewayReloadInFlight = false;
+  private gatewayReviveInFlight = false;
   private gatewayAutoStart: boolean;
 
   constructor(
@@ -869,9 +870,17 @@ export class HermesApiRunner extends EventEmitter {
     this.activeControllers.clear();
     this.histories.clear();
     this.lastSessionId = undefined;
-    if (this.gateway && !this.gateway.killed && this.gateway.exitCode === null) this.gateway.kill("SIGTERM");
-    this.gateway = undefined;
-    await this.stopGatewayDaemon();
+    // Drop in-flight Hermes sessions, then bring :8642 back. jWeb Camofox restart
+    // and "forget session" both POST /api/hermes/reset; leaving the daemon down
+    // made patrick chat/Slack/phone-dead for hours (2026-08-22). Instance health
+    // only probes — it will not respawn the gateway.
+    this.gatewayReviveInFlight = true;
+    try {
+      await this.stopOwnedGatewayProcess();
+      await this.ensureGatewayAfterStop("reset");
+    } finally {
+      this.gatewayReviveInFlight = false;
+    }
   }
 
   /**
@@ -883,11 +892,7 @@ export class HermesApiRunner extends EventEmitter {
     if (await this.deferGatewayRestartIfCronActive("explicit restartGateway")) {
       return this.getGatewayStatus();
     }
-    if (this.gateway && !this.gateway.killed && this.gateway.exitCode === null) {
-      this.gateway.kill("SIGTERM");
-    }
-    this.gateway = undefined;
-    await this.stopGatewayDaemon();
+    await this.stopOwnedGatewayProcess();
     if (!this.gatewayAutoStart) {
       return this.getGatewayStatus();
     }
@@ -1294,8 +1299,26 @@ export class HermesApiRunner extends EventEmitter {
   private startMcpGatewayWatchdog(): void {
     if (this.mcpGatewayWatchdogTimer) return;
     this.mcpGatewayWatchdogTimer = setInterval(() => {
+      void this.reviveGatewayIfDead();
       void this.syncGatewayWithMcpHealth();
     }, 30_000);
+  }
+
+  /** SIGTERM/pkill must not leave chat down until someone opens jChat status. */
+  private async reviveGatewayIfDead(): Promise<void> {
+    if (!this.gatewayAutoStart || this.gatewayReviveInFlight) return;
+    const ownsGateway =
+      this.gateway !== undefined && !this.gateway.killed && this.gateway.exitCode === null;
+    if (ownsGateway || (await this.health())) return;
+    this.gatewayReviveInFlight = true;
+    try {
+      console.warn("[hermes-api] Hermes gateway down; restarting (watchdog)");
+      await this.ensureApiServer();
+    } catch (err) {
+      console.warn(`[hermes-api] gateway watchdog restart failed: ${(err as Error).message}`);
+    } finally {
+      this.gatewayReviveInFlight = false;
+    }
   }
 
   /** Restart gateway when connectors MCP recovers so Hermes re-runs tools/list. */
@@ -1986,6 +2009,26 @@ export class HermesApiRunner extends EventEmitter {
         await writeFile(hindsightConfigPath, next, "utf8");
         console.log(`[hermes-api] configured Hermes Hindsight provider at ${hindsightConfigPath}`);
       }
+    }
+  }
+
+  private async stopOwnedGatewayProcess(): Promise<void> {
+    if (this.gateway && !this.gateway.killed && this.gateway.exitCode === null) {
+      this.gateway.kill("SIGTERM");
+    }
+    this.gateway = undefined;
+    await this.stopGatewayDaemon();
+  }
+
+  /** After an intentional stop, start again when auto-start is on. Do not defer on cron — the daemon is already gone. */
+  private async ensureGatewayAfterStop(reason: string): Promise<void> {
+    if (!this.gatewayAutoStart) return;
+    console.log(`[hermes-api] restarting Hermes gateway after ${reason}`);
+    try {
+      await this.ensureApiServer();
+    } catch (err) {
+      console.warn(`[hermes-api] gateway restart after ${reason} failed: ${(err as Error).message}`);
+      this.warmGatewayInBackground();
     }
   }
 
