@@ -57,10 +57,36 @@ type ComposioConnectedAccountRow = {
   appUniqueId?: string;
 };
 
+const CONNECTED_ACCOUNTS_CACHE_MS = 20_000;
+const TOOLKIT_LIST_CACHE_MS = 45_000;
+
+let connectedAccountsCache:
+  | { userId: string; at: number; map: Map<string, ComposioConnectedAccountSummary[]> }
+  | null = null;
+const toolkitListCache = new Map<
+  string,
+  { at: number; data: { toolkits: ComposioToolkitRow[]; cursor?: string } }
+>();
+
+/** Bust in-memory list caches after connect/disconnect/sync. */
+export function invalidateComposioToolkitCache(): void {
+  connectedAccountsCache = null;
+  toolkitListCache.clear();
+}
+
 async function listConnectedAccountsByToolkit(
   projectRoot: string,
 ): Promise<Map<string, ComposioConnectedAccountSummary[]>> {
   const userId = resolveComposioUserId(projectRoot);
+  const now = Date.now();
+  if (
+    connectedAccountsCache &&
+    connectedAccountsCache.userId === userId &&
+    now - connectedAccountsCache.at < CONNECTED_ACCOUNTS_CACHE_MS
+  ) {
+    return connectedAccountsCache.map;
+  }
+
   const composio = composioClient();
   const listFn = (
     composio.connectedAccounts as {
@@ -84,7 +110,19 @@ async function listConnectedAccountsByToolkit(
     byToolkit.set(slug, list);
   }
 
+  connectedAccountsCache = { userId, at: now, map: byToolkit };
   return byToolkit;
+}
+
+/** Read persisted session id without Hermes MCP side effects (listing must stay fast). */
+async function resolveComposioSessionId(projectRoot: string): Promise<string> {
+  const userId = resolveComposioUserId(projectRoot);
+  const existing = await readStore(projectRoot);
+  if (existing?.sessionId && existing.userId === userId) {
+    return existing.sessionId;
+  }
+  const created = await getOrCreateComposioSession(projectRoot);
+  return created.sessionId;
 }
 
 type ComposioStore = {
@@ -259,15 +297,20 @@ export async function listComposioToolkits(
   projectRoot: string,
   options: { search?: string; cursor?: string; limit?: number } = {},
 ): Promise<{ toolkits: ComposioToolkitRow[]; cursor?: string }> {
-  const { sessionId } = await getOrCreateComposioSession(projectRoot);
-  const composio = composioClient();
-  const session = await composio.use(sessionId);
-
   // Composio toolkit search rejects queries shorter than 3 characters (HTTP 400 / 10400).
   const rawSearch = options.search?.trim() || "";
   const search = rawSearch.length >= 3 ? rawSearch : "";
   const requested = options.limit ?? (search ? 40 : 50);
   const limit = Math.min(50, Math.max(1, requested));
+  const cacheKey = `${search}|${options.cursor ?? ""}|${limit}`;
+  const cached = toolkitListCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < TOOLKIT_LIST_CACHE_MS) {
+    return cached.data;
+  }
+
+  const sessionId = await resolveComposioSessionId(projectRoot);
+  const composio = composioClient();
+  const session = await composio.use(sessionId);
 
   const result = await session.toolkits({
     limit,
@@ -278,21 +321,30 @@ export async function listComposioToolkits(
 
   const connectedByToolkit = await listConnectedAccountsByToolkit(projectRoot);
 
-  const toolkits = result.items.filter((t) => !t.isNoAuth).map((t) => {
-    const slug = t.slug.toLowerCase();
-    const connectedAccounts = connectedByToolkit.get(slug) ?? [];
-    const isConnected = connectedAccounts.length > 0;
-    return {
-      slug: t.slug,
-      name: t.name,
-      logo: t.logo,
-      isConnected,
-      connectedAccountId: connectedAccounts[0]?.connectedAccountId,
-      connectedAccounts,
-    };
-  });
+  const toolkits = result.items
+    .filter((t) => !t.isNoAuth)
+    .map((t) => {
+      const slug = t.slug.toLowerCase();
+      const connectedAccounts = connectedByToolkit.get(slug) ?? [];
+      const isConnected = connectedAccounts.length > 0;
+      return {
+        slug: t.slug,
+        name: t.name,
+        logo: t.logo,
+        isConnected,
+        connectedAccountId: connectedAccounts[0]?.connectedAccountId,
+        connectedAccounts,
+      };
+    })
+    .sort((a, b) => {
+      const byConnected = Number(b.isConnected) - Number(a.isConnected);
+      if (byConnected !== 0) return byConnected;
+      return a.name.localeCompare(b.name);
+    });
 
-  return { toolkits, cursor: result.cursor };
+  const payload = { toolkits, cursor: result.cursor };
+  toolkitListCache.set(cacheKey, { at: Date.now(), data: payload });
+  return payload;
 }
 
 export async function connectComposioToolkit(
@@ -326,11 +378,49 @@ export async function connectComposioToolkit(
   }
 }
 
+function isComposioAccountNotFoundError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return (
+    msg.includes("ConnectedAccount_ResourceNotFound") ||
+    (/\b404\b/.test(msg) && /not found/i.test(msg))
+  );
+}
+
+/** Reconcile toolkit rows with live Composio connected-account list (disk cache must not own connection state). */
+export async function applyComposioConnectionState(
+  projectRoot: string,
+  toolkits: ComposioToolkitRow[],
+): Promise<ComposioToolkitRow[]> {
+  const connectedByToolkit = await listConnectedAccountsByToolkit(projectRoot);
+  return toolkits
+    .map((t) => {
+      const slug = t.slug.toLowerCase();
+      const connectedAccounts = connectedByToolkit.get(slug) ?? [];
+      return {
+        ...t,
+        isConnected: connectedAccounts.length > 0,
+        connectedAccountId: connectedAccounts[0]?.connectedAccountId,
+        connectedAccounts,
+      };
+    })
+    .sort((a, b) => {
+      const byConnected = Number(b.isConnected) - Number(a.isConnected);
+      if (byConnected !== 0) return byConnected;
+      return a.name.localeCompare(b.name);
+    });
+}
+
 export async function disconnectComposioAccount(connectedAccountId: string): Promise<void> {
   const id = connectedAccountId.trim();
   if (!id) throw new Error("connectedAccountId is required");
   const composio = composioClient();
-  await composio.connectedAccounts.delete(id);
+  try {
+    await composio.connectedAccounts.delete(id);
+  } catch (error) {
+    // Stale UI / disk cache may reference accounts already removed in Composio cloud.
+    if (isComposioAccountNotFoundError(error)) return;
+    throw error;
+  }
 }
 
 export type DisconnectAllComposioResult = {

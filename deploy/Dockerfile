@@ -125,6 +125,7 @@ RUN bash ${APP_DIR}/scripts/apply-arozos-patches.sh \
     && rsync -a system/ ${AROZ_TEMPLATE}/system/ \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/joshu/ ${AROZ_TEMPLATE}/subservice/joshu/ \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/excalidraw/ ${AROZ_TEMPLATE}/subservice/excalidraw/ \
+    && rsync -a ${APP_DIR}/arozos-subservice-staging/md-editor/ ${AROZ_TEMPLATE}/subservice/md-editor/ \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/hermes-chat/ ${AROZ_TEMPLATE}/subservice/hermes-chat/ \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/hindsight-viewer/ ${AROZ_TEMPLATE}/subservice/hindsight-viewer/ \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/file-brain-viewer/ ${AROZ_TEMPLATE}/subservice/file-brain-viewer/ \
@@ -138,6 +139,7 @@ RUN bash ${APP_DIR}/scripts/apply-arozos-patches.sh \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/telephone/ ${AROZ_TEMPLATE}/subservice/telephone/ \
     && rsync -a ${APP_DIR}/arozos-subservice-staging/last30days/ ${AROZ_TEMPLATE}/subservice/last30days/ \
     && rsync -a ${APP_DIR}/dist/excalidraw/ ${AROZ_TEMPLATE}/subservice/excalidraw/app/ \
+    && rsync -a ${APP_DIR}/dist/md-editor/ ${AROZ_TEMPLATE}/subservice/md-editor/app/ \
     && rsync -a ${APP_DIR}/dist/hermes-chat/ ${AROZ_TEMPLATE}/subservice/hermes-chat/app/ \
     && rsync -a ${APP_DIR}/dist/hindsight-viewer/ ${AROZ_TEMPLATE}/subservice/hindsight-viewer/app/ \
     && rsync -a ${APP_DIR}/dist/file-brain-viewer/ ${AROZ_TEMPLATE}/subservice/file-brain-viewer/app/ \

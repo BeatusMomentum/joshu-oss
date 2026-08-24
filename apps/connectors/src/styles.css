@@ -143,6 +143,25 @@ header h1 {
   margin-bottom: 0.75rem;
 }
 
+.search-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.search-field input {
+  flex: 1;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle, #ccc);
+}
+
+.search-hint {
+  margin: 0 0 0.75rem;
+}
+
 .search-row input {
   flex: 1;
   padding: 0.45rem 0.6rem;
@@ -164,6 +183,91 @@ header h1 {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+.composio-list.is-loading {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.provider-panel {
+  margin: 0.65rem 0 0.25rem 3.1rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 8px;
+  background: rgba(26, 26, 26, 0.04);
+  border: 1px solid var(--border-subtle, #eee);
+}
+
+.composio-fal .composio-logo-fallback {
+  background: linear-gradient(135deg, #7c3aed, #db2777);
+  color: #fff;
+  font-weight: 700;
+}
+
+.provider-direct {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-width: 420px;
+}
+
+.provider-direct label {
+  font-size: 0.85rem;
+}
+
+.provider-direct input {
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle, #ccc);
+}
+
+.provider-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.provider-row-main {
+  min-width: 0;
+}
+
+.provider-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.78rem;
+  background: rgba(26, 26, 26, 0.08);
+}
+
+.status-pill-ok {
+  background: rgba(45, 90, 74, 0.12);
+  color: var(--accent, #2d5a4a);
+}
+
+.provider-direct {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: min(100%, 280px);
+}
+
+.provider-direct label {
+  font-size: 0.85rem;
+}
+
+.provider-direct input {
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle, #ccc);
 }
 
 .composio-toolkit {

@@ -57,3 +57,16 @@ export function provisionEnvTrim(name: string): string | undefined {
   const fromProcess = process.env[name]?.trim();
   return fromProcess || undefined;
 }
+
+/**
+ * Copy provision file entries into process.env so shell MCP start scripts
+ * (start-fal-mcp-relay.sh, etc.) see fleet relay URLs and agent tokens.
+ * Provision file wins over existing process.env (matches provisionEnvTrim).
+ */
+export function hydrateProcessEnvFromProvisionFile(): void {
+  const path = instanceEnvPath();
+  if (!path) return;
+  for (const [key, value] of Object.entries(readProvisionInstanceEnv())) {
+    if (value) process.env[key] = value;
+  }
+}

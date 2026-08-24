@@ -22,6 +22,8 @@
     voiceInputOn: false,
     voiceAvailable: false,
     audioLevel: 0,
+    /** Hermes gateway: true | false | null (unknown / not polled yet). */
+    gatewayRunning: null,
   };
 
   function jpQuery() {
@@ -335,6 +337,43 @@
         : "Voice mode off — click to talk";
   }
 
+  function jpUpdateOnlineDot() {
+    var online = document.getElementById("jp-jchat-tray-online");
+    if (!online) return;
+    var running = trayState.gatewayRunning;
+    online.classList.toggle("is-up", running === true);
+    online.classList.toggle("is-down", running === false);
+    online.classList.toggle("is-unknown", running !== true && running !== false);
+    var label =
+      running === true
+        ? "Hermes gateway running"
+        : running === false
+          ? "Hermes gateway stopped"
+          : "Hermes gateway status unknown";
+    online.setAttribute("title", label);
+    online.setAttribute("aria-label", label);
+    online.removeAttribute("aria-hidden");
+  }
+
+  function jpPollGatewayStatus() {
+    fetch("/joshu/api/hermes/gateway", { cache: "no-store" })
+      .then(function (r) {
+        return r.ok ? r.json() : null;
+      })
+      .then(function (json) {
+        if (!json) {
+          trayState.gatewayRunning = false;
+        } else {
+          trayState.gatewayRunning = Boolean(json.running);
+        }
+        jpUpdateOnlineDot();
+      })
+      .catch(function () {
+        trayState.gatewayRunning = false;
+        jpUpdateOnlineDot();
+      });
+  }
+
   function jpSyncTray() {
     jpEnsureTrayDom();
     var $ = jpQuery();
@@ -376,6 +415,7 @@
 
     jpUpdateMicButton();
     jpUpdateMeter();
+    jpUpdateOnlineDot();
   }
 
   function jpScheduleSyncTray() {
@@ -614,6 +654,7 @@
       if (data.type !== "jchat:tray") return;
       if (typeof data.assistantName === "string") trayState.assistantName = data.assistantName;
       if (typeof data.portraitUrl === "string") trayState.portraitUrl = data.portraitUrl;
+      if (typeof data.gatewayRunning === "boolean") trayState.gatewayRunning = data.gatewayRunning;
       if (typeof data.notification === "string" && data.notification.trim()) {
         var sourceFw = jpFloatWindowForSource(evt.source);
         // Skip the toast when the sending window is already on screen.
@@ -689,6 +730,9 @@
         jpSyncTray();
       })
       .catch(function () {});
+
+    jpPollGatewayStatus();
+    window.setInterval(jpPollGatewayStatus, 5000);
 
     jpSyncTray();
   }

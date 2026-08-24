@@ -3,8 +3,9 @@ import "@joshu/design-system/tokens.css";
 import "@joshu/design-system/base.css";
 import "./styles.css";
 
-import { StrictMode, useCallback, useEffect, useMemo, useState } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { readLocalToolkitsCache, writeLocalToolkitsCache } from "./toolkitsCache.js";
 
 const CONNECTORS_API = "/joshu/api/connectors";
 const COMPOSIO_API = "/joshu/api/connectors/composio";
@@ -108,6 +109,21 @@ type TeamsBotSetupStatus = {
   steps?: string[];
 };
 
+type MeteredProviderRow = {
+  id: string;
+  displayName: string;
+  description: string;
+  mode: "relay" | "direct" | "off";
+  configured: boolean;
+  userEnabled: boolean;
+  enabled: boolean;
+  mcpActive: boolean;
+  balanceUsd: number | null;
+  balanceUsdDisplay: string | null;
+  dashboardUrl: string | null;
+  ossEnvKey: string;
+};
+
 type SlackbotSetupStatus = {
   clientId?: string;
   composioEnabled?: boolean;
@@ -122,10 +138,14 @@ type SlackbotSetupStatus = {
 };
 
 function App() {
+  const cachedToolkitsOnMount = readLocalToolkitsCache();
   const [status, setStatus] = useState<ConnectorsStatus | null>(null);
-  const [toolkits, setToolkits] = useState<ComposioToolkitRow[]>([]);
+  const [toolkits, setToolkits] = useState<ComposioToolkitRow[]>(
+    () => cachedToolkitsOnMount?.featured ?? [],
+  );
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [toolkitsLoading, setToolkitsLoading] = useState(false);
+  const [loading, setLoading] = useState(() => !(cachedToolkitsOnMount?.featured.length));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   /** Row waiting on OAuth popup close + toolkit list refresh. */
@@ -158,6 +178,11 @@ function App() {
   const [teamsBotTenantId, setTeamsBotTenantId] = useState("");
   const [teamsBotDisplayName, setTeamsBotDisplayName] = useState("");
   const [teamsBotMsg, setTeamsBotMsg] = useState("");
+  const [meteredProviders, setMeteredProviders] = useState<MeteredProviderRow[]>([]);
+  const [falApiKey, setFalApiKey] = useState("");
+  const [falPanelOpen, setFalPanelOpen] = useState(false);
+  const [meteredMsg, setMeteredMsg] = useState("");
+  const backgroundStarted = useRef(false);
 
   const refreshStatus = useCallback(async () => {
     const res = await fetch(`${CONNECTORS_API}/status`, { cache: "no-store" });
@@ -167,31 +192,53 @@ function App() {
     return json;
   }, []);
 
-  const refreshToolkits = useCallback(
-    async (opts?: { restartGateway?: boolean }) => {
-      const statusRes = await fetch(`${COMPOSIO_API}/status`, { cache: "no-store" });
-      const statusJson = (await statusRes.json()) as { enabled?: boolean };
-      setComposioEnabled(Boolean(statusJson.enabled));
-      if (!statusJson.enabled) {
+  /** List Composio toolkits — server + localStorage cache; no Hermes sync here. */
+  const loadToolkits = useCallback(
+    async (query = "", opts?: { checkEnabled?: boolean }) => {
+      if (opts?.checkEnabled !== false) {
+        const statusRes = await fetch(`${COMPOSIO_API}/status`, { cache: "no-store" });
+        const statusJson = (await statusRes.json()) as { enabled?: boolean };
+        setComposioEnabled(Boolean(statusJson.enabled));
+        if (!statusJson.enabled) {
+          setToolkits([]);
+          return;
+        }
+      } else if (composioEnabled === false) {
         setToolkits([]);
         return;
       }
-      await fetch(`${COMPOSIO_API}/sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ restartGateway: opts?.restartGateway === true }),
-      }).catch(() => undefined);
+
       const params = new URLSearchParams();
-      const q = search.trim();
+      const q = query.trim();
       // Composio requires 3+ characters; shorter queries stay on the featured list.
       if (q.length >= 3) params.set("search", q);
       const listRes = await fetch(`${COMPOSIO_API}/toolkits?${params}`, { cache: "no-store" });
       if (!listRes.ok) throw new Error(await listRes.text());
       const listJson = (await listRes.json()) as { toolkits?: ComposioToolkitRow[] };
-      setToolkits(Array.isArray(listJson.toolkits) ? listJson.toolkits : []);
+      const rows = Array.isArray(listJson.toolkits) ? listJson.toolkits : [];
+      setToolkits(rows);
+      if (!q) writeLocalToolkitsCache(rows);
     },
-    [search],
+    [composioEnabled],
   );
+
+  const syncComposioInBackground = useCallback(async () => {
+    if (composioEnabled === false) return;
+    await fetch(`${COMPOSIO_API}/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ restartGateway: false }),
+    }).catch(() => undefined);
+  }, [composioEnabled]);
+
+  const refreshToolkits = useCallback(async () => {
+    setToolkitsLoading(true);
+    try {
+      await loadToolkits(search, { checkEnabled: false });
+    } finally {
+      setToolkitsLoading(false);
+    }
+  }, [loadToolkits, search]);
 
   const refreshDay0Status = useCallback(async () => {
     const res = await fetch(`${DAY0_API}/status`, { cache: "no-store" });
@@ -226,25 +273,72 @@ function App() {
     return json;
   }, []);
 
-  const refreshAll = useCallback(async () => {
-    setLoading(true);
+  const refreshMeteredProviders = useCallback(async () => {
+    const res = await fetch(`${CONNECTORS_API}/providers`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { providers?: MeteredProviderRow[] };
+    const rows = Array.isArray(json.providers) ? json.providers : [];
+    setMeteredProviders(rows);
+    return rows;
+  }, []);
+
+  const refreshInBackground = useCallback(async () => {
     setError("");
     try {
-      await refreshStatus();
-      await refreshToolkits();
-      await refreshDay0Status().catch(() => undefined);
-      await refreshSlackbotSetup().catch(() => undefined);
-      await refreshTeamsBotSetup().catch(() => undefined);
+      await Promise.all([
+        refreshStatus(),
+        loadToolkits("", { checkEnabled: true }),
+        refreshMeteredProviders().catch(() => undefined),
+        refreshDay0Status().catch(() => undefined),
+        refreshSlackbotSetup().catch(() => undefined),
+        refreshTeamsBotSetup().catch(() => undefined),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [refreshStatus, refreshToolkits, refreshDay0Status, refreshSlackbotSetup, refreshTeamsBotSetup]);
+    void syncComposioInBackground();
+  }, [
+    refreshStatus,
+    loadToolkits,
+    refreshMeteredProviders,
+    refreshDay0Status,
+    refreshSlackbotSetup,
+    refreshTeamsBotSetup,
+    syncComposioInBackground,
+  ]);
+
+  const refreshAll = useCallback(async () => {
+    setLoading(true);
+    await refreshInBackground();
+  }, [refreshInBackground]);
 
   useEffect(() => {
-    void refreshAll();
-  }, [refreshAll]);
+    if (backgroundStarted.current) return;
+    backgroundStarted.current = true;
+    void refreshInBackground();
+  }, [refreshInBackground]);
+
+  // Typing in search must not re-run full refresh (was syncing Hermes MCP every keystroke).
+  useEffect(() => {
+    if (composioEnabled === false || composioEnabled === null) return;
+    const q = search.trim();
+    if (q.length > 0 && q.length < 3) return;
+
+    const timer = window.setTimeout(() => {
+      setToolkitsLoading(true);
+      void loadToolkits(q, { checkEnabled: false })
+        .catch((err) => {
+          setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          setToolkitsLoading(false);
+        });
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [search, composioEnabled, loadToolkits]);
 
   // Deep-link from Chat sharing: #slackbot | #teams-bot (Teams only when UI flag is on)
   useEffect(() => {
@@ -259,10 +353,10 @@ function App() {
   }, [teamsBotSetup?.uiEnabled]);
 
   useEffect(() => {
-    const onFocus = () => void refreshAll();
+    const onFocus = () => void refreshInBackground();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [refreshAll]);
+  }, [refreshInBackground]);
 
   const openOAuthPopup = (redirectUrl: string, slug: string) => {
     const popup = window.open(redirectUrl, "_blank", "noopener,noreferrer");
@@ -466,6 +560,56 @@ function App() {
 
   const downloadTeamsBotPackage = () => {
     window.open(`${SHARE_CHAT_API}/teams/manifest.zip`, "_blank", "noopener,noreferrer");
+  };
+
+  const falProvider = useMemo(
+    () => meteredProviders.find((row) => row.id === "fal") ?? null,
+    [meteredProviders],
+  );
+
+  const saveFalApiKey = async () => {
+    setBusy("fal-save");
+    setMeteredMsg("");
+    try {
+      const res = await fetch(`${CONNECTORS_API}/providers/fal/setup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: falApiKey }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setFalApiKey("");
+      setMeteredMsg("fal.ai key saved.");
+      setFalPanelOpen(false);
+      await refreshMeteredProviders().catch(() => undefined);
+    } catch (err) {
+      setMeteredMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleFal = async (enabled: boolean) => {
+    setBusy("fal-toggle");
+    setMeteredMsg("");
+    try {
+      const res = await fetch(`${CONNECTORS_API}/providers/fal/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const json = (await res.json().catch(() => ({}))) as MeteredProviderRow & { error?: string };
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setMeteredProviders((prev) => {
+        const rest = prev.filter((row) => row.id !== "fal");
+        return [...rest, json];
+      });
+      if (!enabled) setFalPanelOpen(false);
+    } catch (err) {
+      setMeteredMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
   };
 
   const disconnectAccount = async (connectedAccountId: string) => {
@@ -752,6 +896,7 @@ function App() {
             Connect each app once per account. Google apps (Gmail, Calendar, Drive) support multiple accounts —
             use &quot;Connect another account&quot; after the first OAuth.
           </p>
+          {meteredMsg ? <p className="hint">{meteredMsg}</p> : null}
           {composioEnabled === false && (
             <p className="hint">
               Set <code>COMPOSIO_API_KEY</code> in Joshu env and restart.
@@ -768,19 +913,144 @@ function App() {
                   aria-label="Search providers"
                   disabled={loading && toolkits.length === 0}
                 />
-                <button type="button" className="btn" onClick={() => void refreshToolkits()} disabled={loading}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => void refreshToolkits()}
+                  disabled={toolkitsLoading}
+                >
                   Search
                 </button>
               </div>
-              {loading && toolkits.length === 0 ? (
+              {toolkitsLoading && toolkits.length === 0 && !falProvider ? (
                 <div className="loading-panel" role="status" aria-live="polite">
                   <span className="loading-spinner" aria-hidden />
                   <p>Loading apps…</p>
                 </div>
-              ) : toolkits.length === 0 ? (
+              ) : toolkits.length === 0 && !falProvider ? (
                 <p className="hint">No apps found. Try a different search, or check COMPOSIO_API_KEY.</p>
               ) : (
-              <ul className="composio-list">
+              <ul className={`composio-list${toolkitsLoading ? " is-loading" : ""}`}>
+                {falProvider && falProvider.mode !== "off" ? (
+                  <li className="composio-toolkit composio-fal" id="fal">
+                    <div className="composio-row">
+                      <div className="composio-row-main">
+                        <span className="composio-logo composio-logo-fallback" aria-hidden>
+                          F
+                        </span>
+                        <div>
+                          <strong>{falProvider.displayName}</strong>
+                          <small>
+                            {falProvider.mode === "relay" ? (
+                              <>
+                                Fleet · relay
+                                {falProvider.balanceUsdDisplay != null
+                                  ? ` · $${falProvider.balanceUsdDisplay} balance`
+                                  : ""}
+                                {falProvider.mcpActive
+                                  ? " · Active"
+                                  : falProvider.userEnabled
+                                    ? " · Needs funds"
+                                    : " · Disabled"}
+                              </>
+                            ) : falProvider.configured ? (
+                              "Self-host · key saved"
+                            ) : (
+                              "Self-host · paste API key"
+                            )}
+                          </small>
+                        </div>
+                      </div>
+                      <div className="composio-account-actions">
+                        {falProvider.mode === "relay" ? (
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => setFalPanelOpen((v) => !v)}
+                          >
+                            {falPanelOpen ? "Hide" : "Manage"}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => setFalPanelOpen((v) => !v)}
+                          >
+                            {falPanelOpen ? "Hide" : falProvider.configured ? "Replace key" : "Add key"}
+                          </button>
+                        )}
+                        {falProvider.configured ? (
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            disabled={busy === "fal-toggle"}
+                            onClick={() => void toggleFal(!falProvider.userEnabled)}
+                          >
+                            {busy === "fal-toggle"
+                              ? "Saving…"
+                              : falProvider.userEnabled
+                                ? "Disable"
+                                : "Enable"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                    {falPanelOpen ? (
+                      <div className="provider-panel">
+                        <p className="hint">{falProvider.description}</p>
+                        {falProvider.mode === "relay" ? (
+                          <>
+                            <p className="hint">
+                              Usage is billed from your shared control-plane balance. Hermes activates fal
+                              tools when enabled and balance is above zero.
+                            </p>
+                            <div className="search-row">
+                              {falProvider.dashboardUrl ? (
+                                <a
+                                  className="btn btn-primary"
+                                  href={falProvider.dashboardUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Add funds
+                                </a>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="btn"
+                                onClick={() => void refreshMeteredProviders()}
+                              >
+                                Refresh balance
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="provider-direct">
+                            <label htmlFor="falApiKey">{falProvider.ossEnvKey}</label>
+                            <input
+                              id="falApiKey"
+                              type="password"
+                              value={falApiKey}
+                              onChange={(e) => setFalApiKey(e.target.value)}
+                              placeholder={
+                                falProvider.configured ? "Saved — paste to replace" : "Paste fal API key"
+                              }
+                              autoComplete="off"
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-primary"
+                              disabled={busy === "fal-save" || !falApiKey.trim()}
+                              onClick={() => void saveFalApiKey()}
+                            >
+                              {busy === "fal-save" ? "Saving…" : "Save key"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                  </li>
+                ) : null}
                 {toolkits.map((row) => {
                   const slugLower = row.slug.toLowerCase();
                   const accounts: ComposioConnectedAccountSummary[] = row.connectedAccounts?.length

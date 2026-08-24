@@ -67,11 +67,11 @@ before inserting — used for ArozOS file opens so time-block or stale canvas st
 
 ## User-facing behavior
 
-- Double-click `.md` in ArozOS Files → jWhiteboard
-- **Open Markdown** toolbar button + Import accepts `.md`
+- Double-click `.md` in ArozOS Files → **jNotes** (see [`jnotes-arozos-app.md`](jnotes-arozos-app.md))
+- **Open Markdown** toolbar button + Import accepts `.md` onto the canvas (import only)
 - Drag-and-drop `.md` onto the canvas
-- `joshu://` links to `.md` open jWhiteboard
-- Double-click/edit mode shows raw Markdown
+- `joshu://` links to `.md` open **jNotes**
+- Double-click/edit mode shows raw Markdown (canvas import)
 - Task list checkboxes toggle on canvas without edit mode
 
 ## Supported Markdown rendering

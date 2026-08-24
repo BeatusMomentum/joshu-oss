@@ -8,7 +8,7 @@ The **control plane** (managed provisioning, customer portal at `hello.joshu.me`
 
 | Doc | Purpose |
 | --- | --- |
-| [`hetzner-quickstart.md`](hetzner-quickstart.md) | **Ubuntu VPS** self-host walkthrough (Hetzner / DigitalOcean) |
+| [`hetzner-quickstart.md`](hetzner-quickstart.md) | **Hetzner Ubuntu** self-host walkthrough (example build) |
 | [`../self-host.md`](../self-host.md) | Standalone Docker bootstrap |
 | [`runtime-topology.md`](runtime-topology.md) | How legacy assumptions map to Compose |
 | [`../runtime-assets.md`](../runtime-assets.md) | API-served HTML/PNG must be listed so they land in `dist/` |
@@ -26,7 +26,7 @@ The **control plane** (managed provisioning, customer portal at `hello.joshu.me`
 
 ## Quick start
 
-**Ubuntu VPS (Hetzner or DigitalOcean):** [hetzner-quickstart.md](hetzner-quickstart.md).
+**Hetzner / Ubuntu VPS:** [hetzner-quickstart.md](hetzner-quickstart.md).
 
 ```bash
 sudo bash scripts/bootstrap-self-host.sh

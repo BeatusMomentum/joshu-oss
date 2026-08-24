@@ -15,7 +15,7 @@ Stock ArozOS apps (File Manager, System Setting, Trash Bin) are **not** Joshu su
 
 Joshu does **not** expose a set of stock ArozOS apps in the start menu / Module List. Registration is skipped in `vendor/arozos/src/mod/modules/module.go` (`HiddenModules`, part of `patches/arozos/joshu-core.patch`):
 
-Browser, Clock, Image Paste, IoT Hub, Management Gateway, Manga, Memo, Music, Photo, Serverless, Speedtest, Tasks Scheduler, Timer, Unit Tester, Video (Media web app — not Video Player), Web Builder, Web Downloader.
+Browser, Clock, Image Paste, IoT Hub, Management Gateway, Manga, **MDEditor** and **NotepadA** (Joshu **jNotes** owns `.md` / `.txt`), Memo, Music, Photo, Serverless, Speedtest, Tasks Scheduler, Timer, Unit Tester, Video (Media web app — not Video Player), Web Builder, Web Downloader.
 
 Assets stay on disk; they simply never register. Use Joshu **Schedules** instead of stock Tasks Scheduler.
 
@@ -28,6 +28,7 @@ Joshu-owned apps update **both** `moduleInfo.json` and shortcuts. Subservice dir
 | jWeb | jWeb | `jWeb.shortcut` | `arozos/subservice/joshu/` |
 | jChat | jChat | `jChat.shortcut` | `arozos/subservice/hermes-chat/` |
 | jWhiteboard | jWhiteboard | `jWhiteboard.shortcut` | `arozos/subservice/excalidraw/` |
+| jNotes | jNotes | `jNotes.shortcut` | `arozos/subservice/md-editor/` |
 | Memory | Memory | `Memory.shortcut` | `arozos/subservice/hindsight-viewer/` |
 | File Brain | File Brain | `File Brain.shortcut` | `arozos/subservice/file-brain-viewer/` |
 | jMovie | jMovie | `jMovie.shortcut` | `arozos/subservice/jmovie/` |

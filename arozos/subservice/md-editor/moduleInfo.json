@@ -1,0 +1,15 @@
+{
+  "Name": "jNotes",
+  "Desc": "WYSIWYG markdown editor (Milkdown) with Hermes agent control",
+  "Group": "Joshu Apps",
+  "IconPath": "img/joshu/notes.png",
+  "Version": "0.1.0",
+  "StartDir": "md-editor/index.html",
+  "SupportFW": true,
+  "LaunchFWDir": "md-editor/index.html",
+  "SupportEmb": false,
+  "LaunchEmb": "",
+  "InitFWSize": [1100, 820],
+  "InitEmbSize": [960, 720],
+  "SupportedExt": ["md", "markdown", "mdx", "txt"]
+}

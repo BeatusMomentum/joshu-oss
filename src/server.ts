@@ -1,4 +1,9 @@
 import "dotenv/config";
+import { hydrateProcessEnvFromProvisionFile } from "./provisionInstanceEnv.js";
+
+// Fleet relay vars live in JOSHU_COMPOSE_ENV_FILE / /etc/joshu/instance.env — not in .env.
+hydrateProcessEnvFromProvisionFile();
+
 import "./observability/langfuse.js";
 import express, { type Request, type Response, type Router } from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
@@ -355,8 +360,8 @@ function buildAppRouter(): {
   registerTwilioVoiceRoutes(router, runner, PUBLIC_BASE_PATH);
 
   registerBrainRoutes(router);
-  registerFilesRoutes(router);
   // Share-chat JSON routes register after express.json() below.
+  // files routes (incl. POST /write) also need express.json() — see below.
 
   registerInstanceHealthRoutes(router, {
     probeHermes: async () => {
@@ -453,6 +458,8 @@ function buildAppRouter(): {
   });
 
   router.use(express.json({ limit: "12mb" }));
+
+  registerFilesRoutes(router);
 
   // CP-initiated owner email (needs JSON body; localhost-only inside the handler).
   registerInstanceOwnerEmailRoutes(router, { projectRoot: process.cwd() });

@@ -1,0 +1,70 @@
+import type { JoshuAppAgentManifest } from "@joshu/app-agent";
+
+/** jNotes manifest slice for the embedded app agent (full copy in arozos/subservice). */
+export const MD_EDITOR_MANIFEST: JoshuAppAgentManifest = {
+  id: "md-editor",
+  name: "jNotes",
+  agent: {
+    skill: "jnotes-gui",
+    usesSkills: ["joshu-brain"],
+    headless: false,
+    guiActions: [
+      {
+        name: "replaceDocument",
+        description: "Replace the entire open markdown document with new markdown (user reviews in UI)",
+        parameters: [{ name: "markdown", type: "string", required: true, description: "Full markdown body" }],
+        voice: {
+          shortcut: "replace",
+          phrases: ["replace the document", "rewrite the note", "set the markdown"],
+        },
+      },
+      {
+        name: "insertMarkdown",
+        description: "Insert markdown at the current cursor (or as a new block)",
+        parameters: [
+          { name: "markdown", type: "string", required: true, description: "Markdown to insert" },
+          { name: "inline", type: "boolean", description: "Insert as inline text when true" },
+        ],
+        voice: {
+          shortcut: "insert",
+          phrases: ["insert", "add this", "put this in the note"],
+        },
+      },
+      {
+        name: "appendMarkdown",
+        description: "Append markdown at the end of the document",
+        parameters: [{ name: "markdown", type: "string", required: true }],
+      },
+      {
+        name: "getDocument",
+        description: "Return the current markdown body and file path for the agent",
+      },
+      {
+        name: "saveDocument",
+        description: "Save the open document to disk; provide a path for an untitled note",
+        parameters: [
+          {
+            name: "path",
+            type: "string",
+            description: "Optional path relative to joshu's files",
+          },
+        ],
+        voice: {
+          shortcut: "save",
+          phrases: ["save", "save the note", "save document"],
+        },
+      },
+      {
+        name: "newDocument",
+        description: "Start a blank untitled note in the editor (does not delete files)",
+      },
+      {
+        name: "openFile",
+        description: "Open a markdown file under joshu's files (relative path)",
+        parameters: [
+          { name: "path", type: "string", required: true, description: "Path relative to joshu's files" },
+        ],
+      },
+    ],
+  },
+};

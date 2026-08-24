@@ -32,6 +32,21 @@ rsync -a "${RSYNC_DELETE[@]}" \
   --exclude '**/.env' \
   --exclude '**/.env.local' \
   --exclude '**/.env.*.local' \
+  --exclude '.joshu/connectors-providers.env' \
+  --exclude 'arozos/subservice/md-editor/app' \
+  --exclude 'arozos/subservice/connectors/app' \
+  --exclude 'arozos/subservice/jterm/app' \
+  --exclude 'arozos/subservice/last30days/app' \
+  --exclude 'arozos/subservice/excalidraw/app' \
+  --exclude 'arozos/subservice/hermes-chat/app' \
+  --exclude 'arozos/subservice/hindsight-viewer/app' \
+  --exclude 'arozos/subservice/file-brain-viewer/app' \
+  --exclude 'arozos/subservice/schedules/app' \
+  --exclude 'arozos/subservice/movie-editor/app' \
+  --exclude 'arozos/subservice/jmail/app' \
+  --exclude 'arozos/subservice/safety-settings/app' \
+  --exclude 'arozos/subservice/welcome/app' \
+  --exclude 'arozos/subservice/telephone/app' \
   --exclude aeon-page-to-speech-config.json \
   --exclude proprietary \
   --exclude vendor \
@@ -49,11 +64,13 @@ rsync -a "${RSYNC_DELETE[@]}" \
   --exclude 'docs/vps-sandbox/credential-isolation-langfuse-relay.md' \
   --exclude 'docs/vps-sandbox/update-hardening-todo.md' \
   --exclude 'docs/vps-sandbox/control-plane.md' \
+  --exclude 'docs/vps-sandbox/twilio-a2p-sms.md' \
   --exclude 'docs/vps-sandbox/provider-choices.md' \
   --exclude 'docs/vps-sandbox/voice-think-speak.md' \
   --exclude 'docs/vps-sandbox/voice-realtime.md' \
   --exclude 'docs/vps-sandbox/web-voice.md' \
   --exclude 'docs/vps-sandbox/phone-voice-local-test.md' \
+  --exclude 'docs/releases' \
   --exclude 'docs/joshu-identity.md' \
   --exclude 'docs/day0-cold-start.md' \
   --exclude 'docs/box-state.md' \
@@ -131,11 +148,14 @@ rm -rf \
   "${OUT_DIR}/docs/vps-sandbox/credential-isolation-langfuse-relay.md" \
   "${OUT_DIR}/docs/vps-sandbox/update-hardening-todo.md" \
   "${OUT_DIR}/docs/vps-sandbox/control-plane.md" \
+  "${OUT_DIR}/docs/vps-sandbox/twilio-a2p-sms.md" \
   "${OUT_DIR}/docs/vps-sandbox/provider-choices.md" \
+  "${OUT_DIR}/.joshu/connectors-providers.env" \
   "${OUT_DIR}/docs/vps-sandbox/voice-think-speak.md" \
   "${OUT_DIR}/docs/vps-sandbox/voice-realtime.md" \
   "${OUT_DIR}/docs/vps-sandbox/web-voice.md" \
   "${OUT_DIR}/docs/vps-sandbox/phone-voice-local-test.md" \
+  "${OUT_DIR}/docs/releases" \
   "${OUT_DIR}/arozos/web-overlays" \
   "${OUT_DIR}/.cursor" \
   "${OUT_DIR}/scripts/sync-from-oss.sh" \
@@ -180,6 +200,7 @@ apps/control-plane/
 hello\.joshu\.me/api/instances/
 JOSHU_SCRAPECREATORS_MODE=relay
 credential-isolation-langfuse-relay
+twilio-a2p-sms\.md
 PATTERNS
 
 if [[ "$STALE" -eq 1 ]]; then

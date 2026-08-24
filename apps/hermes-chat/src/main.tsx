@@ -506,6 +506,16 @@ function App() {
     };
   }, []);
 
+  /** Keep the desk tray online-dot in sync with Hermes gateway readiness. */
+  useEffect(() => {
+    if (status === "checking") return;
+    syncJChatTray({
+      assistantName: identity.name,
+      portraitUrl,
+      gatewayRunning: status === "ready",
+    });
+  }, [status, identity.name, portraitUrl]);
+
   useEffect(() => {
     let cancelled = false;
     void fetchVoiceStatus(VOICE_API_BASE).then((status) => {

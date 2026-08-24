@@ -16,6 +16,8 @@ __pycache__/
 *.log
 .vercel
 .joshu/skill-review-state.json
+# OSS/self-host metered provider keys written by Connectors (never commit).
+.joshu/connectors-providers.env
 
 # Standalone spec repo — https://github.com/db-aeon/portable-soul
 portable-soul/
@@ -35,6 +37,7 @@ deploy/Caddyfile
 arozos/subservice/connectors/app/
 arozos/subservice/jterm/app/
 arozos/subservice/last30days/app/
+arozos/subservice/md-editor/app/
 arozos/web-overlays-vanilla/subservice/
 
 # Wrong-path local dev drops (canonical tree is .local/, already ignored above).

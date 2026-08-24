@@ -238,11 +238,12 @@ in edit mode. See [`excalidraw-markdown-wysiwyg.md`](excalidraw-markdown-wysiwyg
 
 **jWhiteboard markdown behavior:**
 
-- Double-click `.md` in ArozOS Files → jWhiteboard (registered in `SupportedExt`)
-- Toolbar **Open Markdown** + Import accepts `.md`
+- Toolbar **Open Markdown** + Import still accepts `.md` onto the canvas (import only — no save-back)
 - Drag-and-drop `.md` onto the canvas
-- `joshu://…` links to `.md` open jWhiteboard (not MDEditor)
-- Task list checkboxes toggle on canvas without entering edit mode
+- Double-click `.md` in ArozOS Files → **jNotes** (Milkdown), not jWhiteboard
+- `joshu://` links to `.md` open **jNotes**
+
+See [`jnotes-arozos-app.md`](jnotes-arozos-app.md).
 
 ### Opening files from ArozOS (2026-06-21)
 
@@ -342,7 +343,7 @@ Bundled Hermes **`excalidraw`** skill supplies JSON envelope / container-label r
 - **Auto-load** — today's `Planning/time-block-YYYY-MM-DD.excalidraw` on startup (skipped when ArozOS opens a specific file)
 - **Open from Files** — ArozOS hash `[{filepath, filename}]` → `/media`; also `?file=`, `#file=`, Joshu-relative paths → files API
 - **Link clicks** — `onLinkOpen` on native Excalidraw `link`; `joshu://…` → ArozOS
-  `newFloatWindow` (jWhiteboard for `.excalidraw` and `.md`; MDEditor for other types); `http(s)://` unchanged
+  `newFloatWindow` (jWhiteboard for `.excalidraw`; **jNotes** for `.md` / `.txt`; previously MDEditor)
 - **Markdown fork** — WYSIWYG rendering via vendored Excalidraw source; **`onExcalidrawAPI`** (not `excalidrawAPI`) for scene control
 
 **Joshu files API** ([`src/filesApi.ts`](../src/filesApi.ts)) — load diagrams and Joshu-relative paths; ArozOS file opens prefer `/media`:

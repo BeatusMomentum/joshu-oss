@@ -4,6 +4,7 @@
  */
 
 import { isActionGuardEnabled } from "./actionGuard/index.js";
+import { falRelayConfigured } from "./meteredProviders/config.js";
 
 function envTrim(name: string, fallback = ""): string {
   return process.env[name]?.trim() || fallback;
@@ -25,6 +26,14 @@ export function resolveConnectorsMcpHealthUrl(): string {
 export function resolveComposioMcpGuardHealthUrl(): string {
   const base = envTrim("JOSHU_COMPOSIO_MCP_GUARD_URL", "http://127.0.0.1:8796").replace(/\/+$/, "");
   return `${base}/health`;
+}
+
+export function resolveFalMcpRelayHealthUrl(): string {
+  return healthUrlFromBase("JOSHU_FAL_MCP_HTTP_URL", "http://127.0.0.1:8797");
+}
+
+export function isFalMcpRelayRequired(): boolean {
+  return falRelayConfigured();
 }
 
 export function isComposioMcpGuardRequired(): boolean {
@@ -91,6 +100,13 @@ export function listJoshuMcpDependencies(): McpDependencyProbe[] {
     deps.push({
       label: "composio MCP guard",
       healthUrl: resolveComposioMcpGuardHealthUrl(),
+      required: true,
+    });
+  }
+  if (isFalMcpRelayRequired()) {
+    deps.push({
+      label: "fal MCP relay",
+      healthUrl: resolveFalMcpRelayHealthUrl(),
       required: true,
     });
   }

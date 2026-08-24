@@ -67,6 +67,7 @@ import {
 import { refreshConnectorsRegistry } from "./registry.js";
 import { ownerChannelStatus } from "../ownerChannel/config.js";
 import { isActionGuardEnabled, loadActionGuardPolicy } from "../actionGuard/policy.js";
+import { registerMeteredProviderRoutes } from "./meteredProviderRoutes.js";
 
 function parseEmailAddress(raw: string): string {
   const trimmed = raw.trim();
@@ -979,4 +980,6 @@ export function registerConnectorRoutes(
     }
     res.json(result);
   });
+
+  registerMeteredProviderRoutes(router, projectRoot, opts.runner);
 }

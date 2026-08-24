@@ -61,7 +61,7 @@ injected by `scripts/patch-camofox-single-tab.mjs` (`HITL_INSERT_TEXT_ROUTE`,
 `HITL_SELECTION_ROUTE`). `vps-start` re-applies the patch when either marker is
 missing. Without insert-text, Joshu falls back to `/evaluate`.
 
-Live-box UI hotpatch: `public/` is image-baked — after recreate, `docker cp` the clipboard HTML/JS into `/opt/joshu/public/`, or bake the next image.
+Live-box UI hotpatch: `public/` is image-baked — after recreate, `docker cp` the clipboard HTML/JS into `/opt/joshu/public/` or the next image bake. Lane table: [`vps-sandbox/hotpatch-running-box.md`](vps-sandbox/hotpatch-running-box.md).
 
 ## Tab reaper / blank-page resets
 

@@ -341,6 +341,7 @@ prepare_arozos_template() {
   rsync -a "${AROZOS_SOURCE_DIR}/src/system/" "${AROZ_TEMPLATE}/system/"
   rsync -a "${ROOT_DIR}/arozos/subservice/joshu/" "${AROZ_TEMPLATE}/subservice/joshu/"
   rsync -a "${ROOT_DIR}/arozos/subservice/excalidraw/" "${AROZ_TEMPLATE}/subservice/excalidraw/"
+  rsync -a "${ROOT_DIR}/arozos/subservice/md-editor/" "${AROZ_TEMPLATE}/subservice/md-editor/"
   rsync -a "${ROOT_DIR}/arozos/subservice/hermes-chat/" "${AROZ_TEMPLATE}/subservice/hermes-chat/"
   rsync -a "${ROOT_DIR}/arozos/subservice/hindsight-viewer/" "${AROZ_TEMPLATE}/subservice/hindsight-viewer/"
   rsync -a "${ROOT_DIR}/arozos/subservice/file-brain-viewer/" "${AROZ_TEMPLATE}/subservice/file-brain-viewer/"
@@ -359,6 +360,7 @@ prepare_arozos_template() {
   (
     cd "${ROOT_DIR}"
     npm run build:excalidraw
+    npm run build:md-editor
     npm run build:hermes-chat
     npm run build:hindsight-viewer
     npm run build:file-brain-viewer
@@ -374,6 +376,8 @@ prepare_arozos_template() {
   )
   mkdir -p "${AROZ_TEMPLATE}/subservice/excalidraw/app"
   rsync -a --delete "${ROOT_DIR}/dist/excalidraw/" "${AROZ_TEMPLATE}/subservice/excalidraw/app/"
+  mkdir -p "${AROZ_TEMPLATE}/subservice/md-editor/app"
+  rsync -a --delete "${ROOT_DIR}/dist/md-editor/" "${AROZ_TEMPLATE}/subservice/md-editor/app/"
   mkdir -p "${AROZ_TEMPLATE}/subservice/hermes-chat/app"
   rsync -a --delete "${ROOT_DIR}/dist/hermes-chat/" "${AROZ_TEMPLATE}/subservice/hermes-chat/app/"
   mkdir -p "${AROZ_TEMPLATE}/subservice/hindsight-viewer/app"
@@ -400,6 +404,7 @@ prepare_arozos_template() {
   rsync -a --delete "${ROOT_DIR}/dist/telephone/" "${AROZ_TEMPLATE}/subservice/telephone/app/"
   chmod +x "${AROZ_TEMPLATE}/subservice/joshu/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/excalidraw/start.sh"
+  chmod +x "${AROZ_TEMPLATE}/subservice/md-editor/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/hermes-chat/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/hindsight-viewer/start.sh"
   chmod +x "${AROZ_TEMPLATE}/subservice/file-brain-viewer/start.sh"

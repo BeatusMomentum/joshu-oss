@@ -14,9 +14,12 @@ Docs for **self-hosting** the Joshu box stack, building ArozOS apps, and integra
 | **Memory** | [`hermes-integration.md`](hermes-integration.md#hindsight-memory) |
 | **File Brain** | [`file-brain.md`](file-brain.md) |
 | **jWhiteboard** | [`jwhiteboard-user-guide.md`](jwhiteboard-user-guide.md) · [`jwhiteboard-developer-guide.md`](jwhiteboard-developer-guide.md) · [`excalidraw-sandbox.md`](excalidraw-sandbox.md) |
+| **jNotes** | [`jnotes-arozos-app.md`](jnotes-arozos-app.md) |
 | **Schedules** | [`schedules-arozos-app.md`](schedules-arozos-app.md) |
 | **Welcome** | [`welcome-onboarding.md`](welcome-onboarding.md) |
 | **jMovie** | [`jmovie-arozos-app.md`](jmovie-arozos-app.md) |
+| **jTerm** | [`jterm-arozos-app.md`](jterm-arozos-app.md) |
+| **Telephone** | [`telephone-arozos-app.md`](telephone-arozos-app.md) |
 | **last30days** | [`last30days-user-guide.md`](last30days-user-guide.md) · [`last30days-arozos-app.md`](last30days-arozos-app.md) |
 
 Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
@@ -31,6 +34,7 @@ Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 | Local dev install | [`local-installation.md`](local-installation.md) |
 | Hermes integration (skills, gateway, env) | [`hermes-integration.md`](hermes-integration.md) |
 | Connectors (mail, calendar, MCP) | [`connectors.md`](connectors.md) |
+| **Paid MCP / metered fal** (self-host: paste your own key) | [`metered-providers.md`](metered-providers.md) · [`connectors-arozos-app.md`](connectors-arozos-app.md) |
 | File index + search (gbrain) | [`file-brain.md`](file-brain.md) |
 | Chat with shared files | [`share-chat.md`](share-chat.md) |
 | **Runtime assets** (HTML/PNG the API reads — must land in `dist/`) | [`runtime-assets.md`](runtime-assets.md) |

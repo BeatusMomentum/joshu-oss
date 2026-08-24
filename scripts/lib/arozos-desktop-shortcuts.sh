@@ -5,6 +5,7 @@
 JWEB_SHORTCUT_CONTENT=$'module\njWeb\njWeb\nimg/joshu/browser.png\n'
 JCHAT_SHORTCUT_CONTENT=$'module\njChat\njChat\nimg/joshu/chat.png\n'
 JWHITEBOARD_SHORTCUT_CONTENT=$'module\njWhiteboard\njWhiteboard\nimg/joshu/whiteboard.png\n'
+JNOTES_SHORTCUT_CONTENT=$'module\njNotes\njNotes\nimg/joshu/notes.png\n'
 # Stock ArozOS shortcuts: line 2 = display label, line 3 = module name (openModule target).
 FILES_SHORTCUT_CONTENT=$'module\nFiles\nFile Manager\nimg/joshu/file-manager.png\n'
 SETTINGS_SHORTCUT_CONTENT=$'module\nSettings\nSystem Setting\nimg/joshu/system-setting.png\n'
@@ -53,6 +54,7 @@ install_hermes_admin_shortcuts() {
 JOSHU_AROZ_SUBSERVICE_IDS=(
   joshu
   excalidraw
+  md-editor
   hermes-chat
   hindsight-viewer
   file-brain-viewer
@@ -126,6 +128,10 @@ install_jwhiteboard_shortcuts() {
   for user_desktop in "${AROZ_DATA}"/files/users/*/Desktop; do
     rm -f "${user_desktop}/Excalidraw.shortcut" || true
   done
+}
+
+install_jnotes_shortcuts() {
+  _write_desktop_shortcut "jNotes.shortcut" "${JNOTES_SHORTCUT_CONTENT}"
 }
 
 install_jchat_shortcuts() {
@@ -203,6 +209,7 @@ install_all_joshu_desktop_shortcuts() {
   install_jweb_shortcuts
   install_jchat_shortcuts
   install_jwhiteboard_shortcuts
+  install_jnotes_shortcuts
   install_memory_shortcuts
   install_file_brain_shortcuts
   install_jmovie_shortcuts

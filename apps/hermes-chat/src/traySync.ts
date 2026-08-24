@@ -8,6 +8,8 @@ export type JChatTrayPayload = {
   voiceAvailable?: boolean;
   /** Normalized audio level 0–1 for the Winamp-style meter. */
   audioLevel?: number;
+  /** Live Hermes gateway health for the tray online dot. */
+  gatewayRunning?: boolean;
 };
 
 export function syncJChatTray(payload: JChatTrayPayload): void {

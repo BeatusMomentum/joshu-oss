@@ -1,8 +1,10 @@
 import type { Request, Response, Router } from "express";
 import type { HermesApiRunner } from "../hermesApi.js";
 import {
+  applyComposioConnectionState,
   connectComposioToolkit,
   disconnectComposioAccount,
+  invalidateComposioToolkitCache,
   isComposioEnabled,
   listComposioToolkits,
   readComposioUpstreamMcp,
@@ -21,6 +23,12 @@ import { runMailSync } from "./syncHelpers.js";
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+async function clearComposioListingCaches(projectRoot: string): Promise<void> {
+  invalidateComposioToolkitCache();
+  const { clearToolkitsCache } = await import("./composio/toolkitsCache.js");
+  clearToolkitsCache(projectRoot);
 }
 
 function callbackFromRequest(req: Request, bodyCallback?: string): string {
@@ -83,12 +91,43 @@ function mountComposioHandlers(
       const limitParsed = limitRaw ? Number(limitRaw) : NaN;
       const limit =
         Number.isFinite(limitParsed) && limitParsed > 0 ? Math.min(50, limitParsed) : undefined;
-      const result = await listComposioToolkits(projectRoot, {
-        search: search || undefined,
-        cursor: cursor || undefined,
-        limit,
-      });
-      res.json({ ok: true, ...result });
+
+      const {
+        readToolkitsCache,
+        isToolkitsCacheStale,
+        scheduleToolkitsCacheRefresh,
+        writeToolkitsCache,
+      } = await import("./composio/toolkitsCache.js");
+
+      const fetchFresh = () =>
+        listComposioToolkits(projectRoot, {
+          search: search || undefined,
+          cursor: cursor || undefined,
+          limit,
+        });
+
+      const cached = readToolkitsCache(projectRoot, search);
+      if (cached && !cursor) {
+        if (isToolkitsCacheStale(search, cached)) {
+          scheduleToolkitsCacheRefresh(projectRoot, search, fetchFresh);
+        }
+        const toolkits = await applyComposioConnectionState(projectRoot, cached.toolkits);
+        res.json({
+          ok: true,
+          toolkits,
+          cursor: cached.cursor,
+          cached: true,
+          cachedAt: cached.fetchedAt,
+          stale: isToolkitsCacheStale(search, cached),
+        });
+        return;
+      }
+
+      const result = await fetchFresh();
+      if (!cursor) {
+        writeToolkitsCache(projectRoot, search, result);
+      }
+      res.json({ ok: true, ...result, cached: false });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -227,8 +266,15 @@ function mountComposioHandlers(
 
     try {
       await disconnectComposioAccount(connectedAccountId);
+      await clearComposioListingCaches(projectRoot);
       const result = await syncComposioHermesMcp(projectRoot);
-      if (result.configChanged) await runner.reset();
+      if (result.configChanged) {
+        void runner
+          .applyConfigAndReloadGatewayInBackground("composio disconnect")
+          .catch((err: Error) => {
+            console.warn("[composio] disconnect Hermes reload:", err.message);
+          });
+      }
       await refreshConnectorsRegistry(projectRoot);
       res.json({ ok: true });
     } catch (error) {
@@ -243,8 +289,16 @@ function mountComposioHandlers(
     const restart = (req.body as { restartGateway?: boolean })?.restartGateway === true;
     try {
       const result = await syncComposioHermesMcp(projectRoot);
-      if (restart || result.configChanged) {
+      await clearComposioListingCaches(projectRoot);
+      // Only force a blocking reset when the client asks (post-OAuth). Background sync must stay fast.
+      if (restart) {
         await runner.reset();
+      } else if (result.configChanged) {
+        void runner
+          .applyConfigAndReloadGatewayInBackground("composio sync")
+          .catch((err: Error) => {
+            console.warn("[composio] sync Hermes reload:", err.message);
+          });
       }
       await refreshConnectorsRegistry(projectRoot);
       res.json(result);
@@ -263,6 +317,7 @@ function mountComposioHandlers(
     const restart = body.restartGateway === true;
     try {
       const mcpResult = await syncComposioHermesMcp(projectRoot);
+      await clearComposioListingCaches(projectRoot);
       if (restart || mcpResult.configChanged) await runner.reset();
       const registry = await refreshConnectorsRegistry(projectRoot);
       let gmailSync;

@@ -8,7 +8,6 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/joshu}"
 ENV_FILE="${ENV_FILE:-/etc/joshu/instance.env}"
 
 # DigitalOcean (and some Hetzner images) run unattended-upgrades on first boot.
-# Retry apt when dpkg is locked instead of failing the whole bootstrap.
 apt_retry() {
   local n=0
   until "$@"; do

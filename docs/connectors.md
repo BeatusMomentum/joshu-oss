@@ -7,7 +7,7 @@ Connector apps sync mail and calendar into **markdown under `joshu's files`**, i
 
 **Desktop app:** **Connectors** — canonical UI for OAuth (Composio), Gmail account management, and sync health. See [`docs/connectors-arozos-app.md`](connectors-arozos-app.md).
 
-**VPS / multi-box:** Composio OAuth is keyed by `COMPOSIO_USER_ID` (set a unique slug per box). ArozOS login stays `JOSHU_AROZ_USER` (owner email). Without per-slug `COMPOSIO_USER_ID`, every box with the same owner email shares the same Gmail connections in Composio cloud.
+**VPS / multi-box:** Composio OAuth is keyed by **`(COMPOSIO_API_KEY project, COMPOSIO_USER_ID)`**. Fleet boxes get a **per-box Composio project + API key**; provision also sets `COMPOSIO_USER_ID=<customer-slug>`. ArozOS login stays `JOSHU_AROZ_USER` (owner email). Without per-slug `COMPOSIO_USER_ID`, every sandbox sharing the same Composio project and owner email shows the same Gmail connections. A laptop `.env` `COMPOSIO_API_KEY` is often a **different project** than the VPS key — same `COMPOSIO_USER_ID` alone does not mirror prod connections. See [connectors-arozos-app.md — Local laptop vs fleet box](connectors-arozos-app.md#local-laptop-vs-fleet-box-composio).
 
 **App-wide status:** `GET /joshu/api/connectors/status` returns Nylas + per-Gmail account sync/mirror stats and a `registry` object (also written to `.joshu/connectors-registry.json`). jMail, cron, and Hermes MCP use the same API.
 
@@ -116,6 +116,7 @@ Manual disconnect without full reset: `npx tsx scripts/box-wipe-connectors.ts` (
 - **Refresh mirrors:** **`mcp_joshu_connectors_connectors_sync_now`** (`provider: gmail` / `nylas` / `all`), then query again.
 - **Actions** (send, live get by id): toolset **`mcp-joshu-connectors`** → `http://127.0.0.1:8795/mcp` (`mcp_servers.joshu_connectors` in `~/.hermes/config.yaml`).
 - **Composio MCP**: available when OAuth is connected; mail recall is skill-driven via **`joshu-mail`**; Composio is primary for Slack/GitHub/etc.
+- **fal.ai MCP** (`mcp-fal`): image/video/audio/3D via hosted MCP. **Fleet (paid):** prepaid usage wallet on CP; box local relay `:8797` → CP → `mcp.fal.ai` (no `FAL_KEY` on box). **OSS:** paste `FAL_KEY` in Connectors → **AI providers**. Full design: [`metered-providers.md`](metered-providers.md) · CP [metered-providers.md](https://github.com/db-aeon/joshu-control-plane/blob/main/docs/metered-providers.md).
 
 ### Connectors MCP HTTP (`:8795`)
 

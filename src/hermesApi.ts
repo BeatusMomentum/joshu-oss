@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import net from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
@@ -28,6 +29,14 @@ import {
   writeMergedHermesConfig,
 } from "./hermesConfigSplit.js";
 import { toolsetsWithComposio } from "./composioHermesMcpPolicy.js";
+import {
+  falMcpEnabled,
+  falRelayConfigured,
+  refreshFalMcpEnabled,
+  resolveFalApiKey,
+  resolveFalMode,
+  resolveFalMcpHttpUrl,
+} from "./meteredProviders/config.js";
 import { isActionGuardEnabled, loadActionGuardPolicy, resolveComposioMcpGuardProxyUrl } from "./actionGuard/index.js";
 import { resolveEnvWithLocalFallback } from "./safetySettings/localEnv.js";
 import { buildHermesMessagingDotenvEntries } from "./hermesMessagingEnv.js";
@@ -92,6 +101,14 @@ function getJoshuHermesCronMaxParallel(): number {
     String(DEFAULT_JOSHU_HERMES_CRON_MAX_PARALLEL);
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_JOSHU_HERMES_CRON_MAX_PARALLEL;
+}
+
+function toolsetsWithFal(toolsets: string[], falActive: boolean): string[] {
+  const next = [...toolsets];
+  const idx = next.indexOf("mcp-fal");
+  if (falActive && idx < 0) next.push("mcp-fal");
+  if (!falActive && idx >= 0) next.splice(idx, 1);
+  return next;
 }
 
 export type ComposioMcpEndpoint = {
@@ -658,6 +675,7 @@ export class HermesApiRunner extends EventEmitter {
   private gatewayMcpReloadPending = false;
   private mcpGatewayReloadInFlight = false;
   private gatewayReviveInFlight = false;
+  private ensureApiServerWait: Promise<{ ok: true }> | null = null;
   private gatewayAutoStart: boolean;
 
   constructor(
@@ -880,6 +898,51 @@ export class HermesApiRunner extends EventEmitter {
       await this.ensureGatewayAfterStop("reset");
     } finally {
       this.gatewayReviveInFlight = false;
+    }
+  }
+
+  /**
+   * Rewrite Hermes config.yaml (MCP / toolsets) then reload the gateway in the background.
+   * Use this from Connectors UI actions — awaiting reset() blocks HTTP for a full gateway boot.
+   */
+  async applyConfigAndReloadGatewayInBackground(reason: string): Promise<void> {
+    await this.ensureJoshuHermesConfig();
+    this.scheduleGatewayMcpReload(reason);
+  }
+
+  /** Fire-and-forget gateway restart after config is already on disk. */
+  scheduleGatewayMcpReload(reason: string): void {
+    this.gatewayMcpReloadPending = true;
+    if (this.mcpGatewayReloadInFlight || this.gatewayReviveInFlight) return;
+    void this.reloadGatewayForPendingMcp(reason).catch((err: Error) => {
+      console.warn(`[hermes-api] background gateway reload (${reason}): ${err.message}`);
+    });
+  }
+
+  private async reloadGatewayForPendingMcp(reason: string): Promise<void> {
+    if (!this.gatewayAutoStart) {
+      this.gatewayMcpReloadPending = false;
+      return;
+    }
+    if (this.mcpGatewayReloadInFlight) return;
+    if (await this.deferGatewayRestartIfCronActive(reason)) return;
+
+    this.mcpGatewayReloadInFlight = true;
+    try {
+      const ownsGateway =
+        this.gateway !== undefined && !this.gateway.killed && this.gateway.exitCode === null;
+      const gatewayUp = ownsGateway || (await this.health());
+      if (!gatewayUp) {
+        this.gatewayMcpReloadPending = false;
+        return;
+      }
+      console.log(`[hermes-api] ${reason}; restarting Hermes gateway for MCP catalog`);
+      await this.stopGatewayDaemon();
+      this.gateway = undefined;
+      this.gatewayMcpReloadPending = false;
+      await this.ensureApiServer();
+    } finally {
+      this.mcpGatewayReloadInFlight = false;
     }
   }
 
@@ -1183,6 +1246,17 @@ export class HermesApiRunner extends EventEmitter {
   }
 
   private async ensureApiServer(): Promise<{ ok: true }> {
+    // Concurrent callers (watchdog + POST + chat) must share one boot wait.
+    // Otherwise a second call kills a mid-boot gateway (--replace) and can leave
+    // telegram/slack up with api_server unbound.
+    if (this.ensureApiServerWait) return this.ensureApiServerWait;
+    this.ensureApiServerWait = this.ensureApiServerUnlocked().finally(() => {
+      this.ensureApiServerWait = null;
+    });
+    return this.ensureApiServerWait;
+  }
+
+  private async ensureApiServerUnlocked(): Promise<{ ok: true }> {
     const llmEnvChanged = await syncHermesLlmEnv();
     await this.ensureJoshuHermesConfig();
     if (await this.health()) {
@@ -1230,9 +1304,25 @@ export class HermesApiRunner extends EventEmitter {
       this.gatewayMcpReloadPending = false;
       this.lastConnectorsMcpHealthy = true;
     }
+
+    // Owned child with no /health is almost always "platforms up, api_server bind failed".
+    // startGateway() would no-op and leave jChat dead until the 180s timeout.
+    const ownsUnhealthy =
+      this.gateway !== undefined && !this.gateway.killed && this.gateway.exitCode === null;
+    if (ownsUnhealthy && !(await this.health())) {
+      console.warn(
+        "[hermes-api] owned Hermes gateway is running without a healthy api_server; replacing",
+      );
+      await this.stopOwnedGatewayProcess();
+    }
+    if (!(await this.waitForApiPortFree(15_000))) {
+      console.warn("[hermes-api] :8642 still busy before gateway start");
+    }
     this.startGateway();
     // Cold start: gbrain MCP connect_timeout can be 120s + plugin load.
     const deadline = Date.now() + 180_000;
+    // Don't force-replace until the child has had time for telegram+slack+api bind.
+    let lastForcedReplaceAt = Date.now();
     while (Date.now() < deadline) {
       if (await this.health()) return { ok: true };
       if (this.gateway && this.gateway.exitCode !== null) {
@@ -1242,6 +1332,22 @@ export class HermesApiRunner extends EventEmitter {
         await this.releaseStaleGbrainMcp();
         const mcpReady = await waitForJoshuMcpDependencies();
         if (!mcpReady.allReady) this.gatewayMcpReloadPending = true;
+        await this.waitForApiPortFree(15_000);
+        this.startGateway();
+        lastForcedReplaceAt = Date.now();
+      } else if (
+        this.gateway &&
+        this.gateway.exitCode === null &&
+        Date.now() - lastForcedReplaceAt > 45_000
+      ) {
+        // Still alive but :8642 never became healthy (bind race). Force one replace
+        // every 45s rather than sitting idle until the outer timeout.
+        lastForcedReplaceAt = Date.now();
+        console.warn(
+          "[hermes-api] Hermes gateway process alive but api_server unhealthy after 45s; forcing replace",
+        );
+        await this.stopOwnedGatewayProcess();
+        await this.waitForApiPortFree(15_000);
         this.startGateway();
       }
       await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -1743,6 +1849,42 @@ export class HermesApiRunner extends EventEmitter {
       changed = true;
     }
 
+    if (falRelayConfigured()) {
+      await refreshFalMcpEnabled(process.cwd());
+    }
+    const falActive = falMcpEnabled(process.cwd());
+    const falServer = asRecord(mcpServers.fal_ai);
+    if (falActive) {
+      const mode = resolveFalMode();
+      const desiredFal =
+        mode === "relay"
+          ? {
+              url: resolveFalMcpHttpUrl(),
+              connect_timeout: 120,
+              enabled: true,
+            }
+          : {
+              url: "https://mcp.fal.ai/mcp",
+              headers: { Authorization: `Bearer ${resolveFalApiKey(process.cwd())}` },
+              connect_timeout: 120,
+              enabled: true,
+            };
+      const headersMatch =
+        JSON.stringify(asRecord(falServer.headers)) === JSON.stringify(desiredFal.headers ?? {});
+      if (
+        falServer.url !== desiredFal.url ||
+        falServer.enabled !== true ||
+        falServer.connect_timeout !== desiredFal.connect_timeout ||
+        !headersMatch
+      ) {
+        mcpServers.fal_ai = desiredFal;
+        changed = true;
+      }
+    } else if (Object.keys(falServer).length > 0 && falServer.enabled !== false) {
+      mcpServers.fal_ai = { ...falServer, enabled: false };
+      changed = true;
+    }
+
     // aeon MCP blocks local boot when nothing listens on :8001 (60s × retries).
     const aeonServer = asRecord(mcpServers.aeon);
     if (Object.keys(aeonServer).length > 0 && process.env.JOSHU_AEON_MCP_ENABLED?.trim() !== "true") {
@@ -1759,7 +1901,10 @@ export class HermesApiRunner extends EventEmitter {
       composioServer.enabled !== false &&
       typeof composioServer.url === "string" &&
       composioServer.url.length > 0;
-    const orderedToolsets = toolsetsWithComposio(toolsets, composioSessionActive);
+    const orderedToolsets = toolsetsWithFal(
+      toolsetsWithComposio(toolsets, composioSessionActive),
+      falActive,
+    );
     if (JSON.stringify(parseToolsets(config.toolsets)) !== JSON.stringify(orderedToolsets)) {
       config.toolsets = orderedToolsets;
       changed = true;
@@ -2038,9 +2183,16 @@ export class HermesApiRunner extends EventEmitter {
     } catch {
       // Fallback below handles older/broken gateway stop behavior.
     }
-    if (await this.waitForGatewayDown(8_000)) return;
-    await this.killByPidFile();
-    await this.waitForGatewayDown(8_000);
+    if (!(await this.waitForGatewayDown(8_000))) {
+      await this.killByPidFile();
+      await this.waitForGatewayDown(8_000);
+    }
+    // /health can go false while :8642 is still in TIME_WAIT / half-closed.
+    // Spawning the next gateway before the port is free leaves telegram+slack up
+    // but api_server unbound ("address already in use") — jChat stays 503.
+    if (!(await this.waitForApiPortFree(15_000))) {
+      console.warn("[hermes-api] :8642 still busy after gateway stop; next start may fail to bind api_server");
+    }
   }
 
   private async waitForGatewayDown(timeoutMs: number): Promise<boolean> {
@@ -2050,6 +2202,43 @@ export class HermesApiRunner extends EventEmitter {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     return false;
+  }
+
+  /** True when nothing accepts TCP on the Hermes api_server port. */
+  private async waitForApiPortFree(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!(await this.isApiPortInUse())) return true;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return !(await this.isApiPortInUse());
+  }
+
+  private async isApiPortInUse(): Promise<boolean> {
+    const base = this.opts.apiBaseUrl.replace(/\/+$/, "");
+    let host = "127.0.0.1";
+    let port = 8642;
+    try {
+      const u = new URL(base);
+      host = u.hostname || host;
+      port = u.port ? Number(u.port) : port;
+    } catch {
+      /* keep defaults */
+    }
+    return await new Promise<boolean>((resolve) => {
+      const socket = net.createConnection({ host, port });
+      const done = (inUse: boolean) => {
+        socket.removeAllListeners();
+        socket.destroy();
+        resolve(inUse);
+      };
+      socket.setTimeout(500);
+      socket.once("connect", () => done(true));
+      socket.once("timeout", () => done(true));
+      socket.once("error", (err: NodeJS.ErrnoException) => {
+        done(err.code !== "ECONNREFUSED");
+      });
+    });
   }
 
   private async killByPidFile(): Promise<void> {

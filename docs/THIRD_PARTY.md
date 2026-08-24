@@ -53,7 +53,19 @@ See [hitl-camofox-notes.md](hitl-camofox-notes.md).
 | **In this repo** | `vendor/excalidraw` submodule |
 | **License** | MIT (upstream Excalidraw) + fork modifications |
 
-See [excalidraw-sandbox.md](excalidraw-sandbox.md).
+See [excalidraw-sandbox.md](excalidraw-sandbox.md). Markdown **file** editing is **jNotes** ([jnotes-arozos-app.md](jnotes-arozos-app.md)); jWhiteboard may still import `.md` onto the canvas.
+
+---
+
+## Milkdown (jNotes)
+
+| | |
+|--|--|
+| **Upstream** | [Milkdown](https://github.com/Milkdown/milkdown) / [@milkdown/crepe](https://www.npmjs.com/package/@milkdown/crepe) |
+| **License** | MIT |
+| **In this repo** | `apps/md-editor` (npm deps `@milkdown/crepe`, `@milkdown/kit`) |
+
+See [jnotes-arozos-app.md](jnotes-arozos-app.md).
 
 ---
 

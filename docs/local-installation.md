@@ -401,6 +401,8 @@ exercise the same subservice paths used by the VPS sandbox stack. **jTerm** is a
 friendly labels (**Files**, **Settings**, **Trash**) — see
 [`docs/arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 
+**Fleet relay on the laptop (fal / usage wallet):** mint `joshu/.local/instance.env` via control-plane `scripts/issue-local-dev-relay-env.ts`, set `JOSHU_COMPOSE_ENV_FILE` in joshu `.env`, restart `dev:arozos`. Points at `https://hello.joshu.me` by default (no local CP). Composio OAuth still uses the laptop `COMPOSIO_API_KEY` unless you intentionally align keys — see [connectors-arozos-app.md — Local fleet relay](connectors-arozos-app.md#local-fleet-relay-fal--usage-balance) and [Local laptop vs fleet box](connectors-arozos-app.md#local-laptop-vs-fleet-box-composio).
+
 **Joshu URLs:** ArozOS on port `8787` only proxies `/joshu/*` when the **jWeb**
 subservice is registered. Joshu Express is always available at
 `http://127.0.0.1:8788/joshu/` (same machine, private port). If

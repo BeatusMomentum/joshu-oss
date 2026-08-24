@@ -281,25 +281,30 @@ function openFileInArozDesktop(relativePath: string, ctx: FilesContext | null): 
   const filepath = `${ctx?.arozPathPrefix ?? `user:/Desktop/${dirName}`}/${clean}`;
   const openParam = encodeURIComponent(JSON.stringify([{ filepath, filename }]));
 
-  if (ext === "excalidraw" || ext === "md") {
+  if (ext === "excalidraw") {
     desktop.newFloatWindow({
       url: `excalidraw/index.html#${openParam}`,
       width: 1280,
       height: 860,
       appicon: "img/joshu/whiteboard.png",
-      title: ext === "md" ? `jWhiteboard — ${filename}` : "jWhiteboard",
+      title: "jWhiteboard",
     });
     return true;
   }
 
-  desktop.newFloatWindow({
-    url: `MDEditor/mde.html#${openParam}`,
-    width: 1080,
-    height: 580,
-    appicon: "MDEditor/img/notebook.png",
-    title: `MDEditor — ${filename}`,
-  });
-  return true;
+  // Markdown / plain text → jNotes (Milkdown); stock MDEditor/NotepadA are hidden.
+  if (ext === "md" || ext === "markdown" || ext === "mdx" || ext === "txt") {
+    desktop.newFloatWindow({
+      url: `md-editor/index.html#${openParam}`,
+      width: 1100,
+      height: 820,
+      appicon: "img/joshu/notes.png",
+      title: `jNotes — ${filename}`,
+    });
+    return true;
+  }
+
+  return false;
 }
 
 function openJoshuTarget(relativePath: string, ctx: FilesContext | null): void {

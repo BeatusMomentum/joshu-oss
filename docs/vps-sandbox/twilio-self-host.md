@@ -225,6 +225,15 @@ When the tunnel host changes, update the console webhook and `TWILIO_*` URLs, th
 
 Treat the number like any public voice channel: follow Twilio / carrier rules on consent and recording, restrict who you publish the number to, and rotate `TWILIO_MEDIA_STREAM_SECRET` if it leaks.
 
+### SMS / A2P 10DLC (optional)
+
+This guide is **voice**. Sending SMS to US mobiles from a US 10DLC number also requires **A2P Brand + Campaign** registration on the Twilio account that owns the number (otherwise carriers return error **30034**).
+
+- **OSS self-host:** register in [Twilio Console / A2P docs](https://www.twilio.com/docs/messaging/compliance/a2p-10dlc/quickstart) on your own account.
+- **Managed fleet:** per-box subaccount registration (private `twilio-a2p-sms` runbook + `register-a2p-box-sms.ts`). One registration per box, not once fleet-wide.
+
+Joshu does not yet wire an SMS Messaging webhook in this self-host voice path.
+
 ---
 
 ## Related
@@ -234,5 +243,6 @@ Treat the number like any public voice channel: follow Twilio / carrier rules on
 | [`voice-realtime.md`](voice-realtime.md) | S2S service, passphrase UX, lock clips |
 | [`voice-think-speak.md`](voice-think-speak.md) | When Realtime speaks vs Hermes `think` |
 | [`telephone-arozos-app.md`](../telephone-arozos-app.md) | Number display + passphrase UI |
+| [Twilio A2P 10DLC](https://www.twilio.com/docs/messaging/compliance/a2p-10dlc/quickstart) | SMS compliance (self-host); managed fleet has a private per-box runbook |
 | [`hetzner-quickstart.md`](hetzner-quickstart.md) | Box install before Twilio |
 | [`.env.example`](../../.env.example) / [`deploy/.env.vps.example`](../../deploy/.env.vps.example) | Env knobs |

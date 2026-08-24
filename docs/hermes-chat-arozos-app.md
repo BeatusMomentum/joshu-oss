@@ -459,6 +459,8 @@ still has the connection for that `user_id`.
 | OAuth iframe / `chromewebdata` error | OAuth opened inside iframe | Use current jChat build (popup tab); allow pop-ups |
 | Pop-up blocked | Browser policy | Allow pop-ups for the ArozOS host; retry **Connect** |
 | Connected in UI but Hermes can’t use tools | Stale gateway MCP | Close OAuth tab (triggers sync) or `POST …/composio/sync` with `restartGateway: true` |
+| Local shows Connected; VPS (or vice versa) does not | Different `COMPOSIO_API_KEY` projects; same `COMPOSIO_USER_ID` is not enough | Compare key prefixes; see [connectors-arozos-app — Local laptop vs fleet](connectors-arozos-app.md#local-laptop-vs-fleet-box-composio) |
+| Disconnect 502 / `ConnectedAccount_ResourceNotFound` | Stale toolkit disk cache with ghost `ca_…` ids | Delete `.joshu/composio-toolkits-cache.json`; hard-refresh; current Joshu reconciles live connection state on list |
 | jChat shows 1–3 connectors tools; `project_kanban_*` missing | Partial MCP catalog at gateway boot | `:8795/health` OK but Hermes registered tools before MCP was ready — nudge `GET …/hermes-chat/status?after_mcp_boot=1` or recreate stack; **new** jChat session after fix |
 | Works until reboot | Missing persistent `composio-session.json` or wiped `~/.hermes` | Ensure `AROZ_DATA` / `joshu_hermes` volumes mount correctly on VPS |
 | Gmail still connected after “factory reset” | OAuth tokens live in **Composio cloud**, not only local `.joshu/` | Use **hard** factory reset ([`box-state.md`](box-state.md#hard-factory-reset)); or `npx tsx scripts/box-wipe-connectors.ts` |

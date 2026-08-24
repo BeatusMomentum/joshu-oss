@@ -7,6 +7,7 @@ import { execFile as execFileCb } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { listJoshuMcpDependencies, probeMcpHttpHealth } from "./mcpDependencyHealth.js";
+import { readProvisionInstanceEnv } from "./provisionInstanceEnv.js";
 
 const execFile = promisify(execFileCb);
 
@@ -14,6 +15,7 @@ const START_SCRIPTS: Record<string, string> = {
   "gbrain MCP": "start-gbrain-mcp-http.sh",
   "connectors MCP": "start-joshu-connectors-mcp.sh",
   "composio MCP guard": "start-composio-mcp-guard.sh",
+  "fal MCP relay": "start-fal-mcp-relay.sh",
 };
 
 export type McpSupervisorOptions = {
@@ -58,7 +60,7 @@ export function startJoshuMcpSupervisor(opts: McpSupervisorOptions): () => void 
               await execFile("bash", [path.join(opts.projectRoot, "scripts", script)], {
                 cwd: opts.projectRoot,
                 timeout: 120_000,
-                env: { ...process.env, APP_DIR: opts.projectRoot },
+                env: { ...process.env, ...readProvisionInstanceEnv(), APP_DIR: opts.projectRoot },
               });
             } catch (err) {
               console.warn(`[mcp-supervisor] ${dep.label} restart failed: ${(err as Error).message}`);

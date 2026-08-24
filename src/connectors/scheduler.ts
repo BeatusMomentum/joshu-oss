@@ -3,7 +3,12 @@
  */
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { isComposioEnabled } from "../composioApi.js";
+import { isNylasConfigured } from "../nylas/config.js";
+import { readAgentGrant } from "../nylas/store.js";
 import { joshuConfigDir } from "../nylas/paths.js";
+import { isAnyGoogleCalendarConnected } from "./composio/calendarAccounts.js";
+import { isAnyGmailConnected } from "./composio/gmailAccounts.js";
 import { runMailSync } from "./syncHelpers.js";
 
 export type ConnectorCronJob = {
@@ -76,8 +81,44 @@ function jobDue(job: ConnectorCronJob, nowMs: number): boolean {
   return nowMs - last >= intervalMs;
 }
 
+/** Skip cron work when Connectors would show nothing connected for that lane. */
+async function connectorCronJobEligible(
+  projectRoot: string,
+  job: ConnectorCronJob,
+): Promise<{ eligible: boolean; reason?: string }> {
+  if (job.action === "sync_nylas") {
+    if (!isNylasConfigured()) {
+      return { eligible: false, reason: "Nylas not configured" };
+    }
+    if (!readAgentGrant(projectRoot)) {
+      return { eligible: false, reason: "No Nylas agent mailbox provisioned" };
+    }
+    return { eligible: true };
+  }
+
+  if (job.action === "sync_composio_gmail") {
+    if (!isComposioEnabled()) {
+      return { eligible: false, reason: "Composio not enabled" };
+    }
+    const gmail = await isAnyGmailConnected(projectRoot);
+    const calendar = await isAnyGoogleCalendarConnected(projectRoot);
+    if (!gmail && !calendar) {
+      return { eligible: false, reason: "No Gmail or Google Calendar accounts connected" };
+    }
+    return { eligible: true };
+  }
+
+  return { eligible: false, reason: "unknown action" };
+}
+
 async function runJob(projectRoot: string, job: ConnectorCronJob): Promise<ConnectorCronJob> {
   const updated = { ...job, lastRunAt: new Date().toISOString() };
+  const eligibility = await connectorCronJobEligible(projectRoot, job);
+  if (!eligibility.eligible) {
+    // Nothing connected for this lane — do not call external APIs or log as an error.
+    delete updated.lastError;
+    return updated;
+  }
   try {
     if (job.action === "sync_nylas") {
       const r = await runMailSync(projectRoot, "nylas", {

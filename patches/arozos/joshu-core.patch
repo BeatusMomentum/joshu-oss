@@ -11,7 +11,7 @@ diff --git a/src/mod/modules/module.go b/src/mod/modules/module.go
 index 6b64e1f4..f6fed8ac 100644
 --- a/src/mod/modules/module.go
 +++ b/src/mod/modules/module.go
-@@ -35,6 +35,29 @@ type ModuleHandler struct {
+@@ -35,6 +35,31 @@ type ModuleHandler struct {
  	tmpDirectory string
  }
  
@@ -25,8 +25,10 @@ index 6b64e1f4..f6fed8ac 100644
 +	"IoT Hub":            true,
 +	"Management Gateway": true,
 +	"Manga":              true,
++	"MDEditor":           true, // Joshu jNotes (Milkdown) owns .md
 +	"Memo":               true,
 +	"Music":              true,
++	"NotepadA":           true, // legacy text editor; jNotes owns .md/.txt
 +	"Photo":              true,
 +	"Serverless":         true,
 +	"Speedtest":          true,
@@ -41,7 +43,7 @@ index 6b64e1f4..f6fed8ac 100644
  func NewModuleHandler(userHandler *user.UserHandler, tmpFolderPath string) *ModuleHandler {
  	return &ModuleHandler{
  		LoadedModule: []*ModuleInfo{},
-@@ -45,6 +68,11 @@ func NewModuleHandler(userHandler *user.UserHandler, tmpFolderPath string) *Modu
+@@ -45,6 +70,11 @@ func NewModuleHandler(userHandler *user.UserHandler, tmpFolderPath string) *Modu
  
  //Register endpoint. Provide moduleInfo datastructure or unparsed json
  func (m *ModuleHandler) RegisterModule(module ModuleInfo) {

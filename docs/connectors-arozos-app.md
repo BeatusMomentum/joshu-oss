@@ -52,24 +52,75 @@ API: `GET/POST /joshu/api/share-chat/teams/setup` (includes `uiEnabled`), `GET �
 
 ## Dev
 
+With `npm run dev:arozos` (or `:daemon`) already running:
+
 ```bash
-npm run dev:connectors   # Vite :3009, proxies /joshu → :8788
-npm run build:connectors
+# True Vite HMR — open this URL; no ArozOS rebuild needed
+npm run dev:connectors   # http://127.0.0.1:3009  (proxies /joshu → :8788)
+
+# Or keep editing in the ArozOS Connectors window: rebuild + sync only this app
+npm run watch:connectors
+# → writes dist/connectors-app/ and copies into .local/arozos-data/…/connectors/app/
+# → refresh the Connectors window (no full stack rebuild)
+
+npm run build:connectors  # one-shot production bundle
 ```
+
+Backend API changes under `src/connectors/` / `src/meteredProviders/` are picked up by `tsx watch` in `dev:arozos` — restart Joshu only if the watcher missed a file.
 
 Bundled into ArozOS template by `scripts/dev-arozos.sh` and VPS Docker image.
 
 **Build note:** Vite outputs to `dist/connectors-app/` (not `dist/connectors/` — that path is reserved for Joshu API modules from `tsc`).
 
-## VPS provisioning
+### Local laptop vs fleet box (Composio)
+
+OAuth tokens live in **Composio cloud**, scoped by **`(COMPOSIO_API_KEY project, COMPOSIO_USER_ID)`** — not by hostname.
+
+| Env | Typical value | Effect |
+|-----|---------------|--------|
+| `COMPOSIO_API_KEY` | Laptop `.env` vs VPS `/etc/joshu/instance.env` | **Different keys = different Composio projects.** Same `COMPOSIO_USER_ID` does **not** share connections across projects. |
+| `COMPOSIO_USER_ID` | Customer slug (e.g. `patrick`) | Isolates connections **within** one Composio project (per-box on fleet). |
+
+**Validated (2026-08):** Local `dev:arozos` with a laptop Composio key showed no ACTIVE Gmail/Calendar, while `patrick.box.joshu.me` (per-box key from `issue-composio-box-keys`) correctly showed ACTIVE accounts — both used `COMPOSIO_USER_ID=patrick`.
+
+Implications:
+
+- Setting `COMPOSIO_USER_ID=patrick` in local `.local/instance.env` for fleet relay parity does **not** import the VPS’s Gmail/Calendar unless the laptop also uses that box’s `COMPOSIO_API_KEY`.
+- Connect / Disconnect on a shared key+userId mutates **that** Composio project (including the live box if keys match). Prefer a laptop-only key, or `COMPOSIO_USER_ID=patrick-local`, for day-to-day local work.
+
+### Toolkit list cache (stale “Connected”)
+
+`GET /joshu/api/connectors/composio/toolkits` may serve toolkit **metadata** from disk (`.joshu/composio-toolkits-cache.json`, ~1h) for speed, but **connection state is always reconciled** from live Composio `connectedAccounts.list`. Disconnect / sync / post-connect clear that cache.
+
+Symptoms of an older build without reconciliation: Connectors shows Connected, Disconnect returns **502** / Composio `ConnectedAccount_ResourceNotFound` (404) for ghost `ca_…` ids. Fix: upgrade Joshu, or delete `.joshu/composio-toolkits-cache.json` under the Aroz user and hard-refresh Connectors.
+
+### Metered AI providers (fal.ai)
+
+Connectors → **AI providers** manages fal MCP enablement and (self-host) your `FAL_KEY`. Modes, env, and Hermes gating: [`metered-providers.md`](metered-providers.md).
+
+Self-host: set `JOSHU_FAL_MODE=direct` (or leave unset when no CP relay) and paste a fal key via **Setup**. Managed fleet boxes use prepaid wallet relay instead — no vendor key on the box.
+
+## VPS / self-host provisioning
 
 | `instance.env` key | Source | Notes |
 |------------------|--------|--------|
-| `COMPOSIO_API_KEY` | `DEFAULT_COMPOSIO_API_KEY` in control plane | Required for Connect tab |
-| `COMPOSIO_USER_ID` | Customer slug at provision | Composio OAuth **per box**; ArozOS login unchanged |
-| `NYLAS_API_KEY` | `DEFAULT_NYLAS_API_KEY` in control plane | Agent mailbox (jMail Setup / Welcome) |
+| `COMPOSIO_API_KEY` | Your Composio project (or fleet per-box key) | Required for Connect tab; laptop vs VPS keys are separate projects |
+| `COMPOSIO_USER_ID` | Stable user/slug | Composio OAuth isolation within that project; ArozOS login unchanged |
+| `NYLAS_API_KEY` | Your Nylas key (or managed relay) | Agent mailbox (jMail Setup / Welcome) |
+| `JOSHU_FAL_MODE` | `direct` (self-host) / `relay` (managed) / `off` | See [`metered-providers.md`](metered-providers.md) |
+| `FAL_KEY` | Connectors setup (direct mode only) | Stored in `.joshu/connectors-providers.env` (gitignored) |
 
-If Connectors shows **NYLAS_API_KEY not configured** or Gmail accounts from another box, set keys in `/etc/joshu/instance.env` and recreate the stack — see [connectors.md](connectors.md).
+If Connectors shows **NYLAS_API_KEY not configured** or Gmail accounts from another box, set keys in `/etc/joshu/instance.env` (or local `.env`) and recreate the stack — see [connectors.md](connectors.md).
+
+## API (metered providers)
+
+Base: `/joshu/api/connectors/`
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `providers` | Metered AI providers (fal.ai) — status + fleet balance |
+| GET | `providers/:id/status` | Single provider status |
+| POST | `providers/:id/setup` | OSS only — save provider API key |
 
 ## API (Composio)
 
@@ -107,6 +158,7 @@ For policy tiers, bypass rules, browser gate, and the **Safety** desktop app, se
 
 ## Related
 
+- [`docs/metered-providers.md`](metered-providers.md) — paid MCP / fal fleet relay (box)
 - [`docs/agent-safety.md`](agent-safety.md) — write policy, HITL, hard blocks
 - [`docs/safety-settings-arozos-app.md`](safety-settings-arozos-app.md) — Safety desktop app
 - [`docs/connectors.md`](connectors.md) — mirror layout and REST API
