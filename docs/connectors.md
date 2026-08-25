@@ -49,9 +49,16 @@ Gmail tools use Composio toolkit version **`20260506_01`** (override with `JOSHU
 
 **Message bodies:** Gmail has no “plaintext only” API — Composio returns MIME (`text/plain` + `text/html`) or sometimes HTML in a top-level `body` field. Joshu prefers MIME `text/plain`, then runs deterministic HTML simplification ([`src/connectors/emailPlaintext.ts`](../src/connectors/emailPlaintext.ts), used by [`gmailBodies.ts`](../src/connectors/composio/gmailBodies.ts)). Nylas HTML bodies use the same simplifier via `stripHtmlToText` in [`mirror.ts`](../src/connectors/mirror.ts). Per-message caps at mirror write: Gmail **8k** chars, Nylas **4k** chars.
 
-**LLM previews** (EA scheduling classifier, Day 0 inference): deterministic code reads the **latest** `###` section in each thread mirror, with optional tail from the prior section ([`src/connectors/mirrorBodyPreview.ts`](../src/connectors/mirrorBodyPreview.ts)) — not a blind slice from the start of the file (oldest message).
+**LLM previews** ([`src/connectors/mirrorBodyPreview.ts`](../src/connectors/mirrorBodyPreview.ts)):
 
-Test: `npx tsx scripts/test-email-plaintext.mjs`.
+| Use | Helper | Behavior |
+|-----|--------|----------|
+| Day 0 / scheduling context | `buildThreadBodyPreview` / `readMirrorBodyPreview` | Latest `###` section, with optional **tail of the prior** section so short replies retain thread context |
+| **EA mail disposition** (noise / info / track) | `buildClassifierBodyPreview` / `readClassifierBodyPreview` | Latest section **only**, with **reply quotes stripped** (`On … wrote:`, Original Message, trailing `>` lines) via [`emailReplyQuotes.ts`](../src/connectors/emailReplyQuotes.ts) |
+
+Owner mail on the agent Nylas inbox that the model still marks `info` is forced to `track` unless the quote-stripped body is empty/ack-only ([`biasOwnerAgentInboxClassification`](../src/ea/classifier.ts)) — so short asks on upgrade/FYI reply threads still queue `ea-mail-ingress` → `ea-owner-reply`. Test: `npm run test:mail-classifier-routing`.
+
+Test (plaintext): `npx tsx scripts/test-email-plaintext.mjs`.
 
 ## gbrain indexing and mail search
 
@@ -152,7 +159,7 @@ Thin MCP server: [`scripts/joshu-connectors-mcp-http-server.mjs`](../scripts/jos
 | `mcp_joshu_connectors_project_kanban_ensure_board` | `project_kanban_ensure_board` | `POST …/ea/project-kanban/boards` |
 | `mcp_joshu_connectors_project_kanban_create_triage_root` | `project_kanban_create_triage_root` | `POST …/ea/project-kanban/triage-root` |
 
-**EA scheduling (v4.19+):** Universal mail ingress → file project, then **`scheduling_*`** child on `ea-scheduling`. **Owner→agent asks:** **`owner_reply_*`** child on `ea-owner-reply` (ready; worker sends). Owner availability → **`google_calendar_find_free_slots`** (default: `primary` + personal Gmail calendars; **`calendars.combined.free`**; respects transparent events). Book on owner Google via Composio `GOOGLECALENDAR_CREATE_EVENT`. Cross-board → **`scheduling_*`** / **`mail_*`** / **`owner_reply_*`** MCP (not Hermes `kanban_create`). See [`ea-for-joshu.md`](executive-assistant.md#ea-scheduling--calendar-source-of-truth) and skills [`ea-scheduling`](../integrations/hermes/skills/executive-assistant/ea-scheduling/SKILL.md), [`ea-owner-reply`](../integrations/hermes/skills/executive-assistant/ea-owner-reply/SKILL.md), [`ea-playbook`](../integrations/hermes/skills/executive-assistant/ea-playbook/SKILL.md).
+**EA scheduling (v4.19+):** Universal mail ingress → file project, then **`scheduling_*`** child on `ea-scheduling`. **Owner→agent asks:** **`owner_reply_*`** child on `ea-owner-reply` (ready; worker sends). Ingest classifies a **quote-stripped** latest message; owner→Nylas `info` with a real ask is forced to `track` ([`executive-assistant.md`](executive-assistant.md#mail-and-connectors)). Owner availability → **`google_calendar_find_free_slots`** (default: `primary` + personal Gmail calendars; **`calendars.combined.free`**; respects transparent events). Book on owner Google via Composio `GOOGLECALENDAR_CREATE_EVENT`. Cross-board → **`scheduling_*`** / **`mail_*`** / **`owner_reply_*`** MCP (not Hermes `kanban_create`). Skills: [`ea-scheduling`](../integrations/hermes/skills/executive-assistant/ea-scheduling/SKILL.md), [`ea-owner-reply`](../integrations/hermes/skills/executive-assistant/ea-owner-reply/SKILL.md), [`ea-playbook`](../integrations/hermes/skills/executive-assistant/ea-playbook/SKILL.md).
 
 #### `GET /api/connectors/calendar/google/free-slots`
 

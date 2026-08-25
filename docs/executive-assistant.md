@@ -64,6 +64,8 @@ On VPS, run scripts at `/opt/joshu/scripts/…` (not relative to Hermes Desktop 
 - Owner Gmail + sync: [`connectors.md`](connectors.md)
 - Mail search skill order: [`integrations/hermes/skills/mail/joshu-mail/SKILL.md`](../integrations/hermes/skills/mail/joshu-mail/SKILL.md)
 
+**Classifier guard (owner→agent):** ingest classifies a **quote-stripped latest message** (not the full quoted thread). Owner mail on Nylas that the model marks `info` is forced to `track` unless the new text is empty/ack-only — so short asks on upgrade/FYI reply threads still spawn `ea-owner-reply` ([`classifier.ts`](../src/ea/classifier.ts) `biasOwnerAgentInboxClassification`).
+
 ## Hermes skills (factory allowlist)
 
 Enabled in [`integrations/hermes/skills-enabled.yaml`](../integrations/hermes/skills-enabled.yaml):

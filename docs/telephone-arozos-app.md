@@ -2,7 +2,7 @@
 
 **Telephone** shows the phone number assigned to the box and lets the owner view/change the spoken **think passphrase** used on inbound PSTN calls.
 
-Related: [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md) (buy number + wire Twilio) · [`vps-sandbox/voice-realtime.md`](vps-sandbox/voice-realtime.md) · [`vps-sandbox/voice-think-speak.md`](vps-sandbox/voice-think-speak.md). Fleet US SMS / A2P: private `twilio-a2p-sms` runbook.
+Related: [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md) (buy number + wire Twilio) · [`vps-sandbox/voice-realtime.md`](vps-sandbox/voice-realtime.md) · [`vps-sandbox/voice-think-speak.md`](vps-sandbox/voice-think-speak.md). SMS / A2P: see [twilio-self-host.md](vps-sandbox/twilio-self-host.md).
 
 ---
 
@@ -27,7 +27,7 @@ Related: [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md) (b
 
 From `TWILIO_PHONE_NUMBER` (set in `instance.env` after you buy a Twilio number — see [`twilio-self-host.md`](vps-sandbox/twilio-self-host.md)) or an optional override in `settings.json`. Displayed as a formatted number; copy uses E.164. Managed fleet boxes get this at provision.
 
-**SMS:** the same number can be SMS-capable, but US outbound texting needs A2P 10DLC on the owning Twilio account ([Twilio A2P quickstart](https://www.twilio.com/docs/messaging/compliance/a2p-10dlc/quickstart); managed fleet uses a private per-box runbook). Telephone UI does not manage SMS registration.
+**SMS:** the same number can send/receive SMS when A2P 10DLC is registered on the owning Twilio account ([Twilio A2P quickstart](https://www.twilio.com/docs/messaging/compliance/a2p-10dlc/quickstart)). Managed fleet: private per-box runbook managed fleet A2P runbook (not in OSS). OSS self-host: [`twilio-self-host.md`](vps-sandbox/twilio-self-host.md) (SMS gateway env + SmsUrl). Telephone UI does not manage SMS or A2P registration.
 
 ### Think passphrase
 

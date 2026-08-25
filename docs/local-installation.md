@@ -103,7 +103,7 @@ Local checklist:
 4. Set `JOSHU_HERMES_PLUGIN_NAMES=observability/langfuse` (default in `.env.example`).
 5. Start via `npm run dev:arozos` (applies the Langfuse system-prompt patch when needed) or restart Joshu after changing keys so the gateway reloads env.
 
-**Joshu deterministic traces:** Day 0 and the EA scheduling classifier (OpenRouter in `src/day0/llm.ts`) use the same `HERMES_LANGFUSE_*` keys via `src/observability/langfuse.ts` — tag **`joshu-app`**, trace names `joshu-day0-infer`, `joshu-day0-sweep`, `ea-scheduling-classifier`. Restart Joshu (`npm run dev` / `dev:arozos`); grep logs for `[joshu-langfuse] tracing enabled`. Details: [hermes-integration — Langfuse](hermes-integration.md#langfuse-observability).
+**Joshu deterministic traces:** Day 0 and the EA mail classifier (OpenRouter in `src/day0/llm.ts`) use the same `HERMES_LANGFUSE_*` keys via `src/observability/langfuse.ts` — tag **`joshu-app`**, trace names `joshu-day0-infer`, `joshu-day0-sweep`, `ea-mail-classifier`. Restart Joshu (`npm run dev` / `dev:arozos`); grep logs for `[joshu-langfuse] tracing enabled`. Details: [hermes-integration — Langfuse](hermes-integration.md#langfuse-observability).
 
 **jChat traces:** Browser → ArozOS → Joshu `/api/hermes-chat/*` → Hermes gateway on `:8642`. Joshu owns the gateway process, not ArozOS.
 
@@ -121,6 +121,7 @@ Local checklist:
 | System prompt missing in **LLM call** | Anthropic `system` not in `messages` | Apply `scripts/apply-hermes-langfuse-system-patch.sh` until [upstream PR #32175](https://github.com/NousResearch/hermes-agent/pull/32175) is in your Hermes pin |
 | Hermes traces OK, no `joshu-app` traces | Joshu not restarted after keys; or VPS missing runtime Langfuse npm deps | Restart Joshu locally; on VPS rebuild the image after `deploy/runtime/package.json` changes |
 | Assistant replies in Chinese / `你好，我无法给到相关内容。` | OpenRouter `content_filter` from DeepSeek (or similar) with no Hermes retry | Ensure `scripts/apply-hermes-content-filter-patch.sh` ran (`_is_provider_content_filter_response` in Hermes `run_agent.py`); restart gateway — [content_filter handling](hermes-integration.md#provider-content_filter-handling) |
+| Chat hangs ~30m then gateway idle timeout; activity stuck on `receiving stream response` | Empty SSE keepalives refreshing Hermes stale-stream timer | Ensure `scripts/apply-hermes-stale-stream-keepalive.sh` ran at boot/hotpatch; restart gateway. Langfuse relay **v1.1.4+** finalizes hung turns via sweeper |
 | `Files: command not found` on start | Unquoted path with apostrophe in `~/.hermes/.env` | Let Joshu re-sync from `.env` (quoted paths) or quote `Joshu's Files` manually |
 
 ## Updating Hermes Safely

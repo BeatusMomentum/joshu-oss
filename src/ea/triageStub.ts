@@ -6,8 +6,9 @@ import {
   shouldSkipTriageStub,
 } from "./ingestFilters.js";
 import {
+  biasOwnerAgentInboxClassification,
   classifyInboundMail,
-  readBodyPreview,
+  readBodyPreviewForClassify,
   shouldActOnMailClassification,
 } from "./classifier.js";
 import {
@@ -15,7 +16,10 @@ import {
   markMailDedupProcessed,
   prepareMailIngestDedup,
 } from "./mailDedup.js";
-import { resolveAgentAuthorizationForMirror } from "./agentAuthorization.js";
+import {
+  resolveAgentAuthorizationForMirror,
+  resolveOwnerEmails,
+} from "./agentAuthorization.js";
 import type { AfterMirrorThreadInput, InboundMailClassification } from "./triageTypes.js";
 export type { AfterMirrorThreadInput, TriageProvider } from "./triageTypes.js";
 export {
@@ -241,7 +245,8 @@ export async function createTriageStubAfterMirror(input: AfterMirrorThreadInput)
   let bodyPreview = "";
   let dedupKey = "";
   if (runClassifier) {
-    bodyPreview = await readBodyPreview(filesRoot, sourcePath);
+    // Quote-stripped latest-only — full-thread previews let companion FYI swamp short owner asks.
+    bodyPreview = await readBodyPreviewForClassify(filesRoot, sourcePath);
     dedupKey = buildMailDedupKey({ subject, receivedAt, bodyPreview, rfcMessageId });
     const dedup = await prepareMailIngestDedup({
       filesRoot,
@@ -263,7 +268,16 @@ export async function createTriageStubAfterMirror(input: AfterMirrorThreadInput)
   }
 
   if (runClassifier && !shouldSkipSchedulingIngest({ from, receivedAt, projectRoot })) {
-    const classification = await classifyInboundMail({ subject, from, bodyPreview });
+    let classification = await classifyInboundMail({ subject, from, bodyPreview });
+    if (projectRoot) {
+      classification = biasOwnerAgentInboxClassification({
+        classification,
+        provider,
+        from,
+        ownerEmails: resolveOwnerEmails(projectRoot, input.accountEmail),
+        classifierBodyPreview: bodyPreview,
+      });
+    }
     if (await routeMailByClassification(input, classification, latestMessageId, dedupKey)) {
       return;
     }

@@ -273,6 +273,14 @@ apply_hermes_ea_kanban_no_autodecompose() {
     || echo "[vps-start] WARN: EA kanban no-autodecompose patch failed" >&2
 }
 
+# Keepalive frames must not refresh stale-stream timer (Patrick Slack hang 2026-08-24).
+apply_hermes_stale_stream_keepalive() {
+  local script="${APP_DIR}/scripts/apply-hermes-stale-stream-keepalive.sh"
+  [[ -f "${script}" ]] || return 0
+  HERMES_DIR="${HERMES_DIR}" bash "${script}" \
+    || echo "[vps-start] WARN: stale-stream keepalive patch failed" >&2
+}
+
 # Block Hermes terminal from reading instance.env / secrets (jterm zero-shared-keys).
 # Bind-mounted from host until baked into the next sandbox image.
 apply_hermes_terminal_secrets_guard() {
@@ -294,6 +302,7 @@ apply_hermes_kanban_ws_patch
 apply_hermes_content_filter_patch
 apply_hermes_read_file_utf8_patch
 apply_hermes_ea_kanban_no_autodecompose
+apply_hermes_stale_stream_keepalive
 apply_hermes_terminal_secrets_guard
 bootstrap_hermes_learning_skills
 ensure_hermes_runtime_config

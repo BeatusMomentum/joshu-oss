@@ -151,3 +151,7 @@ curl -s -X POST http://127.0.0.1:8788/joshu/api/nylas/events \
 | `connectors/status` shows stale `lastSyncAt` | Cron disabled or Joshu API down | `JOSHU_CONNECTORS_CRON=true`; `GET /joshu/api/connectors/cron/jobs`; manual `POST …/connectors/mail/nylas/sync` |
 
 **Log hygiene:** Express logs every HTTP status. For sync health, prefer **`/joshu/api/connectors/status`** over counting yellow `400`/`404` lines in `docker logs`. EA ops detail: [`executive-assistant.md`](executive-assistant.md#operations--logs).
+
+## Owner mail → reply
+
+When the **owner** emails the agent address (`{slug}@joshu.me`), Joshu mirrors the thread under `connectors/mail/nylas/threads/`, classifies a **quote-stripped** latest message, and (for actionable asks) queues `ea-mail-ingress` → ready **`ea-owner-reply`**. Short questions on reply threads that quote a long companion FYI must still route to `track` — see [`connectors.md` — LLM previews](connectors.md) and [`executive-assistant.md` — Mail and connectors](executive-assistant.md#mail-and-connectors).

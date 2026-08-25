@@ -7,6 +7,7 @@ plane so Langfuse secrets never live on the box.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import threading
@@ -288,6 +289,14 @@ def _compact_event(event: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _post_max_attempts() -> int:
+    raw = _env("JOSHU_LANGFUSE_RELAY_POST_RETRIES", "3")
+    try:
+        return max(1, min(8, int(raw)))
+    except ValueError:
+        return 3
+
+
 def _post_events(events: list[dict[str, Any]]) -> None:
     url = _relay_url()
     token = _bearer_token()
@@ -295,38 +304,72 @@ def _post_events(events: list[dict[str, Any]]) -> None:
         return
     compact = [_compact_event(e) for e in events]
     payload = json.dumps({"events": compact}, default=str).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": "joshu-langfuse-relay/1.1",
-        },
-        method="POST",
-    )
-    try:
-        # Larger traces (system + history) need more than the old 2.5s budget.
-        with urllib.request.urlopen(req, timeout=12.0) as resp:
-            resp.read()
-    except urllib.error.HTTPError as err:
-        body = ""
-        try:
-            body = err.read().decode("utf-8", errors="replace")[:400]
-        except Exception:
-            pass
-        print(
-            f"[joshu-langfuse-relay] post failed: {err} body={body} "
-            f"types={[e.get('type') for e in compact]}",
-            flush=True,
+    attempts = _post_max_attempts()
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "joshu-langfuse-relay/1.1.4",
+            },
+            method="POST",
         )
-    except (urllib.error.URLError, TimeoutError, OSError) as err:
-        print(f"[joshu-langfuse-relay] post failed: {err}", flush=True)
+        try:
+            # Larger traces (system + history) need more than the old 2.5s budget.
+            with urllib.request.urlopen(req, timeout=12.0) as resp:
+                resp.read()
+            return
+        except urllib.error.HTTPError as err:
+            body = ""
+            try:
+                body = err.read().decode("utf-8", errors="replace")[:400]
+            except Exception:
+                pass
+            retryable = err.code in (401, 408, 429, 500, 502, 503, 504)
+            print(
+                f"[joshu-langfuse-relay] post failed attempt={attempt}/{attempts}: {err} "
+                f"body={body} types={[e.get('type') for e in compact]}",
+                flush=True,
+            )
+            if not retryable or attempt >= attempts:
+                return
+            time.sleep(min(8.0, 0.4 * (2 ** (attempt - 1))))
+        except (urllib.error.URLError, TimeoutError, OSError) as err:
+            print(
+                f"[joshu-langfuse-relay] post failed attempt={attempt}/{attempts}: {err}",
+                flush=True,
+            )
+            if attempt >= attempts:
+                return
+            time.sleep(min(8.0, 0.4 * (2 ** (attempt - 1))))
+
+
+_EMIT_THREADS: list[threading.Thread] = []
+_EMIT_THREADS_LOCK = threading.Lock()
 
 
 def _emit_async(events: list[dict[str, Any]]) -> None:
     thread = threading.Thread(target=_post_events, args=(events,), daemon=True)
+    with _EMIT_THREADS_LOCK:
+        # Drop finished workers so the list cannot grow without bound.
+        alive = [t for t in _EMIT_THREADS if t.is_alive()]
+        alive.append(thread)
+        _EMIT_THREADS[:] = alive[-64:]
     thread.start()
+
+
+def _flush_emit_threads(timeout_s: float = 8.0) -> None:
+    """Best-effort wait for in-flight relay POSTs (gateway restart / process exit)."""
+    with _EMIT_THREADS_LOCK:
+        threads = list(_EMIT_THREADS)
+    deadline = time.time() + max(0.5, timeout_s)
+    for thread in threads:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        thread.join(timeout=remaining)
 
 
 def _session_key(kwargs: dict) -> str:
@@ -364,11 +407,32 @@ class TurnState:
     pending_tools: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     turn_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     started_at: str = field(default_factory=_now_iso)
+    # Monotonic activity stamp for hung-turn sweeper (gateway_timeout / missing finalize).
+    last_activity_mono: float = field(default_factory=time.monotonic)
     last_assistant_output: Any = None
     user_message: Any = None
     platform: str = ""
     model: str = ""
     finalized: bool = False
+
+
+def _touch_turn(state: TurnState) -> None:
+    with _STATE_LOCK:
+        state.last_activity_mono = time.monotonic()
+
+
+def _hung_turn_ttl_s() -> float:
+    """Finalize open turns after this many seconds without hook activity.
+
+    Default 2100s sits just above typical gateway_timeout (1800) so a killed
+    Slack/jChat turn still gets a Langfuse endTime even when post_llm_call /
+    on_session_end never fires (Patrick hang 2026-08-24).
+    """
+    raw = _env("JOSHU_LANGFUSE_HUNG_TURN_TTL_S", "2100")
+    try:
+        return max(120.0, float(raw))
+    except ValueError:
+        return 2100.0
 
 
 def _turn_alias_keys(*, task_id: str = "", session_id: str = "") -> list[str]:
@@ -415,6 +479,64 @@ def _remember_assistant_output(state: TurnState, output: Any) -> None:
 
 _STATE_LOCK = threading.Lock()
 _TURNS: dict[str, TurnState] = {}
+_SWEEPER_STARTED = False
+_SWEEPER_LOCK = threading.Lock()
+
+
+def _sweep_hung_turns_once() -> int:
+    """Finalize turns with no hook activity past TTL. Returns count finalized."""
+    ttl = _hung_turn_ttl_s()
+    now = time.monotonic()
+    with _STATE_LOCK:
+        candidates = []
+        seen: set[int] = set()
+        for state in _TURNS.values():
+            sid = id(state)
+            if sid in seen or state.finalized:
+                continue
+            seen.add(sid)
+            if (now - state.last_activity_mono) >= ttl:
+                candidates.append(state)
+    for state in candidates:
+        age = int(now - state.last_activity_mono)
+        print(
+            f"[joshu-langfuse-relay] hung-turn sweeper finalizing trace={state.trace_id[:12]}… "
+            f"idle={age}s ttl={int(ttl)}s session={state.session_id!r}",
+            flush=True,
+        )
+        fallback = state.last_assistant_output or "[hung turn — finalize timeout]"
+        _finalize_turn(
+            state,
+            assistant_response=fallback,
+            model=state.model,
+            platform=state.platform,
+            hook="hung_turn_sweeper",
+        )
+    return len(candidates)
+
+
+def _hung_turn_sweeper_loop() -> None:
+    # Poll often enough to catch gateway kills without busy-waiting.
+    while True:
+        try:
+            _sweep_hung_turns_once()
+        except Exception as err:
+            print(f"[joshu-langfuse-relay] hung-turn sweeper error: {err}", flush=True)
+        time.sleep(60.0)
+
+
+def _ensure_hung_turn_sweeper() -> None:
+    global _SWEEPER_STARTED
+    with _SWEEPER_LOCK:
+        if _SWEEPER_STARTED:
+            return
+        thread = threading.Thread(
+            target=_hung_turn_sweeper_loop,
+            name="joshu-langfuse-hung-turn-sweeper",
+            daemon=True,
+        )
+        thread.start()
+        _SWEEPER_STARTED = True
 
 
 def _get_or_create_turn(
@@ -432,6 +554,7 @@ def _get_or_create_turn(
         for alias in aliases:
             existing = _TURNS.get(alias)
             if existing:
+                existing.last_activity_mono = time.monotonic()
                 return existing
     trace_id = uuid.uuid4().hex
     root_span_id = f"t-{trace_id}"
@@ -687,6 +810,8 @@ def on_post_api_request(
     """Close one pending generation — stock also wires this hook to the post-LLM closer."""
     sid = str(session_id or _session_key(kwargs) or "").strip()
     key, state = _resolve_turn(str(task_id or ""), sid)
+    if state:
+        _touch_turn(state)
     req_key = str(api_call_count or 0)
     print(
         f"[joshu-langfuse-relay] post_api_request task={task_id!r} session={sid!r} "
@@ -868,6 +993,7 @@ def _finalize_turn(
 def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = "", session_id: str = "", **kwargs: Any) -> None:
     sid = str(session_id or _session_key(kwargs) or "").strip()
     state = _get_or_create_turn(task_id=str(task_id or ""), session_id=sid)
+    _touch_turn(state)
     tool_id = uuid.uuid4().hex
     with _STATE_LOCK:
         queue = state.pending_tools.setdefault(str(tool_name or "tool"), [])
@@ -893,6 +1019,8 @@ def on_post_tool_call(
 ) -> None:
     sid = str(session_id or _session_key(kwargs) or "").strip()
     _key, state = _resolve_turn(str(task_id or ""), sid)
+    if state:
+        _touch_turn(state)
     with _STATE_LOCK:
         pending = None
         if state:
@@ -1024,9 +1152,13 @@ def register(ctx) -> None:
     ctx.register_hook("on_session_end", on_session_end)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
+    _ensure_hung_turn_sweeper()
+    atexit.register(_flush_emit_threads)
     url = _relay_url()
     has_auth = bool(_bearer_token())
     print(
-        f"[joshu-langfuse-relay] registered v1.1.3 (url={'set' if url else 'missing'}, auth={'set' if has_auth else 'missing'})",
+        f"[joshu-langfuse-relay] registered v1.1.4 "
+        f"(url={'set' if url else 'missing'}, auth={'set' if has_auth else 'missing'}, "
+        f"hung_ttl_s={int(_hung_turn_ttl_s())})",
         flush=True,
     )

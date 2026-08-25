@@ -1,7 +1,12 @@
 import { day0ChatCompletion } from "../day0/llm.js";
-import { readMirrorBodyPreview } from "../connectors/mirrorBodyPreview.js";
+import {
+  readClassifierBodyPreview,
+  readMirrorBodyPreview,
+} from "../connectors/mirrorBodyPreview.js";
+import { isPureAckOrEmptyBody } from "../connectors/emailReplyQuotes.js";
 import type { MailCategory, MailDisposition } from "./mailTypes.js";
 import { normalizeProjectSlug } from "./mailTypes.js";
+import { parseEmailAddress } from "./schedulingTypes.js";
 
 export type SchedulingClassification = {
   scheduling: boolean;
@@ -51,7 +56,12 @@ project_slug: optional HINT for Projects/<slug>/ (lowercase-hyphen). Use null wh
 
 is_new_track: hint only — true when likely a new work item; false when clearly a reply/update.
 
-owner_sent_update: owner replying in an existing thread with no new ask — disposition=info, is_new_track=false. If the owner delegates work (e.g. "Copying the companion to suggest times") → disposition=track, category may be scheduling.`;
+owner_sent_update: owner replying in an existing thread with no new ask — disposition=info, is_new_track=false. If the owner delegates work (e.g. "Copying the companion to suggest times") → disposition=track, category may be scheduling.
+
+CRITICAL — reply quotes / owner asks:
+- Classify ONLY the sender's NEW text. Ignore quoted reply tails ("On … wrote:", ">", Original Message) and prior companion outbound.
+- A short owner question on a reply thread (e.g. "What's on my agenda for tomorrow?") is disposition=track even when the quote is a long FYI upgrade notice.
+- Never let quoted companion content flip an owner ask to disposition=info.`;
 
 /** True when ingest hints that the ingress worker should spawn ea-scheduling after filing. */
 export function isSchedulingCategoryHint(c: Pick<InboundMailClassification, "category">): boolean {
@@ -95,6 +105,45 @@ export function normalizeForIngressRouting(
     category,
     project_slug,
   };
+}
+
+/**
+ * Safety net: owner mail on the agent Nylas inbox must not be archived as info when the
+ * new (quote-stripped) body has a real ask. LLM often keys off quoted companion FYI.
+ */
+export function biasOwnerAgentInboxClassification(opts: {
+  classification: InboundMailClassification;
+  provider?: string;
+  from?: string;
+  ownerEmails: Iterable<string>;
+  /** Quote-stripped latest-message preview used for classify. */
+  classifierBodyPreview?: string;
+}): InboundMailClassification {
+  const c = opts.classification;
+  const provider = (opts.provider ?? "").trim().toLowerCase();
+  if (provider !== "nylas") return c;
+  if (c.disposition !== "info") return c;
+
+  const fromAddr = parseEmailAddress(opts.from);
+  if (!fromAddr) return c;
+  const owners = new Set<string>();
+  for (const raw of opts.ownerEmails) {
+    const addr = parseEmailAddress(raw) ?? raw.trim().toLowerCase();
+    if (addr?.includes("@")) owners.add(addr);
+  }
+  if (!owners.has(fromAddr)) return c;
+
+  const preview = (opts.classifierBodyPreview ?? "").trim();
+  if (isPureAckOrEmptyBody(preview)) return c;
+
+  const category =
+    c.category === "owner_sent_update" ? ("owner_note" as MailCategory) : c.category;
+  return normalizeForIngressRouting({
+    ...c,
+    disposition: "track",
+    category,
+    reason: `${c.reason} (owner_nylas_info_override)`.slice(0, 200),
+  });
 }
 
 export async function classifyInboundMail(opts: {
@@ -196,4 +245,13 @@ export async function readBodyPreview(
   maxChars = 2000,
 ): Promise<string> {
   return readMirrorBodyPreview(filesRoot, sourcePath, maxChars);
+}
+
+/** Quote-stripped latest-message preview for disposition routing. */
+export async function readBodyPreviewForClassify(
+  filesRoot: string,
+  sourcePath: string,
+  maxChars = 2000,
+): Promise<string> {
+  return readClassifierBodyPreview(filesRoot, sourcePath, maxChars);
 }

@@ -76,6 +76,7 @@ import { startConnectorScheduler } from "./connectors/scheduler.js";
 import { isComposioEnabled, syncComposioHermesMcp } from "./composioApi.js";
 import { registerVoiceWebRoutes } from "./voiceWebApi.js";
 import { createTwilioUpgradeHandler, registerTwilioVoiceRoutes } from "./twilioPhoneGateway.js";
+import { registerTwilioSmsRoutes } from "./twilioSmsGateway.js";
 import { registerAgUiRoutes } from "./agUiApi.js";
 import { registerAppInvokeRoutes } from "./appInvokeApi.js";
 import { registerHindsightRecallRoute } from "./hindsightRecallApi.js";
@@ -358,6 +359,7 @@ function buildAppRouter(): {
   router.use(morgan("dev"));
 
   registerTwilioVoiceRoutes(router, runner, PUBLIC_BASE_PATH);
+  registerTwilioSmsRoutes(router, runner, PUBLIC_BASE_PATH);
 
   registerBrainRoutes(router);
   // Share-chat JSON routes register after express.json() below.

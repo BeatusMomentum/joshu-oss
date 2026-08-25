@@ -45,12 +45,14 @@ services:
       - ../scripts/apply-hermes-content-filter-patch.sh:/opt/joshu/scripts/apply-hermes-content-filter-patch.sh:ro
       - ../scripts/apply-hermes-read-file-utf8-patch.sh:/opt/joshu/scripts/apply-hermes-read-file-utf8-patch.sh:ro
       - ../scripts/apply-hermes-ea-kanban-no-autodecompose.sh:/opt/joshu/scripts/apply-hermes-ea-kanban-no-autodecompose.sh:ro
+      - ../scripts/apply-hermes-stale-stream-keepalive.sh:/opt/joshu/scripts/apply-hermes-stale-stream-keepalive.sh:ro
       - ../scripts/apply-hermes-kanban-ws-base-path-patch.sh:/opt/joshu/scripts/apply-hermes-kanban-ws-base-path-patch.sh:ro
       - ../scripts/apply-hermes-invoke-tool-post-hook-patch.sh:/opt/joshu/scripts/apply-hermes-invoke-tool-post-hook-patch.sh:ro
       - ../scripts/patch-hermes-langfuse-openrouter.py:/opt/joshu/scripts/patch-hermes-langfuse-openrouter.py:ro
       - ../scripts/patch-hermes-content-filter-v020.py:/opt/joshu/scripts/patch-hermes-content-filter-v020.py:ro
       - ../scripts/patch-hermes-read-file-utf8.py:/opt/joshu/scripts/patch-hermes-read-file-utf8.py:ro
       - ../scripts/patch-hermes-ea-kanban-no-autodecompose.py:/opt/joshu/scripts/patch-hermes-ea-kanban-no-autodecompose.py:ro
+      - ../scripts/patch-hermes-stale-stream-keepalive.py:/opt/joshu/scripts/patch-hermes-stale-stream-keepalive.py:ro
       - ../scripts/patch-hermes-camofox-tab-resync.mjs:/opt/joshu/scripts/patch-hermes-camofox-tab-resync.mjs:ro
       - ../scripts/patch-hermes-camofox-ensure-tab.mjs:/opt/joshu/scripts/patch-hermes-camofox-ensure-tab.mjs:ro
       - ../scripts/patch-hermes-camofox-action-guard.mjs:/opt/joshu/scripts/patch-hermes-camofox-action-guard.mjs:ro

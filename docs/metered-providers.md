@@ -67,6 +67,8 @@ cd ../joshu-control-plane/apps/control-plane
 npx tsx scripts/issue-local-dev-relay-env.ts patrick   # --credit-usd defaults to 0
 ```
 
+**Warning:** this script **rotates** the instance `agentTokenHash` in the control plane and writes a new `INSTANCE_AGENT_TOKEN` to the laptop path (e.g. `joshu/.local/instance.env`). Any **live box** for that slug still holding the old token will 401 on heartbeat, usage relay, and Langfuse ingest until `/etc/joshu/instance.env` is updated and `instance-agent` / `joshu-stack` recreated. Prefer a dedicated local-dev instance slug when possible.
+
 Then in joshu `.env`:
 
 ```bash

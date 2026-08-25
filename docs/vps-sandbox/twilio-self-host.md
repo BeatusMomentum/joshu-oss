@@ -227,12 +227,29 @@ Treat the number like any public voice channel: follow Twilio / carrier rules on
 
 ### SMS / A2P 10DLC (optional)
 
-This guide is **voice**. Sending SMS to US mobiles from a US 10DLC number also requires **A2P Brand + Campaign** registration on the Twilio account that owns the number (otherwise carriers return error **30034**).
+US outbound SMS to mobile phones from a US 10DLC number requires **A2P Brand + Campaign** on the Twilio account that owns the number (otherwise carriers return error **30034**).
 
-- **OSS self-host:** register in [Twilio Console / A2P docs](https://www.twilio.com/docs/messaging/compliance/a2p-10dlc/quickstart) on your own account.
-- **Managed fleet:** per-box subaccount registration (private `twilio-a2p-sms` runbook + `register-a2p-box-sms.ts`). One registration per box, not once fleet-wide.
+- **OSS self-host:** register in [Twilio Console / A2P docs](https://www.twilio.com/docs/messaging/compliance/a2p-10dlc/quickstart) on your own account. Attach the number to a Messaging Service after Campaign **VERIFIED**.
+- **Managed fleet:** per-box subaccount registration — private managed fleet A2P runbook (not in OSS) runbook (not published in OSS).
 
-Joshu does not yet wire an SMS Messaging webhook in this self-host voice path.
+**Joshu SMS gateway (2026-08-25):** when A2P and env are set, Joshu registers `POST /joshu/api/twilio/sms/inbound` — owner-only inbound SMS → Hermes chat → SMS reply. Configure on the Twilio number:
+
+| Twilio console | Value |
+|----------------|--------|
+| **SMS webhook** (POST) | `https://<your-host>/joshu/api/twilio/sms/inbound` |
+
+Box env (in addition to voice vars):
+
+```bash
+TWILIO_ACCOUNT_SID=AC…                    # account that owns the number
+TWILIO_AUTH_TOKEN=…
+TWILIO_PHONE_NUMBER=+1…
+TWILIO_MESSAGING_SERVICE_SID=MG…          # recommended after A2P
+TWILIO_SMS_WEBHOOK_URL=https://<host>/joshu/api/twilio/sms/inbound
+TWILIO_OWNER_CALLER=+1…                   # owner mobile — inbound allowlist
+```
+
+Health: `GET /joshu/api/twilio/sms/health`. Keywords STOP / HELP / START are handled locally. Action-guard **approvals** remain Telegram/Slack — not SMS yet.
 
 ---
 

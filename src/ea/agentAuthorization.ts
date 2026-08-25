@@ -70,6 +70,7 @@ export function resolveOwnerEmails(projectRoot: string, accountEmail?: string): 
     profile?.primaryWorkEmail,
     profile?.personalEmail,
     accountEmail,
+    process.env.JOSHU_OWNER_EMAIL?.trim(),
     process.env.JOSHU_AROZ_USER?.trim(),
   ]) {
     const addr = raw?.trim().toLowerCase();

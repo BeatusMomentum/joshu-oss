@@ -26,6 +26,7 @@ HITL_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-hitl-patch.sh"
 LANGFUSE_SYSTEM_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-langfuse-system-patch.sh"
 CONTENT_FILTER_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-content-filter-patch.sh"
 READ_FILE_UTF8_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-read-file-utf8-patch.sh"
+STALE_STREAM_KEEPALIVE_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-stale-stream-keepalive.sh"
 INVOKE_TOOL_POST_HOOK_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-invoke-tool-post-hook-patch.sh"
 
 # Match deploy/Dockerfile image extras; local dev may use broader extras via HERMES_LOCAL_EXTRAS.
@@ -357,6 +358,9 @@ apply_content_filter_patch_if_needed() {
   fi
   if [[ -x "${READ_FILE_UTF8_PATCH_SCRIPT}" ]]; then
     HERMES_DIR="${HERMES_DIR}" bash "${READ_FILE_UTF8_PATCH_SCRIPT}" || true
+  fi
+  if [[ -x "${STALE_STREAM_KEEPALIVE_PATCH_SCRIPT}" ]]; then
+    HERMES_DIR="${HERMES_DIR}" bash "${STALE_STREAM_KEEPALIVE_PATCH_SCRIPT}" || true
   fi
   if [[ -x "${INVOKE_TOOL_POST_HOOK_PATCH_SCRIPT}" ]]; then
     HERMES_DIR="${HERMES_DIR}" bash "${INVOKE_TOOL_POST_HOOK_PATCH_SCRIPT}" || true

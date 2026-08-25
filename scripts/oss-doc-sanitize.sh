@@ -47,6 +47,11 @@ find "${OUT_DIR}/docs" -type f \( -name '*.md' -o -name '*.json' \) -print0 |
       -e 's|/Users/danbenyamin/Documents/dev|~/dev|g' \
       -e 's|/Users/danbenyamin/hermes-workspace|~/hermes-workspace|g' \
       -e 's|bash scripts/sync-local-portal-profile\.sh|configure identity in /etc/joshu/instance.env (see self-host.md)|g' \
+      -e 's|\[`twilio-a2p-sms\.md`\]([^)]*)|managed fleet A2P runbook (not in OSS)|g' \
+      -e 's|\[twilio-a2p-sms\.md\]([^)]*)|managed fleet A2P runbook (not in OSS)|g' \
+      -e 's|twilio-a2p-sms\.md|twilio-self-host.md|g' \
+      -e 's|private `twilio-a2p-sms` runbook|private fleet A2P runbook (not in OSS)|g' \
+      -e 's|Fleet US SMS / A2P: private fleet A2P runbook (not in OSS)|SMS / A2P: see [twilio-self-host.md](vps-sandbox/twilio-self-host.md)|g' \
       "$file"
   done
 

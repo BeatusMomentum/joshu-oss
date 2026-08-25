@@ -5,6 +5,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseGmailThreadMirrorSections } from "./composio/gmailMirrorFormat.js";
+import { stripEmailReplyQuotes } from "./emailReplyQuotes.js";
 
 const FM_RE = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
 
@@ -44,6 +45,21 @@ export function buildThreadBodyPreview(bodyMarkdown: string, maxChars = 2000): s
   return preview.slice(0, maxChars);
 }
 
+/**
+ * Classifier-facing preview: latest section only, with reply quotes stripped.
+ * Avoids padding with prior companion FYI that swamps short owner asks.
+ */
+export function buildClassifierBodyPreview(bodyMarkdown: string, maxChars = 2000): string {
+  const trimmed = bodyMarkdown.trim();
+  if (!trimmed) return "";
+
+  const sections = parseGmailThreadMirrorSections(trimmed);
+  const latestRaw =
+    sections.length > 0 ? sections[sections.length - 1]!.body.trim() : trimmed;
+  const stripped = stripEmailReplyQuotes(latestRaw);
+  return (stripped || latestRaw).slice(0, maxChars);
+}
+
 export async function readMirrorBodyPreview(
   filesRoot: string,
   sourcePath: string,
@@ -53,6 +69,21 @@ export async function readMirrorBodyPreview(
   try {
     const raw = await readFile(full, "utf8");
     return buildThreadBodyPreview(stripMirrorFrontmatter(raw), maxChars);
+  } catch {
+    return "";
+  }
+}
+
+/** Same as {@link readMirrorBodyPreview} but quote-stripped / latest-only for EA classify. */
+export async function readClassifierBodyPreview(
+  filesRoot: string,
+  sourcePath: string,
+  maxChars = 2000,
+): Promise<string> {
+  const full = path.join(filesRoot, sourcePath);
+  try {
+    const raw = await readFile(full, "utf8");
+    return buildClassifierBodyPreview(stripMirrorFrontmatter(raw), maxChars);
   } catch {
     return "";
   }
