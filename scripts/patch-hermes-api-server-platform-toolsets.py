@@ -49,34 +49,54 @@ def main() -> int:
         return 0
 
     text = TARGET.read_text(encoding="utf-8")
+    repair = False
     if MARKER in text:
-        print(f"[api-server-platform-toolsets] already applied ({TARGET})")
-        return 0
+        create_agent_sig = text.split("    def _create_agent(", 1)[1].split(") -> Any:", 1)[0]
+        if "platform_toolsets_key" in create_agent_sig:
+            print(f"[api-server-platform-toolsets] already applied ({TARGET})")
+            return 0
+        print(f"[api-server-platform-toolsets] repairing incomplete patch ({TARGET})")
+        repair = True
 
     anchor = "    def _create_agent("
     if anchor not in text:
         print("[api-server-platform-toolsets] error: _create_agent anchor missing", file=sys.stderr)
         return 1
 
-    text = text.replace(anchor, RESOLVE_METHOD + "\n\n" + anchor, 1)
+    if not repair and "_resolve_platform_toolsets(" not in text:
+        text = text.replace(anchor, RESOLVE_METHOD + "\n\n" + anchor, 1)
 
-    if "platform_toolsets_key: Optional[str] = None" not in text:
+    # _resolve_platform_toolsets also declares platform_toolsets_key — scope to _create_agent only.
+    create_agent_sig = text.split("    def _create_agent(", 1)[1].split(") -> Any:", 1)[0]
+    if "platform_toolsets_key" not in create_agent_sig:
         text, n = re.subn(
-            r"\n        confirmed_runtime_lock: bool = False,\n    \) -> Any:",
-            "\n        platform_toolsets_key: Optional[str] = None,\n        confirmed_runtime_lock: bool = False,\n    ) -> Any:",
+            r"(    def _create_agent\([\s\S]*?\n        session_model: Optional\[str\] = None,\n        confirmed_runtime_lock: bool = False,\n    \) -> Any:)",
+            lambda m: m.group(1).replace(
+                "        session_model: Optional[str] = None,\n        confirmed_runtime_lock: bool = False,\n    ) -> Any:",
+                "        session_model: Optional[str] = None,\n        platform_toolsets_key: Optional[str] = None,\n        confirmed_runtime_lock: bool = False,\n    ) -> Any:",
+                1,
+            ),
             text,
             count=1,
         )
         if n != 1:
-            print("[api-server-platform-toolsets] error: _create_agent signature patch failed", file=sys.stderr)
-            return 1
+            text, n = re.subn(
+                r"\n        confirmed_runtime_lock: bool = False,\n    \) -> Any:",
+                "\n        platform_toolsets_key: Optional[str] = None,\n        confirmed_runtime_lock: bool = False,\n    ) -> Any:",
+                text,
+                count=1,
+            )
+            if n != 1:
+                print("[api-server-platform-toolsets] error: _create_agent signature patch failed", file=sys.stderr)
+                return 1
 
     old_toolsets = "enabled_toolsets = sorted(_get_platform_tools(user_config, \"api_server\"))"
     new_toolsets = f"enabled_toolsets = self._resolve_platform_toolsets(user_config, platform_toolsets_key)  # {MARKER}"
-    if old_toolsets not in text:
+    if old_toolsets in text:
+        text = text.replace(old_toolsets, new_toolsets, 1)
+    elif new_toolsets not in text and not repair:
         print("[api-server-platform-toolsets] error: enabled_toolsets line not found", file=sys.stderr)
         return 1
-    text = text.replace(old_toolsets, new_toolsets, 1)
 
     if "platform_toolsets_key: Optional[str] = None," not in text.split("async def _run_agent", 1)[-1][:2500]:
         text, n = re.subn(
