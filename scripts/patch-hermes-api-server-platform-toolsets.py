@@ -40,7 +40,7 @@ RESOLVE_METHOD = f'''
             )
             key = "api_server"
         return sorted(_get_platform_tools(user_config, key))
-'''.strip()
+'''.rstrip("\n")
 
 
 def main() -> int:
