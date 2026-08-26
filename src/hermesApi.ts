@@ -313,6 +313,12 @@ function getConfiguredJoshuPluginNames(): string[] {
 /** jChat and voice brain both hit Hermes gateway platform `api_server`. */
 const INTERACTIVE_HERMES_PLATFORMS = ["api_server"] as const;
 
+/** Twilio SMS uses api_server :8642 with a lean platform_toolsets.sms surface. */
+export const SMS_HERMES_PLATFORM_TOOLSETS = "sms";
+
+/** Owner SMS: memory + search + skills — no kanban/terminal/browser. */
+const DEFAULT_SMS_PLATFORM_TOOLSETS = ["memory", "session_search", "skills"] as const;
+
 /**
  * Global `config.toolsets` includes `kanban` (orchestrator gating), but platform
  * tool resolution uses `platform_toolsets.api_server` — default `hermes-api-server`
@@ -336,6 +342,19 @@ function syncInteractivePlatformKanbanToolsets(config: ConfigRecord): boolean {
     config.platform_toolsets = platformToolsets;
   }
   return changed;
+}
+
+/** SMS gateway: dedicated Hermes platform_toolsets key (no kanban worker tools). */
+function syncSmsPlatformToolsets(config: ConfigRecord): boolean {
+  const platformToolsets = asRecord(config.platform_toolsets);
+  const desired = [...DEFAULT_SMS_PLATFORM_TOOLSETS];
+  const existing = asStringArray(platformToolsets[SMS_HERMES_PLATFORM_TOOLSETS]);
+  if (JSON.stringify(existing) !== JSON.stringify(desired)) {
+    platformToolsets[SMS_HERMES_PLATFORM_TOOLSETS] = desired;
+    config.platform_toolsets = platformToolsets;
+    return true;
+  }
+  return false;
 }
 
 /** Hermes bundled backend plugin for Exa (`plugins/web/exa/`, manifest name `web-exa`). */
@@ -543,6 +562,8 @@ export interface StreamHermesChatParams {
   }>;
   /** Names of client-side tools (skip Hermes MCP progress events for these). */
   clientToolNames?: Set<string>;
+  /** Hermes platform_toolsets override (X-Hermes-Platform-Toolsets header). */
+  platformToolsetsKey?: string;
 }
 
 export interface HermesClientToolCallEvent {
@@ -819,6 +840,11 @@ export class HermesApiRunner extends EventEmitter {
         headers["X-Hermes-Session-Id"] = params.sessionId;
         headers["X-Hermes-Session-Key"] =
           params.sessionKey ?? `joshu-hermes-chat:${params.sessionId}`;
+      }
+
+      const platformToolsetsKey = params.platformToolsetsKey?.trim();
+      if (platformToolsetsKey) {
+        headers["X-Hermes-Platform-Toolsets"] = platformToolsetsKey;
       }
 
       const res = await fetch(`${this.opts.apiBaseUrl.replace(/\/+$/, "")}/v1/chat/completions`, {
@@ -1940,6 +1966,10 @@ export class HermesApiRunner extends EventEmitter {
     config.cron = cron;
 
     if (syncInteractivePlatformKanbanToolsets(config)) {
+      changed = true;
+    }
+
+    if (syncSmsPlatformToolsets(config)) {
       changed = true;
     }
 

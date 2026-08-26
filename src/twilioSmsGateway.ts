@@ -7,7 +7,11 @@ import twilio from "twilio";
 import type { Request, Router } from "express";
 import express from "express";
 
-import type { HermesApiRunner, HermesChatMessage } from "./hermesApi.js";
+import {
+  SMS_HERMES_PLATFORM_TOOLSETS,
+  type HermesApiRunner,
+  type HermesChatMessage,
+} from "./hermesApi.js";
 import { buildOwnerTimeSystemMessage } from "./ownerLocalTime.js";
 import { markdownSpeechPlaintext } from "./markdownSpeechPlaintext.js";
 
@@ -196,6 +200,7 @@ export function registerTwilioSmsRoutes(
             sessionKey,
             messages,
             signal: AbortSignal.timeout(180_000),
+            platformToolsetsKey: SMS_HERMES_PLATFORM_TOOLSETS,
           },
           {},
         );

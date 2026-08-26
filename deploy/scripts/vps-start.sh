@@ -281,6 +281,22 @@ apply_hermes_stale_stream_keepalive() {
     || echo "[vps-start] WARN: stale-stream keepalive patch failed" >&2
 }
 
+# Kanban worker prompt must not leak into api_server/SMS when kanban tools are pinned.
+apply_hermes_kanban_guidance_gate() {
+  local script="${APP_DIR}/scripts/apply-hermes-kanban-guidance-gate.sh"
+  [[ -f "${script}" ]] || return 0
+  HERMES_DIR="${HERMES_DIR}" bash "${script}" \
+    || echo "[vps-start] WARN: kanban guidance gate patch failed" >&2
+}
+
+# SMS uses X-Hermes-Platform-Toolsets: sms for a lean tool surface on api_server.
+apply_hermes_api_server_platform_toolsets() {
+  local script="${APP_DIR}/scripts/apply-hermes-api-server-platform-toolsets.sh"
+  [[ -f "${script}" ]] || return 0
+  HERMES_DIR="${HERMES_DIR}" bash "${script}" \
+    || echo "[vps-start] WARN: api_server platform toolsets patch failed" >&2
+}
+
 # Block Hermes terminal from reading instance.env / secrets (jterm zero-shared-keys).
 # Bind-mounted from host until baked into the next sandbox image.
 apply_hermes_terminal_secrets_guard() {
@@ -303,6 +319,8 @@ apply_hermes_content_filter_patch
 apply_hermes_read_file_utf8_patch
 apply_hermes_ea_kanban_no_autodecompose
 apply_hermes_stale_stream_keepalive
+apply_hermes_kanban_guidance_gate
+apply_hermes_api_server_platform_toolsets
 apply_hermes_terminal_secrets_guard
 bootstrap_hermes_learning_skills
 ensure_hermes_runtime_config

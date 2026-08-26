@@ -251,6 +251,8 @@ TWILIO_OWNER_CALLER=+1…                   # owner mobile — inbound allowlist
 
 Health: `GET /joshu/api/twilio/sms/health`. Keywords STOP / HELP / START are handled locally. Action-guard **approvals** remain Telegram/Slack — not SMS yet.
 
+**Hermes tool surface (2026-08-26):** Joshu writes `platform_toolsets.sms: [memory, session_search, skills]` and SMS calls Hermes with `X-Hermes-Platform-Toolsets: sms` so owner texts do not inherit jChat’s full `api_server` surface (including Kanban worker lifecycle guidance). Self-hosters on Hermes **v0.14+** need the Joshu Hermes patches in `scripts/patch-hermes-kanban-guidance-gate.py` and `scripts/patch-hermes-api-server-platform-toolsets.py` (or [upstream PR #95857](https://github.com/NousResearch/hermes-agent/pull/95857) once merged). Optional: `TWILIO_SMS_SYSTEM_PROMPT` for per-box SMS copy.
+
 ---
 
 ## Related
