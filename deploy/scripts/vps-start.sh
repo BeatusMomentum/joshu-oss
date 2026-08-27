@@ -297,6 +297,14 @@ apply_hermes_api_server_platform_toolsets() {
     || echo "[vps-start] WARN: api_server platform toolsets patch failed" >&2
 }
 
+# Joshu twilioSmsGateway owns SMS ingress — not Hermes' native SMS platform.
+apply_hermes_joshu_disable_native_sms_platform() {
+  local script="${APP_DIR}/scripts/apply-hermes-joshu-disable-native-sms-platform.sh"
+  [[ -f "${script}" ]] || return 0
+  HERMES_DIR="${HERMES_DIR}" bash "${script}" \
+    || echo "[vps-start] WARN: disable native SMS platform patch failed" >&2
+}
+
 # Block Hermes terminal from reading instance.env / secrets (jterm zero-shared-keys).
 # Bind-mounted from host until baked into the next sandbox image.
 apply_hermes_terminal_secrets_guard() {
@@ -321,6 +329,7 @@ apply_hermes_ea_kanban_no_autodecompose
 apply_hermes_stale_stream_keepalive
 apply_hermes_kanban_guidance_gate
 apply_hermes_api_server_platform_toolsets
+apply_hermes_joshu_disable_native_sms_platform
 apply_hermes_terminal_secrets_guard
 bootstrap_hermes_learning_skills
 ensure_hermes_runtime_config

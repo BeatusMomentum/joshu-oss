@@ -357,6 +357,23 @@ function syncSmsPlatformToolsets(config: ConfigRecord): boolean {
   return false;
 }
 
+/**
+ * Joshu owns inbound SMS via twilioSmsGateway.ts → api_server. Disable Hermes'
+ * native SMS platform (separate Twilio webhook on SMS_WEBHOOK_URL) so admin
+ * does not show "Refusing to start: SMS_WEBHOOK_URL is required".
+ */
+function syncJoshuDisableHermesNativeSmsPlatform(config: ConfigRecord): boolean {
+  const platforms = asRecord(config.platforms);
+  const sms = asRecord(platforms.sms);
+  if (sms.enabled !== false) {
+    sms.enabled = false;
+    platforms.sms = sms;
+    config.platforms = platforms;
+    return true;
+  }
+  return false;
+}
+
 /** Hermes bundled backend plugin for Exa (`plugins/web/exa/`, manifest name `web-exa`). */
 const HERMES_WEB_EXA_PLUGIN_KEYS = ["web-exa", "web/exa"] as const;
 
@@ -1970,6 +1987,10 @@ export class HermesApiRunner extends EventEmitter {
     }
 
     if (syncSmsPlatformToolsets(config)) {
+      changed = true;
+    }
+
+    if (syncJoshuDisableHermesNativeSmsPlatform(config)) {
       changed = true;
     }
 

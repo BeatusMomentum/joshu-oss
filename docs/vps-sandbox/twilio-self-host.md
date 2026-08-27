@@ -253,6 +253,8 @@ Health: `GET /joshu/api/twilio/sms/health`. Keywords STOP / HELP / START are han
 
 **Hermes tool surface (2026-08-26):** Joshu writes `platform_toolsets.sms: [memory, session_search, skills]` and SMS calls Hermes with `X-Hermes-Platform-Toolsets: sms` so owner texts do not inherit jChat’s full `api_server` surface (including Kanban worker lifecycle guidance). Self-hosters on Hermes **v0.14+** need the Joshu Hermes patches in `scripts/patch-hermes-kanban-guidance-gate.py` and `scripts/patch-hermes-api-server-platform-toolsets.py` (or [upstream PR #95857](https://github.com/NousResearch/hermes-agent/pull/95857) once merged). Optional: `TWILIO_SMS_SYSTEM_PROMPT` for per-box SMS copy.
 
+**Hermes admin `[sms] Refusing to start`:** Joshu owns SMS ingress via `TWILIO_SMS_WEBHOOK_URL` — not Hermes’ separate `SMS_WEBHOOK_URL` platform. Apply `patch-hermes-joshu-disable-native-sms-platform.py` (or boot via `vps-start.sh`) so Hermes admin stays quiet; do not point Twilio at Hermes’ native SMS webhook unless you bypass Joshu intentionally.
+
 ---
 
 ## Related
