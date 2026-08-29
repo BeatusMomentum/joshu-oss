@@ -63,7 +63,7 @@ With the verified local setup, the live process should look like:
 
 ### Voice (CLI STT / TTS)
 
-Joshu’s [`scripts/update-hermes-agent.sh`](scripts/update-hermes-agent.sh) installs Hermes with the same **pip extras as the sandbox image** (`HERMES_IMAGE_EXTRAS`), including **`voice`** and **`messaging`** — full-turn CLI voice (`/voice on`, Ctrl+B), plus the gateway stack for Discord/Telegram when you enable it.
+Joshu’s [`scripts/update-hermes-agent.sh`](../scripts/update-hermes-agent.sh) installs Hermes with the same **pip extras as the sandbox image** (`HERMES_IMAGE_EXTRAS`), including **`voice`** and **`messaging`** — full-turn CLI voice (`/voice on`, Ctrl+B), plus the gateway stack for Discord/Telegram when you enable it.
 
 **macOS system packages** (Hermes [Voice Mode](https://hermes-agent.nousresearch.com/docs/user-guide/features/voice-mode) expects these):
 
@@ -71,13 +71,13 @@ Joshu’s [`scripts/update-hermes-agent.sh`](scripts/update-hermes-agent.sh) ins
 brew install portaudio ffmpeg ripgrep
 ```
 
-**ripgrep** (`rg`) is required for Hermes **`search_files`** on the local terminal backend. [`scripts/dev-arozos.sh`](scripts/dev-arozos.sh) checks for it at startup.
+**ripgrep** (`rg`) is required for Hermes **`search_files`** on the local terminal backend. [`scripts/dev-arozos.sh`](../scripts/dev-arozos.sh) checks for it at startup.
 
 **Without a GPU**, use **`stt.provider: local`** with Whisper **`tiny`** or **`base`** in `~/.hermes/config.yaml` for free on-device STT (slower on CPU), or set **`stt.provider: groq`** and put **`GROQ_API_KEY`** in `~/.hermes/.env` for faster cloud STT.
 
 Default **TTS** is **Edge** (`tts.provider: edge`) — no API key; requires network access.
 
-**Sandbox image:** Prefer Groq (or another cloud STT) on CPU workers instead of heavy local Whisper. Put keys in the sandbox image’s secret and load them into `/root/.hermes/.env` via **`HERMES_ENV_B64`** (see [`deploy/scripts/vps-start.sh`](deploy/scripts/vps-start.sh)) — do not commit secrets into the repo-tracked [`.hermes/`](.hermes) snapshot. Override **`stt.provider`** for the container in that env-backed config if needed.
+**Sandbox image:** Prefer Groq (or another cloud STT) on CPU workers instead of heavy local Whisper. Put keys in the sandbox image’s secret and load them into `/root/.hermes/.env` via **`HERMES_ENV_B64`** (see [`deploy/scripts/vps-start.sh`](../deploy/scripts/vps-start.sh)) — do not commit secrets into the repo-tracked [`.hermes/`](.hermes) snapshot. Override **`stt.provider`** for the container in that env-backed config if needed.
 
 ### Hermes Chat (browser voice)
 

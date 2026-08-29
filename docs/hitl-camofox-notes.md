@@ -158,7 +158,7 @@ Use the Camofox container logs and `CAMOFOX_URL` health check when the noVNC ifr
 | `http://127.0.0.1:8787/joshu/...` | Joshu **only** when the **jWeb** subservice is registered and running |
 
 If `8787/joshu/*` returns ArozOS **404**: check boot logs for
-`[Subservice] Subservice Registered: Joshu Browser`; remove
+`[Subservice] Subservice Registered: jWeb`; remove
 `.local/arozos-data/subservice/joshu/.disabled` if present.
 
 ### Hermes scroll / simple actions “reload” the browser
@@ -179,7 +179,7 @@ Restart Hermes gateway after config changes.
 | `CAMOFOX_START_URL` | Default tab URL when none exists (`https://joshu.me/`) |
 | `TAB_INACTIVITY_MS` | Camofox tab reaper; **`0` for jWeb HITL** (default on VPS) |
 | `BROWSER_IDLE_TIMEOUT_MS` | Firefox idle shutdown; default **`300000`** — jWeb warm-on-open relaunches |
-| `PROXY_*` / `PROXY_COUNTRY` | Residential egress for Camofox (Decodo). Self-host: set in `.env` / `instance.env`. Fleet: `DEFAULT_PROXY_*` at provision (`pnpm enable:camofox-proxy` for existing boxes) |
+| `PROXY_*` / `PROXY_COUNTRY` | Residential egress for Camofox (Decodo). Self-host: set in `.env` / `instance.env`. Fleet boxes: `DEFAULT_PROXY_*` at provision; existing: control-plane `pnpm enable:camofox-proxy` |
 | `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, insert-text + selection, reaper/keepalive, **cold-launch warm** |
 | `scripts/camofox-vnc-watcher.sh` | Reattach x11vnc after idle shutdown (same `:99`) |
 | `scripts/ensure-camofox-container.sh` | Create/start container + wait for `/health` |

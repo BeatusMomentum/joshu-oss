@@ -58,6 +58,8 @@ Cal Newport-style daily planning on **jWhiteboard**:
 
 On VPS, run scripts at `/opt/joshu/scripts/…` (not relative to Hermes Desktop cwd).
 
+Full product / Kanban / scheduling / time-block SOP: [`hermes-integration.md`](hermes-integration.md) · [`excalidraw-sandbox.md`](excalidraw-sandbox.md).
+
 ## Mail and connectors
 
 - Agent inbox: [`nylas-agent-mailbox.md`](nylas-agent-mailbox.md)

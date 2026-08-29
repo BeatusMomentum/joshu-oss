@@ -147,7 +147,7 @@ flowchart LR
 
 Declare voice in the manifest under `guiActions[].voice` (phrases + shortcut). The box registers Gemini functions as `app_{appId}_{shortcut}` — e.g., `app_jmail_compose` → `openCompose`. Complex utterances still go through Hermes (`think` → `app_gui_action`).
 
-Details: [app-sdk.md — Voice tool resolution](app-sdk.md#voice-tool-resolution) · [vps-sandbox/web-voice.md](vps-sandbox/web-voice.md) (fleet) · [voice-realtime.md](voice-realtime.md) (OSS public)
+Details: [app-sdk.md — Voice tool resolution](app-sdk.md#voice-tool-resolution) · [vps-sandbox/web-voice.md](vps-sandbox/web-voice.md) (fleet) · [voice-realtime.md](vps-sandbox/voice-realtime.md) (OSS public)
 
 ---
 

@@ -108,7 +108,7 @@ Vanilla self-host and fleet **without** a design pack use `arozos/web-overlays-v
 
 **Gotcha:** System Settings caches `index.html` / locale JSON — close the settings window entirely and hard-refresh the desktop after deploy.
 
-Details: [`design/README.md`](design/README.md), self-host [Hetzner quickstart](vps-sandbox/hetzner-quickstart.md) (OSS path: `joshu-oss/docs/vps-sandbox/hetzner-quickstart.md).
+Details: [`design/README.md`](design/README.md), self-host [Hetzner quickstart](vps-sandbox/hetzner-quickstart.md) (OSS path: `joshu-oss/docs/vps-sandbox/hetzner-quickstart.md`).
 
 ## Images: fleet vs OSS
 

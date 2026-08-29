@@ -352,7 +352,7 @@ Bundled Hermes **`excalidraw`** skill supplies JSON envelope / container-label r
 - `GET /joshu/api/files/read?path=...` — localhost-only read under `joshu's files`
 - CORS — localhost origins allowed so `:8787` subservices can call `:8788`
 
-See [`excalidraw-sandbox.md`](excalidraw-sandbox.md) and [`gtd-workspace-linking.md`](executive-assistant.md#gtd-workspace).
+See [`jwhiteboard-developer-guide.md`](jwhiteboard-developer-guide.md) and [`gtd-workspace-linking.md`](file-brain.md).
 
 Plan JSON may include **`taskGroups`** (numbered ① lists), **`blockRef`** on blocks, **`yesterdayPlan`** (link strip to prior day's diagram), and **`carryover[]`** (**From yesterday ☐** in the notes column). One `.excalidraw` per calendar day accumulates in `Planning/`; checkboxes live in **`Planning/daily-review-YYYY-MM-DD.md`** ([daily handoff](excalidraw-sandbox.md#daily-handoff-morning-review)).
 

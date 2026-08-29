@@ -88,7 +88,7 @@ Grant file: `${AROZ_DATA}/files/users/<user>/.joshu/nylas/agent.json` (`grantId`
 
 Outbound sends always use the provisioned agent address as `from`. The Joshu API converts the agent `body` to email HTML ([`plainTextToSimpleEmailHtml`](../packages/email-signature/src/joshuEmailSignature.ts): paragraphs, lists, `**bold**` / `*italic*` / `` `code` ``, `[label](url)` and bare `https://` links) and **appends a branded HTML signature** (companion name, `{owner}'s Joshu`, signup link) — built from instance identity at send time, inlined into the Nylas message `body`. Pass message content only (not signature markup). Configure identity via Welcome / `identity.json` — see [self-host.md](self-host.md#identity-without-control-plane).
 
-**EA v2:** owner Gmail (Composio) and agent Nylas are **separate** polled mirrors — no forward-from-owner setup ([`ea-for-joshu.md`](executive-assistant.md)). Calendar CRUD uses the same Nylas grant as the agent mailbox.
+**EA v2:** owner Gmail (Composio) and agent Nylas are **separate** polled mirrors — no forward-from-owner setup ([`ea-for-joshu.md`](hermes-integration.md)). Calendar CRUD uses the same Nylas grant as the agent mailbox.
 
 ## Connector mirror (gbrain)
 
@@ -136,7 +136,7 @@ curl -s -X POST http://127.0.0.1:8788/joshu/api/nylas/events \
   }'
 ```
 
-**EA scheduling:** events live on the **agent** calendar; always include the owner's `primaryWorkEmail` (and confirmed attendees) in `participants` so calendar invites reach real calendars. Hermes should use MCP `nylas_create_event` — see [`ea-scheduling`](../../integrations/hermes/skills/executive-assistant/ea-scheduling/SKILL.md).
+**EA scheduling:** events live on the **agent** calendar; always include the owner's `primaryWorkEmail` (and confirmed attendees) in `participants` so calendar invites reach real calendars. Hermes should use MCP `nylas_create_event` — see [`ea-scheduling`](../integrations/hermes/skills/executive-assistant/ea-scheduling/SKILL.md).
 
 ## Troubleshooting
 
@@ -150,8 +150,8 @@ curl -s -X POST http://127.0.0.1:8788/joshu/api/nylas/events \
 | `400` `reply_subject_mismatch` on `messages/send` | Agent set `replyToMessageId` but changed the subject | Retry with `expectedSubject` from the error (exact parent subject; no decorations) |
 | `connectors/status` shows stale `lastSyncAt` | Cron disabled or Joshu API down | `JOSHU_CONNECTORS_CRON=true`; `GET /joshu/api/connectors/cron/jobs`; manual `POST …/connectors/mail/nylas/sync` |
 
-**Log hygiene:** Express logs every HTTP status. For sync health, prefer **`/joshu/api/connectors/status`** over counting yellow `400`/`404` lines in `docker logs`. EA ops detail: [`executive-assistant.md`](executive-assistant.md#operations--logs).
+**Log hygiene:** Express logs every HTTP status. For sync health, prefer **`/joshu/api/connectors/status`** over counting yellow `400`/`404` lines in `docker logs`. EA ops detail: [`ea-for-joshu.md`](hermes-integration.md#operations--logs).
 
 ## Owner mail → reply
 
-When the **owner** emails the agent address (`{slug}@joshu.me`), Joshu mirrors the thread under `connectors/mail/nylas/threads/`, classifies a **quote-stripped** latest message, and (for actionable asks) queues `ea-mail-ingress` → ready **`ea-owner-reply`**. Short questions on reply threads that quote a long companion FYI must still route to `track` — see [`connectors.md` — LLM previews](connectors.md) and [`executive-assistant.md` — Mail and connectors](executive-assistant.md#mail-and-connectors).
+When the **owner** emails the agent address (`{slug}@joshu.me`), Joshu mirrors the thread under `connectors/mail/nylas/threads/`, classifies a **quote-stripped** latest message, and (for actionable asks) queues `ea-mail-ingress` → ready **`ea-owner-reply`**. Short questions on reply threads that quote a long companion FYI must still route to `track` — see [`connectors.md` — LLM previews](connectors.md) and [`ea-for-joshu.md` — Mail and connectors](hermes-integration.md#phase-1--deterministic-ingest-joshu-app).

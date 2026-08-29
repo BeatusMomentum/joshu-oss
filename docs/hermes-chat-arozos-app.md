@@ -55,7 +55,7 @@ Joshu sends SSE comment heartbeats every 15s on `/api/hermes-chat/stream` (and A
 
 ### System prompt layers
 
-Each turn, jChat POSTs `sessionId` + a **minimal** client system message (mail/tools hints in [`apps/hermes-chat/src/main.tsx`](../apps/hermes-chat/src/main.tsx)) and **only the latest user message** — not the full UI transcript. Hermes merges server-side session history and adds its own cached system prompt: companion `SOUL.md`, desktop `HERMES.md`, **`<available_skills>`** (truncated `description` per skill, ≤60 chars), then tool guidance. The model must call **`skill_view(name)`** to load a full `SKILL.md`; nothing in Joshu auto-selects EA skills when the conversation drifts. Details: [hermes-integration — Skill catalog](hermes-integration.md#skill-catalog-descriptions-and-skill_view), [ea-for-joshu — EA skills in jChat](executive-assistant.md#ea-skills-in-jchat-catalog--skill_view).
+Each turn, jChat POSTs `sessionId` + a **minimal** client system message (mail/tools hints in [`apps/hermes-chat/src/main.tsx`](../apps/hermes-chat/src/main.tsx)) and **only the latest user message** — not the full UI transcript. Hermes merges server-side session history and adds its own cached system prompt: companion `SOUL.md`, desktop `HERMES.md`, **`<available_skills>`** (truncated `description` per skill, ≤60 chars), then tool guidance. The model must call **`skill_view(name)`** to load a full `SKILL.md`; nothing in Joshu auto-selects EA skills when the conversation drifts. Details: [hermes-integration — Skill catalog](hermes-integration.md#skill-catalog-descriptions-and-skill_view), [ea-for-joshu — EA skills in jChat](hermes-integration.md#ea-skills-in-jchat-catalog--skill_view).
 
 The browser never receives `HERMES_API_KEY`; it talks only to Joshu. The UI
 supports markdown, GitHub-flavored markdown tables/lists, embedded image
@@ -89,7 +89,7 @@ img/joshu/chat.png
 
 Joshu replaces the stock ArozOS **background tasks** button (`#backgroundtaskBtn`) with a
 compact jChat tray in the bottom taskbar ([`aroz-jchat-tray.js`](../arozos/web-overlays-vanilla/aroz-jchat-tray.js),
-styled in [`aroz-paper-shell.css`](../arozos/web-overlays-vanilla/aroz-vanilla-shell.css)).
+styled in fleet **paper-shell** CSS from the private `joshu-design` pack, or OSS [`aroz-vanilla-shell.css`](../arozos/web-overlays-vanilla/aroz-vanilla-shell.css)).
 
 Layout (left → right, immediately left of the clock): **VU meter · mic · avatar**.
 

@@ -134,7 +134,7 @@ Mounted under `PUBLIC_BASE_PATH` (default `/joshu`). JSON body routes require `e
 | Markdown writer | [`src/onboarding/workspaceWriter.ts`](../src/onboarding/workspaceWriter.ts) |
 | HTTP routes | [`src/onboardingApi.ts`](../src/onboardingApi.ts) |
 | Box secrets API | [`src/boxSecrets/`](../src/boxSecrets/) |
-| Bootstrap auto-secrets | [`deploy/scripts/ensure-instance-env-secrets.sh`](../../deploy/scripts/ensure-instance-env-secrets.sh) |
+| Bootstrap auto-secrets | [`deploy/scripts/ensure-instance-env-secrets.sh`](../deploy/scripts/ensure-instance-env-secrets.sh) |
 | React UI | [`apps/welcome/`](../apps/welcome/) (imports options via Vite alias `@joshu/onboarding`) |
 | ArozOS subservice | [`arozos/subservice/welcome/`](../arozos/subservice/welcome/) → `dist/welcome/` |
 | Auto-launch overlay | [`arozos/web-overlays-vanilla/aroz-onboarding-launch.js`](../arozos/web-overlays-vanilla/aroz-onboarding-launch.js) |
@@ -155,7 +155,7 @@ After UI or API changes: rebuild Welcome (`npm run build:welcome`) and restart J
 ## Related docs
 
 - [`executive-assistant.md`](executive-assistant.md) — full EA operating model
-- [`executive-assistant.md`](executive-assistant.md#project-kanban-multi-step--hitl-2026-06) — project Kanban for multi-step / HITL work (after Day-1 setup)
+- [`ea-for-joshu.md`](hermes-integration.md#project-kanban-multi-step--hitl-2026-06) — project Kanban for multi-step / HITL work (after Day-1 setup)
 - [`docs/hermes-integration.md`](hermes-integration.md) — skills, workspace bootstrap
 - [`docs/box-state.md`](box-state.md) — factory reset vs personal state
 - [`docs/nylas-agent-mailbox.md`](nylas-agent-mailbox.md) — agent inbox provisioning
