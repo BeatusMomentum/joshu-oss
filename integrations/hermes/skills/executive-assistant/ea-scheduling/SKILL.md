@@ -4,7 +4,7 @@ description: Meeting-mail scheduling. Kanban ea-sched-*; Calendly fallback.
 metadata:
   hermes:
     category: executive-assistant
-    version: "4.22.0"
+    version: "4.23.0"
 ---
 
 # EA Scheduling
@@ -321,6 +321,16 @@ Calendly has a **REST API** for programmatic booking — no browser needed.
 ### Path B: Browser via Camoufox + email fallback (counterparty's Calendly)
 
 When the counterparty sent their Calendly link and you don't have API access to their account:
+
+**Before the first `browser_navigate` (cold browser):** Firefox may have idle-shutdown. Warm it first so the first paint is not a heavy SPA:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:8788/joshu/api/camofox/warm
+```
+
+(`fit-viewport` is equivalent.) Then `browser_navigate` to the Calendly URL. Camofox also auto-warms to `CAMOFOX_START_URL` on cold launch when the target differs — the curl step is belt-and-suspenders.
+
+**Browser retry budget:** At most **2** `browser_navigate` attempts to the same counterparty booking URL per meeting task. If both fail (500, session expired, page crash), stop retrying and use the email fallback below — do not loop.
 
 **Failure mode observed:** Even with Camoufox (anti-detection browser), Calendly often blocks the final "Schedule Event" submit: *"This booking cannot be completed. For security reasons, we are not able to finalize this booking from your current session."* Do not retry repeatedly — the block is deterministic per-session.
 

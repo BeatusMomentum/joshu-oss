@@ -107,10 +107,28 @@ watcher never starts x11vnc again. noVNC gets **1011** (`connection refused` on
 | `BROWSER_IDLE_TIMEOUT_MS` | `300000` (5m) | Shut Firefox down when unused |
 | `CAMOFOX_START_URL` | `https://joshu.me/` | Default jWeb home on warm |
 | jWeb UI | `fit-viewport` when browser down | Auto-warm + clear VNC backoff on open |
+| Agent / EA | `POST /joshu/api/camofox/warm` | Same bootstrap as fit-viewport **without** viewport resize |
 
 Set `BROWSER_IDLE_TIMEOUT_MS=0` only if you truly need always-on VNC (accepts the
 CPU cost). Repair on a live box: update `/etc/joshu/instance.env`, recreate
 `joshu-stack`, then open jWeb once to confirm warm.
+
+### Cold-launch warm (Calendly-class SPAs)
+
+**Problem:** After idle shutdown, the first `browser_navigate` / `open_url` straight
+into a heavy SPA (Calendly booking, similar) often crashes or 500s the Camofox
+session — cold Firefox + first paint of a large app is fragile.
+
+**Fix (baked in `scripts/patch-camofox-single-tab.mjs`):** on a fresh Camoufox
+launch (or within ~2m of `_lastBrowserRestartAt`), before navigating to a URL
+that is **not** already `CAMOFOX_START_URL`, Camofox loads the start URL first
+(`domcontentloaded`), then continues to the target. Logs:
+`hitl cold launch warm before heavy nav`.
+
+**Belt-and-suspenders for agents:** before the first navigate on a cold browser,
+call `POST /joshu/api/camofox/warm` (alias of fit-viewport bootstrap without
+resize). EA scheduling skill documents a **2-navigate retry budget** then email
+fallback — do not loop Calendly submits.
 
 ## `CAMOFOX_START_URL` / `about:blank`
 
@@ -121,6 +139,8 @@ CPU cost). Repair on a live box: update `/etc/joshu/instance.env`, recreate
   used to reset users mid-session).
 - Camofox patch `__hitlStartUrlFromEnv()` treats blank / empty as “no auto URL”
   (never coerces to a surprise site).
+- Cold-launch warm (above) uses this URL as the light first paint before a
+  different heavy target.
 
 Per-box overrides (Slack apps URL, etc.) belong in `instance.env` — do not
 hardcode customer sites in AGPL sources.
@@ -159,11 +179,12 @@ Restart Hermes gateway after config changes.
 | `CAMOFOX_START_URL` | Default tab URL when none exists (`https://joshu.me/`) |
 | `TAB_INACTIVITY_MS` | Camofox tab reaper; **`0` for jWeb HITL** (default on VPS) |
 | `BROWSER_IDLE_TIMEOUT_MS` | Firefox idle shutdown; default **`300000`** — jWeb warm-on-open relaunches |
-| `PROXY_*` / `PROXY_COUNTRY` | Residential egress for Camofox (Decodo); geo optional |
-| `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, **insert-text + selection routes**, reaper/keepalive |
+| `PROXY_*` / `PROXY_COUNTRY` | Residential egress for Camofox (Decodo). Self-host: set in `.env` / `instance.env`. Fleet: `DEFAULT_PROXY_*` at provision (`pnpm enable:camofox-proxy` for existing boxes) |
+| `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, insert-text + selection, reaper/keepalive, **cold-launch warm** |
 | `scripts/camofox-vnc-watcher.sh` | Reattach x11vnc after idle shutdown (same `:99`) |
 | `scripts/ensure-camofox-container.sh` | Create/start container + wait for `/health` |
 | `POST /joshu/api/camofox/fit-viewport` | Bootstrap tab → Camofox viewport route |
+| `POST /joshu/api/camofox/warm` | Same bootstrap as fit-viewport **without** viewport resize (agent / EA) |
 | `POST /joshu/api/camofox/insert-text` | Playwright paste into focused control (HITL insert-text / evaluate) |
 | `POST /joshu/api/camofox/copy-selection` | Read selection or focused field |
 | `POST /joshu/api/camofox/scroll` | Wheel / Arrow / Page keys via Playwright (`public/vnc-scroll.js`; rate-limited) |

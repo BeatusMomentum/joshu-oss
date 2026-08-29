@@ -78,6 +78,74 @@ function __hitlStartUrlFromEnv() {
   }
 }
 
+// HITL_COLD_LAUNCH_WARM — after idle shutdown, load CAMOFOX_START_URL before heavy SPA first paint.
+let __hitlBrowserColdLaunch = false;
+
+function __hitlMarkBrowserColdLaunch() {
+  __hitlBrowserColdLaunch = true;
+}
+
+function __hitlClearBrowserColdLaunch() {
+  __hitlBrowserColdLaunch = false;
+}
+
+function __hitlNormalizeNavUrl(raw) {
+  if (!raw) return '';
+  try {
+    const u = new URL(String(raw));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    return u.toString();
+  } catch (_) {
+    return '';
+  }
+}
+
+function __hitlUrlsEquivalent(a, b) {
+  const na = __hitlNormalizeNavUrl(a);
+  const nb = __hitlNormalizeNavUrl(b);
+  if (!na || !nb) return false;
+  try {
+    const ua = new URL(na);
+    const ub = new URL(nb);
+    ua.hash = '';
+    ub.hash = '';
+    return ua.toString() === ub.toString();
+  } catch (_) {
+    return na === nb;
+  }
+}
+
+async function __hitlWarmBeforeHeavyNav(page, targetUrl, reqId) {
+  const target = __hitlNormalizeNavUrl(targetUrl);
+  if (!target) return;
+  const warmUrl = __hitlStartUrlFromEnv();
+  // _lastBrowserRestartAt covers races where the cold flag was cleared before first nav.
+  const recentlyLaunched =
+    typeof _lastBrowserRestartAt === 'number' &&
+    _lastBrowserRestartAt > 0 &&
+    Date.now() - _lastBrowserRestartAt < 120000;
+  const needsWarm =
+    (__hitlBrowserColdLaunch || recentlyLaunched) &&
+    warmUrl &&
+    !__hitlUrlsEquivalent(target, warmUrl);
+  if (!needsWarm) return;
+  log('info', 'hitl cold launch warm before heavy nav', { reqId: reqId || null, warmUrl, targetUrl: target });
+  try {
+    await withPageLoadDuration('cold_warm', () =>
+      page.goto(warmUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }),
+    );
+  } catch (err) {
+    log('warn', 'hitl cold launch warm failed; continuing to target', { reqId: reqId || null, warmUrl, error: err.message });
+  } finally {
+    __hitlClearBrowserColdLaunch();
+  }
+}
+
+async function __hitlGotoWithColdWarm(page, url, reqId, label = 'open_url') {
+  await __hitlWarmBeforeHeavyNav(page, url, reqId);
+  await withPageLoadDuration(label, () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+}
+
 // Camoufox images ship Firefox 135; sites like Slack block it ("browser not supported").
 // Spoof a newer rv: in the fingerprint via launchOptions ff_version (not the binary).
 function __hitlFfVersionFromEnv() {
@@ -100,6 +168,84 @@ if (!source.includes("function __hitlViewportFromEnv()")) {
     throw new Error(`Could not find viewport helper insertion point in ${target}`);
   }
   source = source.replace("// Virtual display for WebGL support and anti-detection.", `${viewportHelper}\n// Virtual display for WebGL support and anti-detection.`);
+} else if (!source.includes("async function __hitlGotoWithColdWarm(")) {
+  const coldWarmOnly = `
+// HITL_COLD_LAUNCH_WARM — after idle shutdown, load CAMOFOX_START_URL before heavy SPA first paint.
+let __hitlBrowserColdLaunch = false;
+
+function __hitlMarkBrowserColdLaunch() {
+  __hitlBrowserColdLaunch = true;
+}
+
+function __hitlClearBrowserColdLaunch() {
+  __hitlBrowserColdLaunch = false;
+}
+
+function __hitlNormalizeNavUrl(raw) {
+  if (!raw) return '';
+  try {
+    const u = new URL(String(raw));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    return u.toString();
+  } catch (_) {
+    return '';
+  }
+}
+
+function __hitlUrlsEquivalent(a, b) {
+  const na = __hitlNormalizeNavUrl(a);
+  const nb = __hitlNormalizeNavUrl(b);
+  if (!na || !nb) return false;
+  try {
+    const ua = new URL(na);
+    const ub = new URL(nb);
+    ua.hash = '';
+    ub.hash = '';
+    return ua.toString() === ub.toString();
+  } catch (_) {
+    return na === nb;
+  }
+}
+
+async function __hitlWarmBeforeHeavyNav(page, targetUrl, reqId) {
+  const target = __hitlNormalizeNavUrl(targetUrl);
+  if (!target) return;
+  const warmUrl = __hitlStartUrlFromEnv();
+  // _lastBrowserRestartAt covers races where the cold flag was cleared before first nav.
+  const recentlyLaunched =
+    typeof _lastBrowserRestartAt === 'number' &&
+    _lastBrowserRestartAt > 0 &&
+    Date.now() - _lastBrowserRestartAt < 120000;
+  const needsWarm =
+    (__hitlBrowserColdLaunch || recentlyLaunched) &&
+    warmUrl &&
+    !__hitlUrlsEquivalent(target, warmUrl);
+  if (!needsWarm) return;
+  log('info', 'hitl cold launch warm before heavy nav', { reqId: reqId || null, warmUrl, targetUrl: target });
+  try {
+    await withPageLoadDuration('cold_warm', () =>
+      page.goto(warmUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }),
+    );
+  } catch (err) {
+    log('warn', 'hitl cold launch warm failed; continuing to target', { reqId: reqId || null, warmUrl, error: err.message });
+  } finally {
+    __hitlClearBrowserColdLaunch();
+  }
+}
+
+async function __hitlGotoWithColdWarm(page, url, reqId, label = 'open_url') {
+  await __hitlWarmBeforeHeavyNav(page, url, reqId);
+  await withPageLoadDuration(label, () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+}
+`;
+  if (source.includes("function __hitlStartUrlFromEnv()")) {
+    source = source.replace(
+      /function __hitlStartUrlFromEnv\(\) \{[\s\S]*?\n\}\n/,
+      (block) => block + coldWarmOnly,
+    );
+  } else {
+    console.warn(`[joshu] cold-launch warm helpers insertion point not found in ${target}; skipping`);
+  }
 }
 
 const ffHelperOnly = `
@@ -763,7 +909,85 @@ if (!source.includes(popupV2Marker) && source.includes(legacyPopupBlock)) {
   console.log(`[joshu] upgraded popup coercion to v2 in ${target}`);
 }
 
+// ---------------------------------------------------------------------------
+// Cold-start warm gate: mark fresh Firefox launches; warm to CAMOFOX_START_URL
+// before the first heavy navigation (Calendly-class SPAs crash on cold direct load).
+// ---------------------------------------------------------------------------
+if (!source.includes("__hitlMarkBrowserColdLaunch();")) {
+  const coldLaunchMarkNeedle = `      log('info', 'camoufox launched', {
+        attempt,
+        maxAttempts,
+        virtualDisplay: useVirtualDisplay,
+        proxyMode: proxyPool?.mode || null,
+        proxyServer: launchProxy?.server || null,
+        proxySession: launchProxy?.sessionId || null,
+      });
+      return browser;`;
+  const coldLaunchMarkPatch = `      log('info', 'camoufox launched', {
+        attempt,
+        maxAttempts,
+        virtualDisplay: useVirtualDisplay,
+        proxyMode: proxyPool?.mode || null,
+        proxyServer: launchProxy?.server || null,
+        proxySession: launchProxy?.sessionId || null,
+      });
+      // HITL_COLD_LAUNCH_WARM
+      __hitlMarkBrowserColdLaunch();
+      return browser;`;
+  if (source.includes(coldLaunchMarkNeedle)) {
+    source = source.replace(coldLaunchMarkNeedle, coldLaunchMarkPatch);
+  } else {
+    console.warn(`[joshu] cold-launch mark insertion point not found in ${target}; skipping`);
+  }
+
+  const directGotoNeedle =
+    "await withPageLoadDuration('open_url', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));";
+  const directGotoPatch =
+    "await __hitlGotoWithColdWarm(page, url, req.reqId);";
+  if (source.includes(directGotoNeedle)) {
+    source = source.replaceAll(directGotoNeedle, directGotoPatch);
+  }
+
+  const retryGotoNeedle =
+    "await withPageLoadDuration('open_url', () => retryPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));";
+  const retryGotoPatch =
+    "await __hitlGotoWithColdWarm(retryPage, url, req.reqId);";
+  if (source.includes(retryGotoNeedle)) {
+    source = source.replaceAll(retryGotoNeedle, retryGotoPatch);
+  }
+
+  const navigateGotoNeedle =
+    "const gotoP = withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));";
+  const navigateGotoPatch = `await __hitlWarmBeforeHeavyNav(tabState.page, targetUrl, req.reqId);
+          const gotoP = withPageLoadDuration('navigate', () => tabState.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));`;
+  if (source.includes(navigateGotoNeedle)) {
+    source = source.replace(navigateGotoNeedle, navigateGotoPatch);
+  } else {
+    console.warn(`[joshu] tabs/:tabId/navigate cold-warm insertion point not found in ${target}; skipping`);
+  }
+} else if (!source.includes("async function __hitlGotoWithColdWarm(")) {
+  console.warn(`[joshu] cold-launch mark without helpers in ${target}; re-run patch on clean server.js`);
+}
+
+// Upgrade cold-warm helper to also key off _lastBrowserRestartAt (idempotent).
+const coldWarmLegacyNeedle = `  const needsWarm =
+    __hitlBrowserColdLaunch &&
+    warmUrl &&
+    !__hitlUrlsEquivalent(target, warmUrl);`;
+const coldWarmLegacyPatch = `  // _lastBrowserRestartAt covers races where the cold flag was cleared before first nav.
+  const recentlyLaunched =
+    typeof _lastBrowserRestartAt === 'number' &&
+    _lastBrowserRestartAt > 0 &&
+    Date.now() - _lastBrowserRestartAt < 120000;
+  const needsWarm =
+    (__hitlBrowserColdLaunch || recentlyLaunched) &&
+    warmUrl &&
+    !__hitlUrlsEquivalent(target, warmUrl);`;
+if (source.includes(coldWarmLegacyNeedle)) {
+  source = source.replace(coldWarmLegacyNeedle, coldWarmLegacyPatch);
+}
+
 writeFileSync(target, source);
 console.log(
-  `[joshu] patched ${target} for single-tab HITL, viewport, selection clipboard route, and tab-reaper keepalive`,
+  `[joshu] patched ${target} for single-tab HITL, viewport, selection clipboard route, tab-reaper keepalive, and cold-launch warm`,
 );

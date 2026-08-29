@@ -655,6 +655,22 @@ function buildAppRouter(): {
     }
   });
 
+  // Agent/kanban warm alias — same bootstrap as fit-viewport without viewport resize.
+  router.post("/api/camofox/warm", async (_req: Request, res: Response) => {
+    try {
+      await bootstrapCamofoxStartUrl(true);
+      let tab = (await alignSharedBrowserTab()).tab;
+      if (!tab) {
+        const start = isBlankBrowserUrl(CAMOFOX_START_URL) ? undefined : CAMOFOX_START_URL;
+        tab = await camofoxSession.ensureTab(start);
+        runner.rememberBrowserTarget(tab.url, HITL_CAMOFOX_USER_ID);
+      }
+      res.json({ ok: true, warmed: true, tab });
+    } catch (err) {
+      res.status(502).json({ error: (err as Error).message });
+    }
+  });
+
   router.post("/api/camofox/shim", async (_req: Request, res: Response) => {
     const { tab } = await alignSharedBrowserTab();
     res.json({ ok: true, tab });
