@@ -1,4 +1,3 @@
-import { loadActionGuardPolicy } from "./actionGuard/policy.js";
 import { readLocalEnv, resolveEnvWithLocalFallback } from "./safetySettings/localEnv.js";
 
 function envTrim(name: string): string {
@@ -33,11 +32,7 @@ export function buildHermesMessagingDotenvEntries(projectRoot = process.cwd()): 
     if (value) out[key] = value;
   }
 
-  let telegramAllowed = envOrLocal("TELEGRAM_ALLOWED_USERS", projectRoot);
-  if (!telegramAllowed) {
-    const ids = loadActionGuardPolicy(projectRoot).telegramAllowedUserIds;
-    if (ids.length) telegramAllowed = ids.join(",");
-  }
+  const telegramAllowed = envOrLocal("TELEGRAM_ALLOWED_USERS", projectRoot);
   if (telegramAllowed) out.TELEGRAM_ALLOWED_USERS = telegramAllowed;
 
   return out;

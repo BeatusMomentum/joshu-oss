@@ -23,7 +23,6 @@ type SafetySettings = {
     llmClassifierThreshold: number;
     bypassOwnerOnlyRecipients: boolean;
     approvalTimeoutMs: number;
-    telegramAllowedUserIds: number[];
     mcpToolPolicyEnabled: boolean;
     mcpToolPolicySource: SettingSource;
     terminalMailGuardEnabled: boolean;
@@ -31,14 +30,12 @@ type SafetySettings = {
   };
   ownerChannel: {
     linked: boolean;
-    provider?: "telegram" | "slack";
-    telegramChatId?: string;
-    slackDmChannelId?: string;
+    provider?: "sms";
+    ownerPhone?: string;
     gateActive: boolean;
+    smsConfigured: boolean;
   };
   secrets: {
-    actionGuardTelegramBotTokenConfigured: boolean;
-    actionGuardTelegramBotTokenSource: SettingSource | "unset";
     hermesTelegramBotTokenConfigured: boolean;
     hermesTelegramBotTokenSource: SettingSource | "unset";
     slackBotTokenConfigured: boolean;
@@ -56,6 +53,7 @@ type SafetySettings = {
   };
   status: {
     ownerChannelLinked: boolean;
+    smsConfigured: boolean;
     gateEnabled: boolean;
   };
 };
@@ -91,13 +89,8 @@ function App() {
   const [llmThreshold, setLlmThreshold] = useState(0.7);
   const [bypassOwnerOnly, setBypassOwnerOnly] = useState(true);
   const [timeoutMin, setTimeoutMin] = useState(30);
-  const [telegramUsers, setTelegramUsers] = useState("");
   const [mcpPolicy, setMcpPolicy] = useState(true);
   const [terminalGuard, setTerminalGuard] = useState(true);
-  const [ownerProvider, setOwnerProvider] = useState<"telegram" | "slack">("telegram");
-  const [telegramChatId, setTelegramChatId] = useState("");
-  const [slackChannelId, setSlackChannelId] = useState("");
-  const [agBotToken, setAgBotToken] = useState("");
   const [hermesBotToken, setHermesBotToken] = useState("");
   const [slackBotToken, setSlackBotToken] = useState("");
   const [slackAppToken, setSlackAppToken] = useState("");
@@ -116,13 +109,8 @@ function App() {
     setLlmThreshold(s.actionGuard.llmClassifierThreshold);
     setBypassOwnerOnly(s.actionGuard.bypassOwnerOnlyRecipients);
     setTimeoutMin(Math.round(s.actionGuard.approvalTimeoutMs / 60_000));
-    setTelegramUsers(s.actionGuard.telegramAllowedUserIds.join(", "));
     setMcpPolicy(s.actionGuard.mcpToolPolicyEnabled);
     setTerminalGuard(s.actionGuard.terminalMailGuardEnabled);
-    setOwnerProvider(s.ownerChannel.provider ?? "telegram");
-    setTelegramChatId(s.ownerChannel.telegramChatId ?? "");
-    setSlackChannelId(s.ownerChannel.slackDmChannelId ?? "");
-    setAgBotToken("");
     setHermesBotToken("");
     setSlackBotToken("");
     setSlackAppToken("");
@@ -164,30 +152,19 @@ function App() {
   const messagingSettingsChanged = useCallback((): boolean => {
     if (!settings) return false;
     const slack = settings.hermesMessaging.slack;
-    const nextTelegramIds = telegramUsers
-      .split(",")
-      .map((s) => Number.parseInt(s.trim(), 10))
-      .filter((id) => Number.isFinite(id) && id > 0)
-      .sort((a, b) => a - b)
-      .join(",");
-    const currentTelegramIds = [...settings.actionGuard.telegramAllowedUserIds].sort((a, b) => a - b).join(",");
     return (
-      Boolean(agBotToken.trim()) ||
       Boolean(hermesBotToken.trim()) ||
       Boolean(slackBotToken.trim()) ||
       Boolean(slackAppToken.trim()) ||
-      nextTelegramIds !== currentTelegramIds ||
       slackAllowedUsers.trim() !== (slack.allowedUsers ?? "") ||
       slackHomeChannel.trim() !== (slack.homeChannel ?? "") ||
       slackAllowedChannels.trim() !== (slack.allowedChannels ?? "")
     );
   }, [
     settings,
-    agBotToken,
     hermesBotToken,
     slackBotToken,
     slackAppToken,
-    telegramUsers,
     slackAllowedUsers,
     slackHomeChannel,
     slackAllowedChannels,
@@ -212,17 +189,10 @@ function App() {
           llmClassifierThreshold: llmThreshold,
           bypassOwnerOnlyRecipients: bypassOwnerOnly,
           approvalTimeoutMs: timeoutMin * 60_000,
-          telegramAllowedUserIds: telegramUsers
-            .split(",")
-            .map((s) => Number.parseInt(s.trim(), 10))
-            .filter((id) => Number.isFinite(id) && id > 0),
           mcpToolPolicyEnabled: mcpPolicy,
           terminalMailGuardEnabled: terminalGuard,
         },
         ownerChannel: {
-          provider: ownerProvider,
-          telegramChatId: telegramChatId.trim() || undefined,
-          slackDmChannelId: slackChannelId.trim() || undefined,
           gateMode,
         },
         hermesMessaging: {
@@ -231,9 +201,6 @@ function App() {
           slackAllowedChannels: slackAllowedChannels.trim(),
         },
       };
-      if (agBotToken.trim()) {
-        body.secrets = { ...(body.secrets as object), actionGuardTelegramBotToken: agBotToken.trim() };
-      }
       if (hermesBotToken.trim()) {
         body.secrets = { ...(body.secrets as object), hermesTelegramBotToken: hermesBotToken.trim() };
       }
@@ -424,12 +391,12 @@ function App() {
             {settings.status.gateEnabled ? "Active" : "Off / not linked"}
           </div>
           <div className="status-pill">
-            <strong>Owner channel</strong>
-            {settings.ownerChannel.linked ? settings.ownerChannel.provider : "Not linked"}
-          </div>
-          <div className="status-pill">
-            <strong>Approval bot</strong>
-            {settings.secrets.actionGuardTelegramBotTokenConfigured ? "Configured" : "Missing"}
+            <strong>Owner SMS</strong>
+            {settings.ownerChannel.smsConfigured
+              ? settings.ownerChannel.ownerPhone
+                ? `Linked (${settings.ownerChannel.ownerPhone})`
+                : "Configured"
+              : "Not configured"}
           </div>
           <div className="status-pill">
             <strong>Slack chat</strong>
@@ -457,7 +424,7 @@ function App() {
             {ag && <SourceBadge source={ag.enabledSource} />}
           </label>
         </div>
-        <p className="hint">Requires owner channel linked or approval bot token.</p>
+        <p className="hint">Requires owner SMS — set your mobile in Telephone (or TWILIO_OWNER_CALLER) plus Twilio account/number/webhook.</p>
 
         <div className="field">
           <label htmlFor="gateMode">
@@ -539,17 +506,24 @@ function App() {
           </div>
         )}
 
-        <div className="field">
-          <label htmlFor="telegramUsers">Telegram approver user IDs (comma-separated)</label>
-          <input
-            id="telegramUsers"
-            type="text"
-            value={telegramUsers}
-            onChange={(e) => setTelegramUsers(e.target.value)}
-            placeholder="123456789"
-          />
-          <p className="hint">Empty = anyone who /start the bot can approve (legacy).</p>
-        </div>
+      </section>
+
+      <section className="card">
+        <h2>Owner approval (SMS)</h2>
+        <p className="hint">
+          Action-guard approvals are sent by SMS to the owner mobile (Telephone app, or{" "}
+          <code>TWILIO_OWNER_CALLER</code>). Reply <strong>Y</strong> or <strong>N</strong> to
+          approve or deny. Twilio account wiring is in{" "}
+          <code>docs/vps-sandbox/twilio-a2p-sms.md</code>.
+        </p>
+        <p className="hint">
+          Status:{" "}
+          {settings?.ownerChannel.smsConfigured
+            ? settings.ownerChannel.ownerPhone
+              ? `Owner phone ***${settings.ownerChannel.ownerPhone.replace(/^\*+/, "")}`
+              : "SMS gateway configured"
+            : "SMS not configured — gate will be unavailable until Twilio owner SMS is set up"}
+        </p>
       </section>
 
       <section className="card">
@@ -583,70 +557,13 @@ function App() {
       </section>
 
       <section className="card">
-        <h2>Owner 1:1 channel</h2>
-        <div className="field">
-          <label htmlFor="ownerProvider">Provider</label>
-          <select
-            id="ownerProvider"
-            value={ownerProvider}
-            onChange={(e) => setOwnerProvider(e.target.value as "telegram" | "slack")}
-          >
-            <option value="telegram">Telegram</option>
-            <option value="slack">Slack</option>
-          </select>
-        </div>
-        {ownerProvider === "telegram" ? (
-          <div className="field">
-            <label htmlFor="telegramChatId">Telegram chat ID</label>
-            <input
-              id="telegramChatId"
-              type="text"
-              value={telegramChatId}
-              onChange={(e) => setTelegramChatId(e.target.value)}
-              placeholder="From /start on approval bot"
-            />
-          </div>
-        ) : (
-          <div className="field">
-            <label htmlFor="slackChannelId">Slack DM channel ID</label>
-            <input
-              id="slackChannelId"
-              type="text"
-              value={slackChannelId}
-              onChange={(e) => setSlackChannelId(e.target.value)}
-              placeholder="D…"
-            />
-          </div>
-        )}
-      </section>
-
-      <section className="card">
-        <h2>Bot tokens</h2>
+        <h2>Hermes Telegram chat</h2>
         <p className="hint">
-          Values from <code>.env</code> show a red badge and cannot be changed here. Enter a new token to save to{" "}
-          <code>.joshu/safety-settings/local-env.json</code>.
+          Full agent chat in Telegram (<code>TELEGRAM_BOT_TOKEN</code>). Separate from action-guard SMS approvals.
         </p>
         <div className="field">
-          <label htmlFor="agToken">
-            Action-guard Telegram bot token
-            {settings && (
-              <SourceBadge source={settings.secrets.actionGuardTelegramBotTokenSource} />
-            )}
-            {settings?.secrets.actionGuardTelegramBotTokenConfigured && !agBotToken ? " · configured" : ""}
-          </label>
-          <input
-            id="agToken"
-            type="password"
-            value={agBotToken}
-            disabled={settings?.secrets.actionGuardTelegramBotTokenSource === "env"}
-            onChange={(e) => setAgBotToken(e.target.value)}
-            placeholder="Leave blank to keep current"
-            autoComplete="off"
-          />
-        </div>
-        <div className="field">
           <label htmlFor="hermesToken">
-            Hermes chat Telegram bot token (separate)
+            Hermes chat Telegram bot token
             {settings && <SourceBadge source={settings.secrets.hermesTelegramBotTokenSource} />}
             {settings?.secrets.hermesTelegramBotTokenConfigured && !hermesBotToken ? " · configured" : ""}
           </label>
@@ -665,8 +582,8 @@ function App() {
       <section className="card">
         <h2>Hermes Slack chat</h2>
         <p className="hint">
-          Full agent chat in Slack (like Telegram <code>TELEGRAM_BOT_TOKEN</code>). Separate from Composio Slack
-          (tools) and the owner approval channel. Uses your own Slack app + Socket Mode.
+          Values from <code>.env</code> show a red badge and cannot be changed here. Enter a new token to save to{" "}
+          <code>.joshu/safety-settings/local-env.json</code>.
         </p>
         {slackSetupSteps.length > 0 && (
           <ol className="hint setup-steps">

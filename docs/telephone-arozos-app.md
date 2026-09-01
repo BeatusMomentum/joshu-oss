@@ -1,6 +1,6 @@
 # Telephone (ArozOS desktop app)
 
-**Telephone** shows the phone number assigned to the box and lets the owner view/change the spoken **think passphrase** used on inbound PSTN calls.
+**Telephone** shows the phone number assigned to the box, lets the owner save **their mobile** (SMS approvals + voice greeting), and view/change the spoken **think passphrase** used on inbound PSTN calls.
 
 Related: [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md) (buy number + wire Twilio) · [`vps-sandbox/voice-realtime.md`](vps-sandbox/voice-realtime.md) · [`vps-sandbox/voice-think-speak.md`](vps-sandbox/voice-think-speak.md). SMS / A2P: see [twilio-self-host.md](vps-sandbox/twilio-self-host.md).
 
@@ -27,7 +27,15 @@ Related: [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md) (b
 
 From `TWILIO_PHONE_NUMBER` (set in `instance.env` after you buy a Twilio number — see [`twilio-self-host.md`](vps-sandbox/twilio-self-host.md)) or an optional override in `settings.json`. Displayed as a formatted number; copy uses E.164. Managed fleet boxes get this at provision.
 
-**SMS:** the same number can send/receive SMS when A2P 10DLC is registered on the owning Twilio account ([Twilio A2P quickstart](https://www.twilio.com/docs/messaging/compliance/a2p-10dlc/quickstart)). Managed fleet: private per-box runbook managed fleet A2P runbook (not in OSS). OSS self-host: [`twilio-self-host.md`](vps-sandbox/twilio-self-host.md) (SMS gateway env + SmsUrl). Telephone UI does not manage SMS or A2P registration.
+**SMS:** the same number can send/receive SMS when A2P 10DLC is registered on the owning Twilio account ([Twilio A2P quickstart](https://www.twilio.com/docs/messaging/compliance/a2p-10dlc/quickstart)). Managed fleet: private per-box runbook managed fleet A2P runbook (not in OSS). OSS self-host: [`twilio-self-host.md`](vps-sandbox/twilio-self-host.md) (SMS gateway env + SmsUrl).
+
+### Owner mobile
+
+Your cell — not the box number. Used as the inbound SMS allowlist and for the owner vs guest voice greeting.
+
+Precedence: settings file `ownerCaller` → `TWILIO_OWNER_CALLER` in `instance.env` → process env. Saving in Telephone takes effect immediately (no stack recreate). Welcome **Schedule & email** writes the same field on complete.
+
+Existing boxes that never had `TWILIO_OWNER_CALLER`: open **Telephone** and save a mobile. Action-guard SMS stays off until this is set *and* Twilio SMS is wired.
 
 ### Think passphrase
 
@@ -39,7 +47,7 @@ Owner can change it in the app:
 - **New passphrase** is always empty on load and after save — never prefilled with the live secret. **Save passphrase** stays disabled until the field is non-empty.
 - On save, the override is written to `.joshu/telephone/settings.json` and read by Joshu + voice-realtime on the **next inbound call** (no stack recreate required for the override path).
 
-Precedence for both values: settings file → `instance.env` → process env.
+Precedence for phone number, owner mobile, and passphrase: settings file → `instance.env` → process env.
 
 ### Choosing a phrase the phone can hear
 
@@ -53,8 +61,8 @@ If no passphrase is configured anywhere, PSTN stays disabled (routes not registe
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `GET` | `/joshu/api/telephone` | Status: number, display form, passphrase (for Show), configured flags, sources |
-| `PUT` | `/joshu/api/telephone` | Body: `{ thinkPassword?: string, phoneNumber?: string }` — validates passphrase (3–64 chars, STT-friendly charset) |
+| `GET` | `/joshu/api/telephone` | Status: box number, owner mobile, passphrase (for Show), configured flags, sources |
+| `PUT` | `/joshu/api/telephone` | Body: `{ thinkPassword?: string, phoneNumber?: string, ownerCaller?: string }` — empty `ownerCaller` clears the settings-file override |
 
 ---
 

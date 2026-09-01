@@ -4,6 +4,7 @@ import { ensureActionGuardDir, actionGuardPolicyPath } from "../actionGuard/path
 import { ownerChannelStatus, readOwnerChannelConfig, writeOwnerChannelConfig } from "../ownerChannel/config.js";
 import { isMcpToolPolicyEnabled, loadMcpToolPolicy } from "../mcpToolPolicy.js";
 import { readHermesSlackMessagingConfig } from "../hermesMessagingEnv.js";
+import { twilioSmsGatewayEnabled } from "../twilioSmsSend.js";
 import { readLocalEnvOverrides, writeLocalEnvOverrides } from "./localEnv.js";
 
 export type SettingSource = "env" | "local-env" | "policy-file" | "default";
@@ -21,7 +22,6 @@ export type SafetySettingsPayload = {
     llmClassifierThreshold: number;
     bypassOwnerOnlyRecipients: boolean;
     approvalTimeoutMs: number;
-    telegramAllowedUserIds: number[];
     guardedActions: string[];
     mcpToolPolicyEnabled: boolean;
     mcpToolPolicySource: SettingSource;
@@ -30,10 +30,9 @@ export type SafetySettingsPayload = {
   };
   ownerChannel: ReturnType<typeof ownerChannelStatus> & {
     gateActive: boolean;
+    smsConfigured: boolean;
   };
   secrets: {
-    actionGuardTelegramBotTokenConfigured: boolean;
-    actionGuardTelegramBotTokenSource: SettingSource | "unset";
     hermesTelegramBotTokenConfigured: boolean;
     hermesTelegramBotTokenSource: SettingSource | "unset";
     slackBotTokenConfigured: boolean;
@@ -51,7 +50,7 @@ export type SafetySettingsPayload = {
   };
   status: {
     ownerChannelLinked: boolean;
-    telegramLinkedLegacy: boolean;
+    smsConfigured: boolean;
     gateEnabled: boolean;
   };
 };
@@ -103,6 +102,7 @@ export function readSafetySettings(projectRoot = process.cwd()): SafetySettingsP
   const owner = ownerChannelStatus(projectRoot);
   const local = readLocalEnvOverrides(projectRoot);
   const fileRaw = readPolicyFileRaw(projectRoot);
+  const smsConfigured = twilioSmsGatewayEnabled(projectRoot);
 
   const mcpFromEnv = envTrim("JOSHU_MCP_TOOL_POLICY_ENABLED");
   const mcpToolPolicyEnabled = mcpFromEnv
@@ -119,8 +119,6 @@ export function readSafetySettings(projectRoot = process.cwd()): SafetySettingsP
       ? !/^(0|false|no|off)$/i.test(terminalFromLocal)
       : true;
 
-  const agToken =
-    envTrim("JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN") || local.JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN || "";
   const hermesToken = envTrim("TELEGRAM_BOT_TOKEN") || local.TELEGRAM_BOT_TOKEN || "";
   const slackBot = envTrim("SLACK_BOT_TOKEN") || local.SLACK_BOT_TOKEN || "";
   const slackApp = envTrim("SLACK_APP_TOKEN") || local.SLACK_APP_TOKEN || "";
@@ -147,7 +145,6 @@ export function readSafetySettings(projectRoot = process.cwd()): SafetySettingsP
       llmClassifierThreshold: policy.llmClassifierThreshold,
       bypassOwnerOnlyRecipients: policy.bypassOwnerOnlyRecipients,
       approvalTimeoutMs: policy.approvalTimeoutMs,
-      telegramAllowedUserIds: policy.telegramAllowedUserIds,
       guardedActions: policy.guardedActions,
       mcpToolPolicyEnabled,
       mcpToolPolicySource: mcpFromEnv ? "env" : typeof fileRaw.mcpToolPolicyEnabled === "boolean" ? "policy-file" : "default",
@@ -157,10 +154,9 @@ export function readSafetySettings(projectRoot = process.cwd()): SafetySettingsP
     ownerChannel: {
       ...owner,
       gateActive: policy.enabled && owner.linked,
+      smsConfigured,
     },
     secrets: {
-      actionGuardTelegramBotTokenConfigured: Boolean(agToken),
-      actionGuardTelegramBotTokenSource: secretSource("JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN", projectRoot),
       hermesTelegramBotTokenConfigured: Boolean(hermesToken),
       hermesTelegramBotTokenSource: secretSource("TELEGRAM_BOT_TOKEN", projectRoot),
       slackBotTokenConfigured: Boolean(slackBot),
@@ -179,8 +175,8 @@ export function readSafetySettings(projectRoot = process.cwd()): SafetySettingsP
     },
     status: {
       ownerChannelLinked: owner.linked,
-      telegramLinkedLegacy: Boolean(readOwnerChannelConfig(projectRoot)?.notify.telegramChatId),
-      gateEnabled: policy.enabled && (owner.linked || Boolean(agToken)),
+      smsConfigured,
+      gateEnabled: policy.enabled && owner.linked,
     },
   };
 }
@@ -194,15 +190,10 @@ export type SafetySettingsUpdate = {
     llmClassifierThreshold?: number;
     bypassOwnerOnlyRecipients?: boolean;
     approvalTimeoutMs?: number;
-    telegramAllowedUserIds?: number[];
     mcpToolPolicyEnabled?: boolean;
     terminalMailGuardEnabled?: boolean;
   };
   ownerChannel?: {
-    provider?: "telegram" | "slack";
-    telegramChatId?: string;
-    slackDmChannelId?: string;
-    connectedAccountId?: string;
     gateMode?: ActionGuardPolicy["gateMode"];
   };
   hermesMessaging?: {
@@ -211,11 +202,9 @@ export type SafetySettingsUpdate = {
     slackAllowedChannels?: string;
   };
   secrets?: {
-    actionGuardTelegramBotToken?: string;
     hermesTelegramBotToken?: string;
     slackBotToken?: string;
     slackAppToken?: string;
-    clearActionGuardTelegramBotToken?: boolean;
     clearHermesTelegramBotToken?: boolean;
     clearSlackBotToken?: boolean;
     clearSlackAppToken?: boolean;
@@ -241,7 +230,6 @@ export function writeSafetySettings(update: SafetySettingsUpdate, projectRoot = 
         ? { bypassOwnerOnlyRecipients: ag.bypassOwnerOnlyRecipients }
         : {}),
       ...(typeof ag.approvalTimeoutMs === "number" ? { approvalTimeoutMs: ag.approvalTimeoutMs } : {}),
-      ...(Array.isArray(ag.telegramAllowedUserIds) ? { telegramAllowedUserIds: ag.telegramAllowedUserIds } : {}),
       ...(typeof ag.mcpToolPolicyEnabled === "boolean" ? { mcpToolPolicyEnabled: ag.mcpToolPolicyEnabled } : {}),
     };
     fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
@@ -252,12 +240,7 @@ export function writeSafetySettings(update: SafetySettingsUpdate, projectRoot = 
     const existing = readOwnerChannelConfig(projectRoot);
     writeOwnerChannelConfig(
       {
-        provider: oc.provider ?? existing?.provider ?? "telegram",
-        connectedAccountId: oc.connectedAccountId ?? existing?.connectedAccountId,
-        notify: {
-          telegramChatId: oc.telegramChatId ?? existing?.notify.telegramChatId,
-          slackDmChannelId: oc.slackDmChannelId ?? existing?.notify.slackDmChannelId,
-        },
+        provider: "sms",
         gateMode: oc.gateMode ?? existing?.gateMode ?? ag?.gateMode,
         updatedAt: new Date().toISOString(),
       },
@@ -268,9 +251,6 @@ export function writeSafetySettings(update: SafetySettingsUpdate, projectRoot = 
   const secrets = update.secrets;
   if (secrets) {
     const localUpdates: Record<string, string> = {};
-    if (secrets.actionGuardTelegramBotToken?.trim()) {
-      localUpdates.JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN = secrets.actionGuardTelegramBotToken.trim();
-    }
     if (secrets.hermesTelegramBotToken?.trim()) {
       localUpdates.TELEGRAM_BOT_TOKEN = secrets.hermesTelegramBotToken.trim();
     }
@@ -282,9 +262,6 @@ export function writeSafetySettings(update: SafetySettingsUpdate, projectRoot = 
     }
     if (Object.keys(localUpdates).length > 0) {
       writeLocalEnvOverrides(localUpdates, projectRoot);
-    }
-    if (secrets.clearActionGuardTelegramBotToken) {
-      writeLocalEnvOverrides({ JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN: "" }, projectRoot);
     }
     if (secrets.clearHermesTelegramBotToken) {
       writeLocalEnvOverrides({ TELEGRAM_BOT_TOKEN: "" }, projectRoot);
@@ -321,7 +298,6 @@ export function writeSafetySettings(update: SafetySettingsUpdate, projectRoot = 
     );
   }
 
-  // Touch mcp policy cache consumers by returning fresh read
   void loadMcpToolPolicy();
   return readSafetySettings(projectRoot);
 }

@@ -198,7 +198,7 @@ Responses include **`timeAnchor`** (owner-local now) and per-event **`localDate`
 
 ### Action guard + `nylas_send_message`
 
-Outbound mail hits **owner-channel approval** (Slack or Telegram) when action guard is enabled. Joshu may block up to **30 minutes** waiting for the owner; Hermes MCP tool calls often **timeout around 120s** first.
+Outbound mail hits **owner SMS approval** when action guard is enabled. Joshu may block up to **30 minutes** waiting for the owner; Hermes MCP tool calls often **timeout around 120s** first.
 
 **Always pass `kanbanTaskId`** (this meeting task id, e.g. `t_…`) and preferably `threadId` on `nylas_send_message`. Joshu rewrites this task's `block_reason` after approve/deny/timeout so status does not stay on "awaiting owner approval" after mail delivers (or after a denied/failed gate).
 
@@ -277,7 +277,7 @@ The **owner** sometimes sends batch emails to multiple people (investors, partne
 
 3. **Check live owner calendar** — `google_calendar_find_free_slots` (omit `items` or include personal Gmail; multi-day window, owner timezone). Schedule from **`calendars.combined.free`**. Filter free intervals to at least 30 min within working hours. Offer 2-3 specific time windows across different days.
 
-4. **Reply to the thread** — `nylas_send_message` with **`sourcePath`** from the meeting task `source_paths`, **`kanbanTaskId`** = this task id, optional **`threadId`**, `replyToMessageId` on the message you are continuing, and the **exact parent subject** from the thread mirror (no decorations). **To:** whoever the owner addressed; **CC:** owner (so they see the thread) plus anyone they CC'd. Introduce yourself as the owner's companion and offer the slots you found. Agent sends hit **action guard** (owner channel approval) when enabled — `kanban_block` until send succeeds; Joshu rewrites `block_reason` after approve/deny when `kanbanTaskId` was passed.
+4. **Reply to the thread** — `nylas_send_message` with **`sourcePath`** from the meeting task `source_paths`, **`kanbanTaskId`** = this task id, optional **`threadId`**, `replyToMessageId` on the message you are continuing, and the **exact parent subject** from the thread mirror (no decorations). **To:** whoever the owner addressed; **CC:** owner (so they see the thread) plus anyone they CC'd. Introduce yourself as the owner's companion and offer the slots you found. Agent sends hit **action guard** (owner SMS Y/N) when enabled — `kanban_block` until send succeeds; Joshu rewrites `block_reason` after approve/deny when `kanbanTaskId` was passed.
 
 No kanban task is needed for this pattern — the owner's instruction is in the email body, not in a scheduling ingress workflow. Reply, wait for the counterparty, then proceed with standard meeting booking.
 

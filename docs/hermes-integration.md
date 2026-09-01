@@ -32,18 +32,18 @@ Install optional Hermes extras (`voice`, `messaging`, …) in the same venv/imag
 
 Joshu runs `hermes gateway run` for jChat, optional Telegram/Slack messaging, and MCP tool hosting. Restart via `npm run dev:arozos` locally or `vps-start.sh` on a box.
 
-**Telegram / Slack (optional):** configure bot tokens in `~/.hermes/.env` (Safety app syncs them on save). Use a **separate** bot for write-approval (action guard) vs full agent chat — see below and [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md).
+**Telegram / Slack (optional):** configure bot tokens in `~/.hermes/.env` (Safety app syncs them on save). These are **agent chat** surfaces only — write-approval HITL is owner SMS. See [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md) and [`agent-safety.md`](agent-safety.md#owner-approval-sms).
 
 Deep customization (skills, plugins, Langfuse, patches): [`hermes-integration.md`](hermes-integration.md).
 
 ## Telegram 1:1 chat (Hermes messaging gateway)
 
-Full owner ↔ agent chat on Telegram via the Hermes **telegram** platform (long polling). This is **not** the action-guard / approval bot.
+Full owner ↔ agent chat on Telegram via the Hermes **telegram** platform (long polling). This is **not** action-guard HITL — approvals use owner SMS.
 
-| | Hermes chat bot | Action-guard bot |
-|---|-----------------|------------------|
-| Env | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` | `JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN` |
-| Purpose | Agent conversation | HITL Approve/Deny only |
+| | Hermes chat bot |
+|---|-----------------|
+| Env | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` |
+| Purpose | Agent conversation (jChat-equivalent on Telegram) |
 
 **Setup:** Safety → Hermes Telegram (or paste tokens into `.env` / `local-env.json`) → **Restart gateway**. DM the **chat** bot. Sessions use `agent:main:telegram:dm:<chat_id>`.
 
@@ -56,7 +56,6 @@ Hermes Slack chat uses **Socket Mode** (`SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN`). 
 | Integration | Config | Purpose |
 |-------------|--------|---------|
 | **Hermes Slack chat** | Safety → tokens + `SLACK_ALLOWED_USERS` | Full agent DM / channel `@mention` |
-| **Owner 1:1 Slack** | Connectors → owner channel | Write approvals (Y/N) only |
 | **Composio Slack** | Connectors OAuth | Agent MCP tools (`SLACK_SEND_MESSAGE`, …) |
 
 **Setup (recommended):** Safety → **Hermes Slack chat** → Generate manifest → create app at [api.slack.com](https://api.slack.com/apps) → enable Socket Mode + Messages Tab → install → paste `xoxb-…` / `xapp-…` + your member ID (`U…`) → Save → **Restart gateway**. Invite the bot (`/invite @bot`) for channel `@mentions`.

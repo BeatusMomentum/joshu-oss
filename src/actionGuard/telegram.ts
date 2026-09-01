@@ -4,7 +4,6 @@ import { ActionGuardUnavailableError } from "./errors.js";
 import { actionGuardTelegramPath, ensureActionGuardDir } from "./paths.js";
 import { onboardingDraftPath } from "../onboarding/paths.js";
 import { readPending, resolvePending } from "./pending.js";
-import { isTelegramUserAllowed } from "./policy.js";
 
 export type TelegramLink = {
   chatId: number;
@@ -12,6 +11,11 @@ export type TelegramLink = {
   firstName?: string;
   linkedAt: string;
 };
+
+/** Legacy Telegram action-guard allowlist — deprecated; SMS is the only approval channel. */
+function isTelegramUserAllowed(_userId: number, _projectRoot = process.cwd()): boolean {
+  return true;
+}
 
 function botToken(projectRoot = process.cwd()): string {
   return (

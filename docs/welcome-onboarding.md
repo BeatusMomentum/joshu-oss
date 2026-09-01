@@ -10,7 +10,7 @@ Human SOP: [`executive-assistant.md`](executive-assistant.md). Welcome seeds pro
 2. **Step 1 (Welcome):** intro plus **Open Connectors** — link Gmail/calendar/apps in the Connectors desktop app (same `openModule("Connectors")` path as jMail). Optional anytime; also offered again on Review.
 3. **Standalone self-host only:** if no OpenRouter key is configured, Welcome shows **Connect AI** to save API keys to `.joshu/box-secrets/local-env.json`. On the same step you can optionally add a **Gemini** key for the jChat microphone (Gemini Live). **Control-plane managed boxes skip this** — keys are already in `/etc/joshu/instance.env` at provision time.
 4. **Optional Day 0:** After Gmail is connected, run **Analyze mail for setup (Day 0)** in **Connectors → Connect apps** to pre-fill the draft from 30 days of mail + calendar. See [`day0-cold-start.md`](day0-cold-start.md).
-5. Essentials wizard: big-picture priorities, work/personal email + timezone + working hours. Owner/assistant display names come from box identity / `profile.json` (not a Welcome step).
+5. Essentials wizard: big-picture priorities, work/personal email, **owner mobile**, timezone + working hours. Owner/assistant display names come from box identity / `profile.json` (not a Welcome step).
 6. Progress auto-saves on each **Continue** via `PUT /joshu/api/onboarding/draft`.
 7. **Finish setup** writes workspace markdown + `.joshu` profile JSON, creates **Projects/** folders, installs **EA morning / evening / weekly** Hermes crons (awaits cron sync before HTTP returns), and bootstraps the EA scheduling Kanban board. Optional **agent mailbox** can be created on Review via `POST /joshu/api/nylas/agent`.
 8. After completion, reopen **Welcome** anytime to edit in the same form — header becomes **Your Joshu profile**, review button **Save changes**. Draft JSON is retained for re-editing.
@@ -39,7 +39,7 @@ On first success the UI shows a **You're set up** summary (projects, cron times,
 | 0 | Welcome | Intro + **Open Connectors** button (or “Review or update” if already completed) |
 | 1 | Connect AI | OpenRouter API key (**standalone only**, when not provisioned); optional Gemini key for jChat voice |
 | 2 | Big picture | Multi-select priorities + optional notes → `Projects/<slug>/` |
-| 3 | Schedule & email | Work email, optional personal email, IANA timezone, working hours |
+| 3 | Schedule & email | Work email, optional personal email, optional owner mobile, IANA timezone, working hours |
 | 4 | Review | Summary → optional agent mailbox → **Finish setup** (creates Projects + EA crons) or **Save changes** |
 
 Step **Connect AI** is omitted when `GET /joshu/api/box-secrets/status` reports `needsConnectAi: false` (fleet / CP boxes with provisioned `OPENROUTER_API_KEY`, or after the key is saved).
@@ -62,6 +62,7 @@ Options are defined in `BIG_PICTURE_PRIORITIES` in [`src/onboarding/options.ts`]
 |-------|---------|
 | Work email | Daily Brief / pointer destination → `profile.json` `primaryWorkEmail` |
 | Personal email | Optional → `personalEmail` (calendar free/busy union) |
+| Your mobile | Optional → `communicationContacts.sms` and `.joshu/telephone/settings.json` `ownerCaller` (SMS approvals + voice greeting). Same field as **Telephone**. |
 | Timezone | Required on complete — IANA dropdown (`Intl.supportedValuesOf('timeZone')`) |
 | Working hours | Drive **EA morning / evening / weekly** cron times |
 
@@ -74,7 +75,7 @@ Stored at `.joshu/onboarding.draft.json` (see [`src/onboarding/paths.ts`](../src
 | `ownerName`, `assistantName` | string | Required for save/complete |
 | `bigPicturePriorities` | string[] | Checkbox labels |
 | `bigPictureNotes` | string? | |
-| `communicationChannels` | string[] | Channel **ids**; UI sets `work-email` / `personal-email` when emails filled |
+| `communicationChannels` | string[] | Channel **ids**; UI sets `work-email` / `personal-email` / `sms` when those fields are filled |
 | `communicationContacts` | `Record<string, string>` | Contact per channel id |
 | `timezone`, `workingHoursStart`, `workingHoursEnd` | string? | Required `timezone` on complete — **IANA** only. Saved to `.joshu/nylas/profile.json`; jChat injects owner local time via Temporal ([`src/ianaTimezone.ts`](../src/ianaTimezone.ts)) |
 | `primaryWorkEmail`, `personalEmail` | string? | Legacy; derived from `communicationContacts` on complete |
@@ -90,6 +91,7 @@ On **complete**, work/personal emails resolve into `profile.json` ([`src/onboard
 | `.joshu/onboarding.draft.json` | Full last answers (kept after complete for re-editing) |
 | `.joshu/identity.json` | Owner + assistant display names |
 | `.joshu/nylas/profile.json` | Timezone, hours, urgent channel (if set), work/personal email |
+| `.joshu/telephone/settings.json` | `ownerCaller` when Welcome mobile is filled |
 | `FILING.md`, `Triage/`, `Projects/other/` | EA v2 bootstrap (if missing) |
 | `Projects/<slug>/` | One folder per Welcome big-picture priority (`about.md`, `todo.md`) |
 | `Projects/_system/summary-email.md` | Morning/evening email template |

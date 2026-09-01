@@ -7,7 +7,6 @@ import {
 } from "./classify.js";
 import { actionGuardPolicyPath } from "./paths.js";
 import { isOwnerChannelLinked } from "../ownerChannel/config.js";
-import { readLocalEnv } from "../safetySettings/localEnv.js";
 
 export type ActionGuardGateMode = "allowlist" | "external_writes";
 
@@ -25,8 +24,6 @@ export type ActionGuardPolicy = {
   llmClassifierThreshold: number;
   /** Gate browser click/type/press/evaluate via Hermes patch. */
   browserGateWrites: boolean;
-  /** Numeric Telegram user IDs allowed to /start and tap Approve/Deny. Empty = legacy (anyone may link). */
-  telegramAllowedUserIds: number[];
 };
 
 const DEFAULT_GUARDED_ACTIONS = [
@@ -45,30 +42,7 @@ const DEFAULT_POLICY: ActionGuardPolicy = {
   llmClassifier: false,
   llmClassifierThreshold: 0.7,
   browserGateWrites: false,
-  telegramAllowedUserIds: [],
 };
-
-function parseTelegramAllowedUserIds(raw: string): number[] {
-  const ids: number[] = [];
-  for (const part of raw.split(",")) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-    const id = Number.parseInt(trimmed, 10);
-    if (Number.isFinite(id) && id > 0) ids.push(id);
-  }
-  return ids;
-}
-
-function readTelegramAllowedUserIdsFromFile(fromFile: Partial<ActionGuardPolicy> | null): number[] {
-  const raw = fromFile?.telegramAllowedUserIds;
-  if (!Array.isArray(raw)) return [];
-  const ids: number[] = [];
-  for (const entry of raw) {
-    const id = typeof entry === "number" ? entry : Number.parseInt(String(entry).trim(), 10);
-    if (Number.isFinite(id) && id > 0) ids.push(id);
-  }
-  return ids;
-}
 
 function envTrim(name: string): string {
   return process.env[name]?.trim() ?? "";
@@ -115,11 +89,6 @@ export function loadActionGuardPolicy(projectRoot = process.cwd()): ActionGuardP
   const guardedActions =
     fromFile?.guardedActions?.length ? fromFile.guardedActions : DEFAULT_POLICY.guardedActions;
 
-  const envAllowlist = envTrim("JOSHU_ACTION_GUARD_TELEGRAM_ALLOWED_USERS");
-  const telegramAllowedUserIds = envAllowlist.length
-    ? parseTelegramAllowedUserIds(envAllowlist)
-    : readTelegramAllowedUserIdsFromFile(fromFile);
-
   const bypassOwnerOnlyRecipients =
     fromFile?.bypassOwnerOnlyRecipients ??
     fromFile?.bypassSummaryEmailToOwner ??
@@ -149,30 +118,13 @@ export function loadActionGuardPolicy(projectRoot = process.cwd()): ActionGuardP
     llmClassifier,
     llmClassifierThreshold,
     browserGateWrites,
-    telegramAllowedUserIds,
   };
-}
-
-/** True when an allowlist is configured (env or policy file). Empty list = legacy open /start. */
-export function isTelegramAllowlistConfigured(projectRoot = process.cwd()): boolean {
-  if (envTrim("JOSHU_ACTION_GUARD_TELEGRAM_ALLOWED_USERS")) return true;
-  const file = readPolicyFile(projectRoot);
-  return readTelegramAllowedUserIdsFromFile(file).length > 0;
-}
-
-export function isTelegramUserAllowed(userId: number, projectRoot = process.cwd()): boolean {
-  const allowed = loadActionGuardPolicy(projectRoot).telegramAllowedUserIds;
-  if (allowed.length === 0) return true;
-  return allowed.includes(userId);
 }
 
 export function isActionGuardEnabled(projectRoot = process.cwd()): boolean {
   const policyEnabled = loadActionGuardPolicy(projectRoot).enabled;
   if (!policyEnabled) return false;
-  const botToken =
-    envTrim("JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN") ||
-    readLocalEnv("JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN", projectRoot);
-  return isOwnerChannelLinked(projectRoot) || Boolean(botToken);
+  return isOwnerChannelLinked(projectRoot);
 }
 
 export function isActionGuarded(actionId: string, projectRoot = process.cwd()): boolean {

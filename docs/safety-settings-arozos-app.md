@@ -1,6 +1,6 @@
 # Safety (ArozOS desktop app)
 
-**Safety** is the desktop UI for Joshu agent write policy: action guard (HITL), MCP hard blocks, owner 1:1 channel targets, and bot tokens.
+**Safety** is the desktop UI for Joshu agent write policy: action guard (HITL), MCP hard blocks, owner SMS approval status, and Hermes chat tokens.
 
 For the full security model (tiers, bypass matrix, architecture), see **[`agent-safety.md`](agent-safety.md)**.
 
@@ -37,7 +37,7 @@ Open from the ArozOS **Safety** desktop icon, or `http://127.0.0.1:8787/safety-s
 
 ### Status bar
 
-Live summary: gate active/off, owner channel provider, approval bot configured, Slack chat configured, **Hermes gateway** running/stopped.
+Live summary: gate active/off, owner SMS configured, Slack chat configured, **Hermes gateway** running/stopped.
 
 ### Action guard (HITL)
 
@@ -49,7 +49,10 @@ Live summary: gate active/off, owner channel provider, approval bot configured, 
 | Gate browser writes | Camofox **click/type/press** when enabled (default **off**). Requires Hermes `browser_camofox.py` patch + gateway restart — see [`agent-safety.md` — Browser write gate](agent-safety.md#browser-write-gate) |
 | Bypass owner-only mail | Skip gate for sends to `primaryWorkEmail` only |
 | LLM classifier | Optional soft classifier for ambiguous actions + threshold |
-| Telegram approver IDs | Comma-separated user IDs allowed to approve |
+
+### Owner approval (SMS)
+
+Read-only status for Twilio owner SMS (Telephone owner mobile, or `TWILIO_OWNER_CALLER`). Approvals are sent by text; reply **Y** or **N**. See [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md) and [`telephone-arozos-app.md`](telephone-arozos-app.md).
 
 ### Hard policy
 
@@ -58,22 +61,13 @@ Live summary: gate active/off, owner channel provider, approval bot configured, 
 | MCP tool policy | Tier-1 blocks: Composio Gmail send, deletes, Nylas calendar writes |
 | Terminal mail guard | Block `nylas email send` / curl send bypass in Hermes terminal |
 
-### Owner 1:1 channel
+### Hermes Telegram chat
 
-Provider (Telegram / Slack) and DM target IDs. Send `/start` to the action-guard Telegram bot to link, or paste chat/channel IDs here.
-
-### Bot tokens
-
-Password fields for:
-
-- **Action-guard Telegram bot** → `JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN`
-- **Hermes chat Telegram bot** → `TELEGRAM_BOT_TOKEN` (separate bot)
-
-Values already in process `.env` show a red **".env"** badge and cannot be changed here. New values save to `.joshu/safety-settings/local-env.json`.
+Password field for `TELEGRAM_BOT_TOKEN` (Hermes owner ↔ agent chat — separate from SMS approvals).
 
 ### Hermes Slack chat
 
-Full agent chat in Slack (Hermes **Socket Mode**) — separate from **Composio Slack** (MCP tools) and the **owner approval** channel (Composio Y/N). See [hermes-integration — Slack chat](hermes-integration.md#slack-chat-hermes-messaging-gateway).
+Full agent chat in Slack (Hermes **Socket Mode**) — separate from **Composio Slack** (MCP tools). Action-guard approvals use **SMS**, not Slack. See [hermes-integration — Slack chat](hermes-integration.md#slack-chat-hermes-messaging-gateway).
 
 | Control | Description |
 |---------|-------------|
@@ -89,9 +83,9 @@ On **Save**, Joshu writes `local-env.json` and syncs `SLACK_*` / `TELEGRAM_*` in
 
 ### Actions
 
-- **Save** — writes policy file, owner channel, and local-env; optional gateway restart when messaging changed
+- **Save** — writes policy file, optional owner-channel `gateMode`, and local-env; optional gateway restart when messaging changed
 - **Restart gateway** — sync messaging env and restart Hermes (picks up Slack/Telegram tokens)
-- **Test approval** — sends a test HITL notification to the linked owner channel. **Slack:** reply **Y** or **N** in the channel (polling active until timeout). **Telegram:** tap Approve/Deny.
+- **Test approval** — sends a test HITL notification by SMS. Reply **Y** or **N** to approve or deny.
 - **Refresh** — reload from server
 
 ---
@@ -120,11 +114,10 @@ Each setting shows where the effective value comes from:
 | Approval timeout | `JOSHU_ACTION_GUARD_TIMEOUT_MS` | `policy.json` |
 | MCP hard policy | `JOSHU_MCP_TOOL_POLICY_ENABLED` | `policy.json` `mcpToolPolicyEnabled` |
 | Terminal mail guard | `JOSHU_TERMINAL_MAIL_GUARD` | `local-env.json` |
-| Approval bot token | `JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN` | `local-env.json` |
+| Owner SMS | Telephone **Your mobile** (or `TWILIO_OWNER_CALLER`) + Twilio account/number/webhook | `.joshu/telephone/settings.json` then `instance.env` |
 | Hermes chat bot | `TELEGRAM_BOT_TOKEN` | `local-env.json` |
 | Hermes Slack bot / app tokens | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | `local-env.json` |
 | Slack allowed users / channels | `SLACK_ALLOWED_USERS`, `SLACK_HOME_CHANNEL`, `SLACK_ALLOWED_CHANNELS` | `local-env.json` |
-| Owner channel IDs | — | `owner-channel.json` |
 
 ---
 
@@ -133,7 +126,7 @@ Each setting shows where the effective value comes from:
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/joshu/api/safety-settings` | GET | Current settings + source badges |
-| `/joshu/api/safety-settings` | PUT | Update policy, owner channel, secrets; optional `restartGateway: true` |
+| `/joshu/api/safety-settings` | PUT | Update policy, secrets; optional `restartGateway: true` |
 | `/joshu/api/safety-settings/restart-gateway` | POST | Sync `~/.hermes/.env` messaging vars and restart Hermes gateway |
 | `/joshu/api/safety-settings/slack-setup` | GET | Slack setup steps + configured flags |
 | `/joshu/api/safety-settings/slack-manifest` | POST | Generate Hermes Slack app manifest JSON |
@@ -151,7 +144,7 @@ Implementation: [`src/safetySettings/store.ts`](../src/safetySettings/store.ts),
 |--------|----------------|
 | Gate mode, timeouts, MCP policy toggle | Immediately for Joshu + MCP proxies on next policy fetch |
 | **Browser gate** (`browserGateWrites`) | Joshu immediately; Hermes after gateway restart (`JOSHU_ACTION_GUARD_BROWSER_GATE` synced to `~/.hermes/.env`) |
-| Approval bot token (local-env) | Joshu action guard immediately; Telegram polling on restart |
+| Approval SMS | Immediate when Twilio owner SMS is configured |
 | `TELEGRAM_BOT_TOKEN`, `SLACK_*`, `JOSHU_TERMINAL_MAIL_GUARD` (local-env) | After Hermes gateway restart (**Safety → Restart gateway**, or confirm on Save when messaging changed) |
 | Values in `.env` | After process restart |
 
@@ -175,18 +168,16 @@ Joshu must be running on `:8788`. In dev, Vite proxies `/joshu` to the API.
 
 ### Test approval fails
 
-Owner channel must be linked or approval bot token configured. Check `GET /joshu/api/action-guard/status`.
-
-**Owner-channel Slack (approvals):** ensure Composio Slack is connected, channel ID is correct (`C…` or `D…`), and you reply **Y** or **N** in that channel (not in a thread the poller ignores in v1). If Composio returns `ratelimited`, polling backs off 30s — wait and retry. This is **not** Hermes Slack chat — see [agent-safety.md — Owner 1:1 channel](agent-safety.md#owner-11-channel).
+Owner SMS must be configured (Telephone owner mobile or `TWILIO_OWNER_CALLER`, plus Twilio webhook). Check `GET /joshu/api/action-guard/status` → `smsConfigured` / `ownerChannelLinked`. Reply **Y** or **N** to the test SMS.
 
 **Hermes Slack chat:** after Save, use **Restart gateway**; confirm `SLACK_ALLOWED_USERS` includes your `U…` ID; DM the bot or `@mention` in an invited channel. One Socket Mode connection per Slack app — do not reuse the same `xapp-` token on two boxes at once. Channel `@mentions` reply in a **thread** by default — see [hermes-integration — Slack chat](hermes-integration.md#slack-chat-hermes-messaging-gateway) (`reply_in_thread: false` for in-channel replies). If nothing happens, check `~/.hermes/logs/gateway.log` for `inbound message: platform=slack` (no line ⇒ Socket Mode not receiving on this box).
 
-**Telegram:** send `/start` to the approval bot if not linked.
+**Hermes Telegram chat:** DM the **chat** bot (`TELEGRAM_BOT_TOKEN`) — that is not the approval path.
 
 ---
 
 ## Related
 
 - Security overview: [`agent-safety.md`](agent-safety.md)
-- Connectors owner channel UI: [`connectors-arozos-app.md`](connectors-arozos-app.md)
+- Connectors: [`connectors-arozos-app.md`](connectors-arozos-app.md)
 - Desktop shortcuts: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md)

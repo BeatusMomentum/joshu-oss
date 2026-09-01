@@ -1,6 +1,6 @@
 # Connectors (ArozOS desktop app)
 
-**Connectors** is the app-wide place to manage OAuth connections (Gmail, calendar, Slackbot, etc.). Owner 1:1 approval channel is configured in the **Safety** app. jMail, jChat, Hermes, and cron all read the same backend via `GET /joshu/api/connectors/status`.
+**Connectors** is the app-wide place to manage OAuth connections (Gmail, calendar, Slackbot, etc.). Owner SMS approval is configured via Twilio env (Safety app shows status). jMail, jChat, Hermes, and cron all read the same backend via `GET /joshu/api/connectors/status`.
 
 ## What ships in this repo
 
@@ -146,11 +146,9 @@ Legacy jChat paths under `/joshu/api/hermes-chat/composio/*` still work (same ha
 4. **jMail** shows one inbox tab per connected Gmail address.
 5. **Day 0 setup** — after at least one Gmail account is connected, use **Analyze mail for setup (Day 0)** at the bottom of **Connect apps** to sync 30 days of mail + calendar and pre-fill the Welcome onboarding draft. See [`docs/day0-cold-start.md`](day0-cold-start.md).
 
-## Owner 1:1 channel
+## Owner SMS approval
 
-Configure Telegram/Slack approval DMs in the **Safety** desktop app (not Connectors). Connect Slack for agent tools via **Connect apps** above if needed; paste the DM/channel ID in Safety.
-
-Slack approvals use **Y/N replies** in that channel (not interactive Block Kit buttons). Approval messages show companion **avatar + name** in the message body via Block Kit. Full flow: [`agent-safety.md` — Slack approval flow](agent-safety.md#slack-approval-flow-v1).
+Action-guard HITL is **owner SMS** (Telephone owner mobile or `TWILIO_OWNER_CALLER`) — not Connectors. Connect Slack for agent **tools** via **Connect apps** if needed.
 
 **Hermes Slack chat** (full agent DM/@mention) is separate — configure in **Safety → Hermes Slack chat**. See [hermes-integration — Slack chat](hermes-integration.md#slack-chat-hermes-messaging-gateway).
 

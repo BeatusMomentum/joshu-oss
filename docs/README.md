@@ -19,7 +19,7 @@ Docs for **self-hosting** the Joshu box stack, building ArozOS apps, and integra
 | **Welcome** | [`welcome-onboarding.md`](welcome-onboarding.md) |
 | **jMovie** | [`jmovie-arozos-app.md`](jmovie-arozos-app.md) |
 | **jTerm** | [`jterm-arozos-app.md`](jterm-arozos-app.md) |
-| **Telephone** | [`telephone-arozos-app.md`](telephone-arozos-app.md) |
+| **Telephone** | [`telephone-arozos-app.md`](telephone-arozos-app.md) — box number, owner mobile, think passphrase |
 | **last30days** | [`last30days-user-guide.md`](last30days-user-guide.md) · [`last30days-arozos-app.md`](last30days-arozos-app.md) |
 
 Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).

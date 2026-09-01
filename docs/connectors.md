@@ -282,24 +282,19 @@ Disable for debugging only: `JOSHU_MCP_TOOL_POLICY_ENABLED=false` (restart conne
 
 ## Owner 1:1 channel
 
-> **Canonical doc:** [`agent-safety.md` — Owner 1:1 channel](agent-safety.md#owner-11-channel). Configure in the **Safety** desktop app.
+> **Canonical doc:** [`agent-safety.md` — Owner approval (SMS)](agent-safety.md#owner-approval-sms). Status in the **Safety** desktop app.
 
-Configure in **Safety → Owner 1:1 channel**. Stores `.joshu/owner-channel/owner-channel.json` (provider, DM target, optional Composio `connectedAccountId`).
+Action-guard approvals use **owner SMS only** (Telephone owner mobile or `TWILIO_OWNER_CALLER`). Linking is on-box — there is no Telegram/Slack approval path. Optional `.joshu/owner-channel/owner-channel.json` stores a `gateMode` override only.
 
-| Provider | Link | Approvals |
-|----------|------|-----------|
-| **Telegram** | Send `/start` to the action-guard bot, or paste chat ID | Inline Approve/Deny (Bot API or Composio send) |
-| **Slack** | Composio Slack OAuth + channel ID (`D…` self-DM or private `C…` e.g. `#my-approvals`) | Markdown prompt; owner replies **Y/N** in channel (polled via Composio). Signed URL decide links as fallback — see [`agent-safety.md` — Slack approval flow](agent-safety.md#slack-approval-flow-v1). |
+API: `GET /joshu/api/connectors/owner-channel/status`, `POST /joshu/api/owner-channel/await` (MCP proxy), `POST /joshu/api/owner-channel/test`.
 
-API: `GET/PUT /joshu/api/connectors/owner-channel`, `POST /joshu/api/owner-channel/await` (MCP proxy), `POST /joshu/api/owner-channel/test`.
-
-Gate stays **Joshu-owned** (`mcpToolPolicy`, MCP proxy, REST gates, browser gate). Owner channel only changes **who receives** approve/deny ingress. Legacy `JOSHU_ACTION_GUARD_TELEGRAM_*` still works until owner channel is linked.
+Gate stays **Joshu-owned** (`mcpToolPolicy`, MCP proxy, REST gates, browser gate). Owner SMS is notification + Y/N ingress only.
 
 ## Action guard (owner approval for writes)
 
 > **Canonical doc:** [`agent-safety.md` — Action guard](agent-safety.md#tier-2--action-guard-hitl). Configure via **Safety** app, env, or `.joshu/action-guard/policy.json`.
 
-Deterministic safeguard: before **agent write** actions that affect third parties (outside the private Joshu↔owner channel), Joshu notifies the box owner on the **owner 1:1 channel** (Telegram or Slack) with Approve / Deny. The agent does not see the gate — deny returns a silent success-shaped response without executing the action.
+Deterministic safeguard: before **agent write** actions that affect third parties, Joshu texts the box owner (Telephone mobile / `TWILIO_OWNER_CALLER`) with a Y/N prompt. The agent does not see the gate — deny returns a silent success-shaped response without executing the action.
 
 **Default mode (`gateMode: external_writes`):** gates Composio tools matching write heuristics (`_SEND_`, `_CREATE_`, `_UPDATE_`, `_POST_`, `_REPLY_`), agent Nylas sends, and (when enabled) browser click/type/press. Read/meta tools pass through.
 
@@ -316,7 +311,7 @@ flowchart LR
   Connectors[Connectors MCP :8795]
   Browser[Camofox click/type/press]
   Gate[awaitOwnerApproval]
-  OwnerCh[Owner 1:1 channel]
+  SMS[Owner SMS]
   Owner[Box owner]
   JoshuREST[Joshu REST / Nylas]
   ComposioCloud[Composio cloud MCP]
@@ -330,9 +325,9 @@ flowchart LR
   Connectors -->|read tools| JoshuREST
   Connectors -->|nylas_send_message| JoshuREST
   JoshuREST -->|POST messages/send| Gate
-  Gate --> OwnerCh
-  OwnerCh --> Owner
-  Owner -->|Telegram buttons or Slack Y/N| Gate
+  Gate --> SMS
+  SMS --> Owner
+  Owner -->|Y/N SMS reply| Gate
   Gate -->|approved| JoshuREST
   Proxy -->|approved| ComposioCloud
 ```
@@ -341,7 +336,7 @@ flowchart LR
 |-------|------|------|
 | Connectors MCP | `:8795` | Thin proxy; `nylas_send_message` → REST (gate on API) |
 | Composio MCP guard | `:8796` | Pass-through proxy; Hermes never talks to Composio cloud directly when guard is on |
-| Joshu API | `:8788` | **`POST …/nylas/messages/send`** runs action guard; **`POST …/action-guard/browser`** for Camofox writes; owner channel + Slack reply polling |
+| Joshu API | `:8788` | **`POST …/nylas/messages/send`** runs action guard; **`POST …/action-guard/browser`** for Camofox writes; SMS Y/N ingress via Twilio webhook |
 
 When guard is enabled, `~/.hermes/config.yaml` sets `mcp_servers.composio.url` to `http://127.0.0.1:8796/mcp` (not the Composio cloud URL). Upstream Composio credentials stay in `.joshu/composio-session.json`; the proxy reads them via localhost-only `GET …/api/connectors/composio/mcp-upstream`.
 
@@ -386,7 +381,10 @@ Connectors MCP strips the `mcp_joshu_connectors_` prefix when normalizing tool n
 
 ```bash
 JOSHU_ACTION_GUARD_ENABLED=true
-JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN=…   # BotFather token
+# Owner SMS (same Twilio gateway as owner chat) — required for HITL:
+# Owner SMS (same Twilio gateway as owner chat) — required for HITL:
+# TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER / TWILIO_SMS_WEBHOOK_URL
+# Owner mobile: Telephone / Welcome, or TWILIO_OWNER_CALLER
 # optional:
 JOSHU_ACTION_GUARD_GATE_MODE=external_writes   # or allowlist
 JOSHU_ACTION_GUARD_BROWSER_GATE=true           # gate browser click/type/press (Hermes patch + gateway restart)
@@ -406,19 +404,11 @@ Example `.joshu/action-guard/policy.json`:
 }
 ```
 
-Optional policy file: `.joshu/action-guard/policy.json` (merged with env). Requires **both** `enabled` and bot token for `isActionGuardEnabled`.
+Optional policy file: `.joshu/action-guard/policy.json` (merged with env). Requires **both** `enabled` and Twilio owner SMS for `isActionGuardEnabled`.
 
-**Link Telegram:** owner sends **`/start`** to the **action-guard** bot once. Confirm: `GET /joshu/api/action-guard/status` → `"telegramLinked": true`. Welcome `communicationContacts.telegram` is used as a username hint only. If guard is enabled but Telegram is not linked, agent sends return **503** `action_guard_telegram_not_linked` (Joshu stays up — does not crash).
+**Confirm SMS:** `GET /joshu/api/action-guard/status` → `"ownerChannelLinked": true`, `"smsConfigured": true`. If guard is enabled but SMS is not configured, agent sends return **503** `owner_channel_sms_not_configured` (Joshu stays up — does not crash).
 
-**Allowlist (recommended):** set numeric Telegram user IDs so only the owner can link or tap Approve/Deny:
-
-```bash
-JOSHU_ACTION_GUARD_TELEGRAM_ALLOWED_USERS=123456789   # comma-separated
-```
-
-Or `.joshu/action-guard/policy.json`: `"telegramAllowedUserIds": [123456789]`. Env wins when set. When the allowlist is **empty**, legacy behavior allows anyone who finds the bot to `/start` (last link wins). Status: `telegramAllowlistConfigured` / `telegramAllowlistCount` on `GET …/action-guard/status`.
-
-**1:1 chat** uses a **separate** Hermes messaging bot (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` in `/etc/joshu/instance.env` or `~/.hermes/.env`) — not the action-guard token. Joshu syncs `TELEGRAM_*` into `~/.hermes/.env` on gateway start. Setup: [hermes-integration — Telegram 1:1](hermes-integration.md#telegram-11-chat-hermes-messaging-gateway). Same Hermes gateway process as jChat; different platform adapter and session key.
+**Hermes Telegram 1:1 chat** uses a **separate** bot (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` in `/etc/joshu/instance.env` or `~/.hermes/.env`) — not involved in approvals. Joshu syncs `TELEGRAM_*` into `~/.hermes/.env` on gateway start. Setup: [hermes-integration — Telegram 1:1](hermes-integration.md#telegram-11-chat-hermes-messaging-gateway).
 
 **Deny / timeout:** Agent receives `{ ok: true, messageId: "blocked-…" }` (Nylas) or Composio `{ successful: true, … }` — no mail is sent. Default timeout: 30 minutes (`approvalTimeoutMs` / `JOSHU_ACTION_GUARD_TIMEOUT_MS`).
 
@@ -433,7 +423,7 @@ Hermes agents call sends via **`mcp_joshu_connectors_nylas_send_message`**, whic
 | Langfuse: `TimeoutError` / tool failed at ~120s on `nylas_send_message` | Owner has not approved yet (or approval prompt still open) | “MCP down” / “connectors unreachable” |
 | `:8795/health` OK, `connectors_status` OK | Connectors MCP is fine — gate is waiting | Restart MCP |
 | `{ ok: true, messageId: "blocked-…" }` | Owner denied or Joshu approval timed out at 30 min | Mail was sent |
-| `503` + `action_guard_telegram_not_linked` | Owner channel not linked — Joshu returns unavailable (does not crash) | MCP failure |
+| `503` + `owner_channel_sms_not_configured` | Owner SMS not configured — Joshu returns unavailable (does not crash) | MCP failure |
 | `403` + `mail_send_not_authorized` / `agent_sent_message` | Outbound auth rejected before action guard (no approval card posted) | Follow-ups after an agent send on the same thread — fixed 2026-07-16 in [`agentAuthorization.ts`](../src/ea/agentAuthorization.ts) (`prior_agent_send_on_thread`) |
 
 **Hermes `connect_timeout: 1800`** in `~/.hermes/config.yaml` (when guard is on) only extends **MCP connection establishment** — not the per-invocation tool timeout inside Hermes.
@@ -453,16 +443,16 @@ Hermes agents call sends via **`mcp_joshu_connectors_nylas_send_message`**, whic
 | Goal | How |
 |------|-----|
 | Test approval loop (mail) | **jChat / Hermes** — ask agent to send from agent mailbox (`mcp_joshu_connectors_nylas_send_message` or REST — same gate) |
-| Test Slack Y/N | **Safety → Test approval** with Slack owner channel — reply Y or N in the channel |
+| Test SMS Y/N | **Safety → Test approval** — reply Y or N by SMS to `TWILIO_PHONE_NUMBER` |
 | Test browser gate | Enable **Gate browser writes**; restart Hermes; ask agent to click a link in Camofox — should prompt owner before click |
 | Confirm REST bypass closed | Agent `execute_code` / `curl` to `POST …/nylas/messages/send` must **also** prompt owner (not send silently) |
 | Confirm gate is off for owner | **jMail** send — should **not** prompt when browser sends `X-Joshu-Mail-Client: jmail` + `Sec-Fetch-Site` |
-| Confirm owner channel linked | `curl -fsS …/joshu/api/action-guard/status \| jq '.ownerChannelLinked, .ownerChannel'` |
+| Confirm owner SMS linked | `curl -fsS …/joshu/api/action-guard/status \| jq '.ownerChannelLinked, .smsConfigured, .ownerChannel'` |
 | Confirm Composio proxy | `curl -fsS http://127.0.0.1:8796/health` on box; Hermes config `mcp_servers.composio.url` → `:8796/mcp` |
 | Classify fixtures | `node scripts/test-action-guard-classify.mjs` |
 | Update a running VPS | Rebuild and redeploy the Docker image from this repo (`npm run vps:build-image`) or `git pull` + `docker compose up -d --build` on the host |
 
-Example agent prompt: *“Send an email to db@example.com with subject ‘Action guard test’ and body ‘Testing approval gate.’”* Expect Telegram before send; Langfuse trace shows `mcp_composio_COMPOSIO_SEARCH_TOOLS` (ungated) then `mcp_joshu_connectors_nylas_send_message` (gated).
+Example agent prompt: *“Send an email to db@example.com with subject ‘Action guard test’ and body ‘Testing approval gate.’”* Expect an SMS before send; Langfuse trace shows `mcp_composio_COMPOSIO_SEARCH_TOOLS` (ungated) then `mcp_joshu_connectors_nylas_send_message` (gated).
 
 ## Cron (no Hermes gateway)
 

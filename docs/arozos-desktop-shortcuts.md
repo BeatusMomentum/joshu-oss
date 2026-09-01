@@ -170,7 +170,7 @@ python3 scripts/apply_arozos_joshu_theme.py .local/arozos-data/web
 - jChat: [`docs/hermes-chat-arozos-app.md`](hermes-chat-arozos-app.md)
 - jMail: [`docs/jmail-arozos-app.md`](jmail-arozos-app.md)
 - Connectors (OAuth, multi-Gmail): [`docs/connectors-arozos-app.md`](connectors-arozos-app.md)
-- Safety (action guard, owner channel): [`docs/safety-settings-arozos-app.md`](safety-settings-arozos-app.md)
+- Safety (action guard, owner SMS): [`docs/safety-settings-arozos-app.md`](safety-settings-arozos-app.md)
 - Schedules (Hermes cron): [`docs/schedules-arozos-app.md`](schedules-arozos-app.md)
 - jMovie: [`docs/jmovie-arozos-app.md`](jmovie-arozos-app.md)
 - VPS boot + shortcut refresh: [`docs/hitl-camofox-notes.md`](hitl-camofox-notes.md)

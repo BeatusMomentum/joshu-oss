@@ -11,8 +11,8 @@ export type PendingRequest = {
   createdAt: string;
   expiresAt: string;
   status: "pending" | PendingDecision;
-  /** When the Slack approval prompt was delivered (for Y/N reply matching). */
-  slackNotifiedAt?: string;
+  /** When the approval prompt was delivered to the owner (SMS). */
+  notifiedAt?: string;
 };
 
 type Waiter = {
@@ -56,11 +56,28 @@ export function updatePendingStatus(
   return req;
 }
 
-export function markPendingSlackNotified(id: string, projectRoot = process.cwd()): void {
+export function markPendingNotified(id: string, projectRoot = process.cwd()): void {
   const req = readPending(id, projectRoot);
   if (!req || req.status !== "pending") return;
-  req.slackNotifiedAt = new Date().toISOString();
+  req.notifiedAt = new Date().toISOString();
   writePending(req, projectRoot);
+}
+
+/** Open pending approvals (status still pending). */
+export function listOpenPending(projectRoot = process.cwd()): PendingRequest[] {
+  const dir = actionGuardPendingDir(projectRoot);
+  if (!dir || !fs.existsSync(dir)) return [];
+  const out: PendingRequest[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const req = JSON.parse(fs.readFileSync(`${dir}/${name}`, "utf8")) as PendingRequest;
+      if (req.status === "pending") out.push(req);
+    } catch {
+      /* ignore corrupt file */
+    }
+  }
+  return out;
 }
 
 export function createPending(

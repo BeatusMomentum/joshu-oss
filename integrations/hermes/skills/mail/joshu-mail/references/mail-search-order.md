@@ -71,7 +71,7 @@ These are for **actions** or refreshing one message — not the first hop for �
 | Send from agent mailbox | **`mcp_joshu_connectors_nylas_send_message`** |
 | Profile (TZ, owner work email) | `nylas_get_profile` |
 
-When action guard is enabled, owner approves on Telegram before delivery. The REST route `POST /joshu/api/nylas/messages/send` runs the **same gate** — do not call it from `execute_code`, `curl`, or terminal.
+When action guard is enabled, owner approves by **SMS** (Y/N) before delivery. The REST route `POST /joshu/api/nylas/messages/send` runs the **same gate** — do not call it from `execute_code`, `curl`, or terminal.
 
 **Pitfall (2026-06):** Agents that could not find the MCP tool sometimes read `joshu-connectors-mcp-http-server.mjs` and POSTed to REST directly, skipping Telegram. Use the MCP tool.
 

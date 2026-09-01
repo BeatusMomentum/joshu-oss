@@ -1,12 +1,14 @@
 /**
  * Twilio PSTN SMS gateway: inbound Messaging webhook → Hermes chat → SMS reply.
- * Owner-only (TWILIO_OWNER_CALLER). Uses the box subaccount credentials.
+ * Owner-only (Telephone owner mobile or TWILIO_OWNER_CALLER). Uses the box subaccount credentials.
+ * Action-guard Y/N replies are handled before routing to Hermes chat.
  */
 
-import twilio from "twilio";
 import type { Request, Router } from "express";
 import express from "express";
+import twilio from "twilio";
 
+import { handleSmsApprovalIngress } from "./actionGuard/smsIngress.js";
 import {
   SMS_HERMES_PLATFORM_TOOLSETS,
   type HermesApiRunner,
@@ -14,16 +16,16 @@ import {
 } from "./hermesApi.js";
 import { buildOwnerTimeSystemMessage } from "./ownerLocalTime.js";
 import { markdownSpeechPlaintext } from "./markdownSpeechPlaintext.js";
+import {
+  envTrim,
+  normalizePhone,
+  ownerSmsPhone,
+  phonesMatch,
+  sendSms,
+  twilioSmsAccountReady,
+} from "./twilioSmsSend.js";
 
-const SMS_MAX_CHARS = 1500;
-
-function envTrim(name: string): string {
-  return process.env[name]?.trim() ?? "";
-}
-
-function normalizePhone(raw: string): string {
-  return raw.replace(/[^\d+]/g, "");
-}
+export { twilioSmsGatewayEnabled } from "./twilioSmsSend.js";
 
 function normalizePublicBasePath(raw: string): string {
   if (!raw) return "";
@@ -37,17 +39,6 @@ function smsInboundWebhookUrl(): string | undefined {
   const voice = envTrim("TWILIO_VOICE_WEBHOOK_URL");
   if (!voice) return undefined;
   return voice.replace(/\/voice\/inbound\/?$/, "/sms/inbound");
-}
-
-/** SMS is off unless subaccount creds, box number, owner allowlist, and webhook are set. */
-export function twilioSmsGatewayEnabled(): boolean {
-  return Boolean(
-    envTrim("TWILIO_AUTH_TOKEN") &&
-      envTrim("TWILIO_ACCOUNT_SID") &&
-      envTrim("TWILIO_PHONE_NUMBER") &&
-      envTrim("TWILIO_OWNER_CALLER") &&
-      smsInboundWebhookUrl(),
-  );
 }
 
 function signatureValidationUrls(req: Request, publicBasePath: string): string[] {
@@ -92,32 +83,8 @@ function validateTwilioSmsSignature(
   return false;
 }
 
-function phonesMatch(a: string, b: string): boolean {
-  const na = normalizePhone(a);
-  const nb = normalizePhone(b);
-  if (!na || !nb) return false;
-  if (na === nb) return true;
-  // US 10-digit vs +1E164
-  const stripCountry = (p: string) => (p.startsWith("+1") ? p.slice(2) : p.replace(/^\+/, ""));
-  return stripCountry(na) === stripCountry(nb);
-}
-
 function keywordBody(body: string): string {
   return body.trim().replace(/\s+/g, " ").toUpperCase();
-}
-
-async function sendSmsReply(to: string, body: string): Promise<void> {
-  const accountSid = envTrim("TWILIO_ACCOUNT_SID");
-  const authToken = envTrim("TWILIO_AUTH_TOKEN");
-  const messagingServiceSid = envTrim("TWILIO_MESSAGING_SERVICE_SID");
-  const fromNumber = envTrim("TWILIO_PHONE_NUMBER");
-  const client = twilio(accountSid, authToken);
-  const text = body.slice(0, SMS_MAX_CHARS);
-  if (messagingServiceSid) {
-    await client.messages.create({ to, messagingServiceSid, body: text });
-  } else {
-    await client.messages.create({ to, from: fromNumber, body: text });
-  }
 }
 
 export function registerTwilioSmsRoutes(
@@ -125,15 +92,14 @@ export function registerTwilioSmsRoutes(
   runner: HermesApiRunner,
   publicBasePath = envTrim("PUBLIC_BASE_PATH"),
 ): void {
-  if (!twilioSmsGatewayEnabled()) {
+  if (!twilioSmsAccountReady()) {
     console.info(
-      "[twilio-sms] disabled (set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, TWILIO_OWNER_CALLER, TWILIO_SMS_WEBHOOK_URL or TWILIO_VOICE_WEBHOOK_URL)",
+      "[twilio-sms] disabled (set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, TWILIO_SMS_WEBHOOK_URL or TWILIO_VOICE_WEBHOOK_URL)",
     );
     return;
   }
 
   const authToken = envTrim("TWILIO_AUTH_TOKEN");
-  const ownerCaller = envTrim("TWILIO_OWNER_CALLER");
   const webhookUrl = smsInboundWebhookUrl()!;
   const systemPrompt =
     envTrim("TWILIO_SMS_SYSTEM_PROMPT") ||
@@ -156,33 +122,45 @@ export function registerTwilioSmsRoutes(
     const messageSid = typeof req.body?.MessageSid === "string" ? req.body.MessageSid : "";
     console.info(`[twilio-sms] inbound from=${from} sid=${messageSid} body=${body.slice(0, 120)}`);
 
-    // Ack immediately; reply via REST (long Hermes turn).
+    // Ack immediately; reply via REST (long Hermes turn or approval handling).
     res.type("text/xml").send("<Response></Response>");
 
     void (async () => {
       try {
+        const ownerCaller = ownerSmsPhone();
+        if (!ownerCaller) {
+          console.warn(
+            "[twilio-sms] inbound ignored — set owner mobile in Telephone (or TWILIO_OWNER_CALLER)",
+          );
+          return;
+        }
         if (!phonesMatch(from, ownerCaller)) {
-          await sendSmsReply(
+          await sendSms(
             from,
             "Joshu SMS is owner-only. This number does not accept texts from unknown senders.",
           );
           return;
         }
 
+        // Action-guard Y/N takes priority over keyword handlers and Hermes chat.
+        if (await handleSmsApprovalIngress(from, body, process.cwd())) {
+          return;
+        }
+
         const kw = keywordBody(body);
         if (kw === "STOP" || kw === "STOPALL" || kw === "UNSUBSCRIBE" || kw === "CANCEL" || kw === "END" || kw === "QUIT") {
-          await sendSmsReply(from, "You are unsubscribed from Joshu SMS. Reply START to opt back in.");
+          await sendSms(from, "You are unsubscribed from Joshu SMS. Reply START to opt back in.");
           return;
         }
         if (kw === "HELP" || kw === "INFO") {
-          await sendSmsReply(
+          await sendSms(
             from,
             "Joshu owner-only SMS with your box. Msg frequency varies. Reply STOP to cancel. Support: info@joshu.me",
           );
           return;
         }
-        if (kw === "START" || kw === "YES" || kw === "UNSTOP") {
-          await sendSmsReply(from, "Joshu SMS enabled for this number. Text your box anytime.");
+        if (kw === "START" || kw === "UNSTOP") {
+          await sendSms(from, "Joshu SMS enabled for this number. Text your box anytime.");
           return;
         }
         if (!body.trim()) return;
@@ -206,14 +184,14 @@ export function registerTwilioSmsRoutes(
         );
         const reply = markdownSpeechPlaintext(finalText).trim();
         if (!reply) {
-          await sendSmsReply(from, "I didn't have a reply for that — try again or reply HELP.");
+          await sendSms(from, "I didn't have a reply for that — try again or reply HELP.");
           return;
         }
-        await sendSmsReply(from, reply);
+        await sendSms(from, reply);
       } catch (err) {
         console.warn("[twilio-sms] inbound handler error:", err);
         try {
-          await sendSmsReply(from, "Joshu hit an error processing that text. Please try again shortly.");
+          await sendSms(from, "Joshu hit an error processing that text. Please try again shortly.");
         } catch {
           /* ignore secondary failure */
         }
@@ -226,7 +204,7 @@ export function registerTwilioSmsRoutes(
       ok: true,
       gateway: "twilio-sms",
       webhookUrlConfigured: Boolean(webhookUrl),
-      ownerConfigured: Boolean(ownerCaller),
+      ownerConfigured: Boolean(ownerSmsPhone()),
       messagingServiceConfigured: Boolean(envTrim("TWILIO_MESSAGING_SERVICE_SID")),
     });
   });

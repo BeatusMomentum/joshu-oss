@@ -1,5 +1,5 @@
 import type { Request, Response, Router } from "express";
-import { normalizeE164, readTelephoneStatus } from "./resolve.js";
+import { normalizeE164, normalizeOwnerMobile, readTelephoneStatus } from "./resolve.js";
 import { writeTelephoneSettingsFile } from "./store.js";
 
 /** Two spoken English words (or a short phrase) — keep STT-friendly. */
@@ -36,9 +36,10 @@ export function registerTelephoneRoutes(
     const body = (req.body ?? {}) as {
       thinkPassword?: string;
       phoneNumber?: string;
+      ownerCaller?: string;
     };
     try {
-      const updates: { thinkPassword?: string; phoneNumber?: string } = {};
+      const updates: { thinkPassword?: string; phoneNumber?: string; ownerCaller?: string } = {};
       if (typeof body.thinkPassword === "string") {
         updates.thinkPassword = validateThinkPassword(body.thinkPassword);
       }
@@ -49,18 +50,33 @@ export function registerTelephoneRoutes(
         }
         updates.phoneNumber = n;
       }
+      if (typeof body.ownerCaller === "string") {
+        const n = normalizeOwnerMobile(body.ownerCaller);
+        if (body.ownerCaller.trim() && !n) {
+          throw new Error("Owner mobile looks invalid — use a full number with country code (e.g. +1…)");
+        }
+        updates.ownerCaller = n;
+      }
       if (!Object.keys(updates).length) {
-        res.status(400).json({ error: "Provide thinkPassword and/or phoneNumber" });
+        res.status(400).json({ error: "Provide thinkPassword, phoneNumber, and/or ownerCaller" });
         return;
       }
       writeTelephoneSettingsFile(updates, projectRoot);
+      const notes: string[] = [];
+      if (updates.thinkPassword !== undefined) {
+        notes.push("Passphrase saved. New inbound calls will use it immediately.");
+      }
+      if (updates.ownerCaller !== undefined) {
+        notes.push(
+          updates.ownerCaller
+            ? "Owner mobile saved. SMS approvals and the owner voice greeting use it immediately."
+            : "Owner mobile cleared. SMS approvals stay off until a number is set again.",
+        );
+      }
       res.json({
         ok: true,
         telephone: readTelephoneStatus(projectRoot),
-        note:
-          updates.thinkPassword !== undefined
-            ? "Passphrase saved. New inbound calls will use it immediately."
-            : "Saved.",
+        note: notes.join(" ") || "Saved.",
       });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });

@@ -11,7 +11,6 @@ import {
   waitForPendingDecision,
 } from "./pending.js";
 import { notifyOwnerForApproval } from "../ownerChannel/notify.js";
-import { attachSlackReplyPollingForPending } from "../ownerChannel/slackReplyPoll.js";
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -170,16 +169,7 @@ export async function awaitOwnerApproval(
     throw err;
   }
 
-  let stopSlackPoll: (() => void) | undefined;
-  const slackPoll = attachSlackReplyPollingForPending(pending.id, projectRoot);
-  if (slackPoll) stopSlackPoll = slackPoll.stop;
-
-  let decision: PendingDecision;
-  try {
-    decision = await waitForPendingDecision(pending.id, policy.approvalTimeoutMs, projectRoot);
-  } finally {
-    stopSlackPoll?.();
-  }
+  let decision = await waitForPendingDecision(pending.id, policy.approvalTimeoutMs, projectRoot);
 
   appendAuditEntry(
     {

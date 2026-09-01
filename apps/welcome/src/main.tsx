@@ -10,6 +10,7 @@ import { createRoot } from "react-dom/client";
 const API = "/joshu/api/onboarding";
 const BOX_SECRETS_API = "/joshu/api/box-secrets";
 const NYLAS = "/joshu/api/nylas";
+const TELEPHONE_API = "/joshu/api/telephone";
 
 /** Essentials-only flow. Soft prefs (tools, VIPs, channel dials) stay in draft JSON if already saved. */
 type StepId = "welcome" | "connect-ai" | "big-picture" | "communication" | "review";
@@ -145,6 +146,41 @@ function withEmailContacts(
   };
 }
 
+function normalizeOwnerMobile(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length >= 11) return `+${digits}`;
+  return "";
+}
+
+/** Keep owner mobile in communicationContacts.sms for complete() → Telephone settings. */
+function withSmsContact(draft: Draft, mobile: string): Partial<Draft> {
+  const contacts = { ...draft.communicationContacts };
+  const channels = new Set(draft.communicationChannels);
+  const trimmed = mobile.trim();
+  if (trimmed) {
+    contacts.sms = trimmed;
+    channels.add("sms");
+  } else {
+    delete contacts.sms;
+    channels.delete("sms");
+  }
+  return {
+    communicationContacts: contacts,
+    communicationChannels: [...channels],
+  };
+}
+
+function withNormalizedSms(d: Draft): Draft {
+  const raw = d.communicationContacts.sms?.trim() ?? "";
+  if (!raw) return d;
+  const n = normalizeOwnerMobile(raw);
+  if (!n || n === raw) return d;
+  return { ...d, ...withSmsContact(d, n) };
+}
+
 function toggleInList(list: string[], item: string): string[] {
   return list.includes(item) ? list.filter((x) => x !== item) : [...list, item];
 }
@@ -263,12 +299,14 @@ function App() {
 
   const workEmail = draft.communicationContacts["work-email"] ?? "";
   const personalEmail = draft.communicationContacts["personal-email"] ?? "";
+  const ownerMobile = draft.communicationContacts.sms ?? "";
 
   const load = useCallback(async () => {
-    const [statusRes, draftRes, secretsRes] = await Promise.all([
+    const [statusRes, draftRes, secretsRes, telephoneRes] = await Promise.all([
       fetch(`${API}/status`),
       fetch(`${API}/draft`),
       fetch(`${BOX_SECRETS_API}/status`),
+      fetch(TELEPHONE_API).catch(() => null),
     ]);
     const status = (await statusRes.json()) as {
       completed?: boolean;
@@ -310,6 +348,11 @@ function App() {
     const draftBody = (await draftRes.json()) as {
       draft?: (Partial<Draft> & { primaryWorkEmail?: string; personalEmail?: string }) | null;
     };
+    const telephoneBody =
+      telephoneRes && telephoneRes.ok
+        ? ((await telephoneRes.json()) as { telephone?: { ownerCaller?: string } })
+        : null;
+    const telephoneOwner = telephoneBody?.telephone?.ownerCaller?.trim() ?? "";
     setDraft((prev) => {
       const pickName = (...candidates: (string | undefined)[]) => {
         for (const value of candidates) {
@@ -324,10 +367,12 @@ function App() {
       const legacyPersonal = saved.personalEmail?.trim() || status.profile?.personalEmail?.trim();
       if (legacyWork && !contacts["work-email"]) contacts["work-email"] = legacyWork;
       if (legacyPersonal && !contacts["personal-email"]) contacts["personal-email"] = legacyPersonal;
+      if (telephoneOwner && !contacts.sms) contacts.sms = telephoneOwner;
       if (legacyWork && !normalizedChannels.includes("work-email")) normalizedChannels.push("work-email");
       if (legacyPersonal && !normalizedChannels.includes("personal-email")) {
         normalizedChannels.push("personal-email");
       }
+      if (contacts.sms && !normalizedChannels.includes("sms")) normalizedChannels.push("sms");
 
       return {
         ...prev,
@@ -381,6 +426,10 @@ function App() {
 
   const setPersonalEmail = (value: string) => {
     setDraft((d) => ({ ...d, ...withEmailContacts(d, { work: d.communicationContacts["work-email"], personal: value }) }));
+  };
+
+  const setOwnerMobile = (value: string) => {
+    setDraft((d) => ({ ...d, ...withSmsContact(d, value) }));
   };
 
   const saveConnectAi = async (): Promise<boolean> => {
@@ -492,9 +541,18 @@ function App() {
       setError("Select a time zone.");
       return;
     }
+    if (stepId === "communication") {
+      const mobile = draft.communicationContacts.sms?.trim() ?? "";
+      if (mobile && !normalizeOwnerMobile(mobile)) {
+        setError("Enter a full mobile number with country code (for example +1 555 123 4567).");
+        return;
+      }
+    }
     setBusy(true);
     try {
-      await saveDraft(draft);
+      const payload = withNormalizedSms(draft);
+      setDraft(payload);
+      await saveDraft(payload);
       setStep((s) => Math.min(s + 1, lastStep));
     } catch (e) {
       setError((e as Error).message);
@@ -546,7 +604,7 @@ function App() {
     const wasCompleted = alreadyCompleted;
     try {
       const payload = {
-        ...draft,
+        ...withNormalizedSms(draft),
         vips: draft.vips.filter((v) => v.who.trim()),
       };
       const res = await fetch(`${API}/complete`, {
@@ -699,7 +757,8 @@ function App() {
               <h2>Schedule & email</h2>
               <p className="welcome-hint">
                 Work email is where morning/evening briefs go. Time zone and hours set when automated EA cron jobs
-                run (morning pointer, evening shutdown, weekly review).
+                run (morning pointer, evening shutdown, weekly review). Your mobile is where Joshu texts write
+                approvals (reply Y or N).
               </p>
               <Field label="Work email" hint="Daily brief destination">
                 <input
@@ -715,6 +774,19 @@ function App() {
                   value={personalEmail}
                   onChange={(e) => setPersonalEmail(e.target.value)}
                   placeholder="you@gmail.com"
+                />
+              </Field>
+              <Field
+                label="Your mobile (optional)"
+                hint="SMS approvals and recognizing you on inbound calls. You can also set this later in Telephone."
+              >
+                <input
+                  type="tel"
+                  autoComplete="tel"
+                  inputMode="tel"
+                  value={ownerMobile}
+                  onChange={(e) => setOwnerMobile(e.target.value)}
+                  placeholder="+1 555 123 4567"
                 />
               </Field>
               <Field label="Time zone">
@@ -768,6 +840,11 @@ function App() {
                 <li>
                   <strong>Work email</strong> for pointer summaries: {workEmail || "—"}
                 </li>
+                {ownerMobile ? (
+                  <li>
+                    <strong>Your mobile</strong> for SMS approvals: {ownerMobile}
+                  </li>
+                ) : null}
                 {nylasProvisioned ? (
                   <li>
                     <strong>Agent mailbox</strong>: {assistantEmail}

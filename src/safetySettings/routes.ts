@@ -9,7 +9,6 @@ import {
   verifyHermesSlackSetup,
 } from "../hermesSlackSetup.js";
 import { notifyOwnerForApproval } from "../ownerChannel/notify.js";
-import { attachSlackReplyPollingForPending } from "../ownerChannel/slackReplyPoll.js";
 import { readSafetySettings, writeSafetySettings, type SafetySettingsUpdate } from "./store.js";
 
 export function registerSafetySettingsRoutes(
@@ -110,15 +109,10 @@ export function registerSafetySettingsRoutes(
         { note: "Safety Settings test approval" },
         projectRoot,
       );
-      const slackPoll = attachSlackReplyPollingForPending(pending.id, projectRoot);
-      if (slackPoll) {
-        setTimeout(() => slackPoll.stop(), policy.approvalTimeoutMs);
-      }
       res.json({
         ok: true,
         pendingId: pending.id,
-        message:
-          "Test sent — reply Y or N in your Slack approval channel (reply after the new message appears).",
+        message: "Test sent — reply Y or N by SMS to approve or deny.",
       });
     } catch (err) {
       cleanupPending(pending.id, projectRoot);

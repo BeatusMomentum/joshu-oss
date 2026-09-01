@@ -1,5 +1,5 @@
 /**
- * Owner telephone settings (PSTN number display + think passphrase override).
+ * Owner telephone settings (box number display, owner mobile, think passphrase).
  * Lives under the Aroz user `.joshu/` tree so voice-realtime can read the same file
  * via the shared joshu_arozos volume.
  */
@@ -12,6 +12,8 @@ export type TelephoneSettings = {
   phoneNumber?: string;
   /** Spoken unlock passphrase for PSTN think/Hermes. */
   thinkPassword?: string;
+  /** Owner mobile E.164 — SMS allowlist + voice owner greeting. */
+  ownerCaller?: string;
 };
 
 function settingsPath(projectRoot = process.cwd()): string | null {
@@ -40,6 +42,9 @@ export function readTelephoneSettingsFile(projectRoot = process.cwd()): Telephon
     if (typeof parsed.thinkPassword === "string" && parsed.thinkPassword.trim()) {
       out.thinkPassword = parsed.thinkPassword.trim();
     }
+    if (typeof parsed.ownerCaller === "string" && parsed.ownerCaller.trim()) {
+      out.ownerCaller = parsed.ownerCaller.trim();
+    }
     return out;
   } catch {
     return {};
@@ -64,6 +69,11 @@ export function writeTelephoneSettingsFile(
     const v = updates.thinkPassword.trim();
     if (v) next.thinkPassword = v;
     else delete next.thinkPassword;
+  }
+  if (updates.ownerCaller !== undefined) {
+    const v = updates.ownerCaller.trim();
+    if (v) next.ownerCaller = v;
+    else delete next.ownerCaller;
   }
 
   fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });

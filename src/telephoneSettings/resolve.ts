@@ -1,5 +1,5 @@
 /**
- * Resolve PSTN phone number + think passphrase for the Telephone app and Twilio gateway.
+ * Resolve PSTN phone number, think passphrase, and owner mobile for Telephone / Twilio.
  * Precedence: `.joshu/telephone/settings.json` → `/etc/joshu/instance.env` → process.env.
  */
 import { provisionEnvTrim } from "../provisionInstanceEnv.js";
@@ -45,15 +45,41 @@ export function resolvePhoneNumber(projectRoot = process.cwd()): string {
   return "";
 }
 
+/**
+ * Owner mobile as E.164. 10-digit US numbers get +1.
+ * Empty string if the input cannot be a plausible mobile.
+ */
+export function normalizeOwnerMobile(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length >= 11) return `+${digits}`;
+  return "";
+}
+
+/** Owner cell for SMS allowlist + voice owner vs guest greeting. */
+export function resolveOwnerCaller(projectRoot = process.cwd()): string {
+  const fromFile = readTelephoneSettingsFile(projectRoot).ownerCaller;
+  if (fromFile) return normalizeOwnerMobile(fromFile);
+  const fromProvision = provisionEnvTrim("TWILIO_OWNER_CALLER");
+  if (fromProvision) return normalizeOwnerMobile(fromProvision);
+  return normalizeOwnerMobile(process.env.TWILIO_OWNER_CALLER?.trim() ?? "");
+}
+
 export type TelephoneStatus = {
   phoneNumber: string;
   phoneNumberDisplay: string;
   thinkPassword: string;
   thinkPasswordConfigured: boolean;
+  ownerCaller: string;
+  ownerCallerDisplay: string;
+  ownerCallerConfigured: boolean;
   pstnEnabled: boolean;
   sources: {
     phoneNumber: "settings-file" | "env" | "unset";
     thinkPassword: "settings-file" | "env" | "unset";
+    ownerCaller: "settings-file" | "env" | "unset";
   };
 };
 
@@ -61,6 +87,7 @@ export function readTelephoneStatus(projectRoot = process.cwd()): TelephoneStatu
   const file = readTelephoneSettingsFile(projectRoot);
   const phoneNumber = resolvePhoneNumber(projectRoot);
   const thinkPassword = resolveThinkPassword(projectRoot);
+  const ownerCaller = resolveOwnerCaller(projectRoot);
   const phoneSource: TelephoneStatus["sources"]["phoneNumber"] = file.phoneNumber
     ? "settings-file"
     : phoneNumber
@@ -69,6 +96,11 @@ export function readTelephoneStatus(projectRoot = process.cwd()): TelephoneStatu
   const passSource: TelephoneStatus["sources"]["thinkPassword"] = file.thinkPassword
     ? "settings-file"
     : thinkPassword
+      ? "env"
+      : "unset";
+  const ownerSource: TelephoneStatus["sources"]["ownerCaller"] = file.ownerCaller
+    ? "settings-file"
+    : ownerCaller
       ? "env"
       : "unset";
 
@@ -89,7 +121,10 @@ export function readTelephoneStatus(projectRoot = process.cwd()): TelephoneStatu
     phoneNumberDisplay: phoneNumber ? formatPhoneDisplay(phoneNumber) : "",
     thinkPassword,
     thinkPasswordConfigured: Boolean(thinkPassword),
+    ownerCaller,
+    ownerCallerDisplay: ownerCaller ? formatPhoneDisplay(ownerCaller) : "",
+    ownerCallerConfigured: Boolean(ownerCaller),
     pstnEnabled: Boolean(auth && media && webhook && thinkPassword),
-    sources: { phoneNumber: phoneSource, thinkPassword: passSource },
+    sources: { phoneNumber: phoneSource, thinkPassword: passSource, ownerCaller: ownerSource },
   };
 }

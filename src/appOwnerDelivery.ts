@@ -1,9 +1,8 @@
 /**
- * Notify box owner via configured owner channel (Slack / Telegram).
+ * Notify box owner via SMS when Twilio owner gateway is configured.
  */
 
-import { readOwnerChannelConfig } from "./ownerChannel/config.js";
-import { sendSlackViaComposio, sendTelegramViaComposio } from "./ownerChannel/composioSend.js";
+import { ownerSmsPhone, sendSms, twilioSmsGatewayEnabled } from "./twilioSmsSend.js";
 
 export type AppOwnerDeliveryInput = {
   appId: string;
@@ -12,48 +11,19 @@ export type AppOwnerDeliveryInput = {
   link?: string;
 };
 
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/** Send a short app event summary to owner Slack/Telegram when configured. */
+/** Send a short app event summary to the owner by SMS when configured. */
 export async function notifyOwnerAppEvent(
   input: AppOwnerDeliveryInput,
   projectRoot: string,
 ): Promise<{ delivered: boolean; channels: string[] }> {
-  const cfg = readOwnerChannelConfig(projectRoot);
-  if (!cfg) return { delivered: false, channels: [] };
+  if (!twilioSmsGatewayEnabled(projectRoot)) return { delivered: false, channels: [] };
 
-  const channels: string[] = [];
+  const phone = ownerSmsPhone(projectRoot);
+  if (!phone) return { delivered: false, channels: [] };
+
   const body = input.link
-    ? `${input.summary}\n\n${input.link}`
-    : input.summary;
-  const telegramText = `<b>${escapeHtml(input.title)}</b>\n${escapeHtml(body)}`;
-  const slackText = `*${input.title}*\n${body}`;
-
-  if (cfg.notify.telegramChatId?.trim()) {
-    await sendTelegramViaComposio(
-      {
-        chatId: cfg.notify.telegramChatId.trim(),
-        text: telegramText,
-        connectedAccountId: cfg.connectedAccountId,
-      },
-      projectRoot,
-    );
-    channels.push("telegram");
-  }
-
-  if (cfg.notify.slackDmChannelId?.trim()) {
-    await sendSlackViaComposio(
-      {
-        channel: cfg.notify.slackDmChannelId.trim(),
-        text: slackText,
-        connectedAccountId: cfg.connectedAccountId,
-      },
-      projectRoot,
-    );
-    channels.push("slack");
-  }
-
-  return { delivered: channels.length > 0, channels };
+    ? `${input.title}\n${input.summary}\n\n${input.link}`
+    : `${input.title}\n${input.summary}`;
+  await sendSms(phone, body);
+  return { delivered: true, channels: ["sms"] };
 }

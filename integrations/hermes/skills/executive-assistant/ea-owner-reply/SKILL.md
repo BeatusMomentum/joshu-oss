@@ -39,7 +39,7 @@ kanban_show()
    - `replyToMessageId` = ingress `message_id`
    - parent **subject** (must match or Joshu returns `reply_subject_mismatch`)
    - `sourcePath` = mirror path
-   - Owner-only recipients bypass action guard; mixed threads may prompt Telegram.
+   - Owner-only recipients bypass action guard; mixed threads may prompt SMS.
 6. **`kanban_complete`** if the deliverable was emailed. **`kanban_block("awaiting owner")`** only if the reply asked a **real** question the owner must answer.
 7. Never **delete/trash** Gmail or Nylas. Never send **scheduling slots** — `scheduling_list_meeting_tasks` / hand off to **`ea-scheduling`**.
 

@@ -75,7 +75,7 @@ TWILIO_THINK_PASSWORD=harbor lantern
 TWILIO_PHONE_NUMBER=+15551234567
 
 # Optional
-# TWILIO_OWNER_CALLER=+15559876543   # your cell — slightly different greeting for others
+# TWILIO_OWNER_CALLER=+15559876543   # your cell — or set it in Telephone; slightly different greeting for others
 ```
 
 ### Required for PSTN
@@ -246,10 +246,10 @@ TWILIO_AUTH_TOKEN=…
 TWILIO_PHONE_NUMBER=+1…
 TWILIO_MESSAGING_SERVICE_SID=MG…          # recommended after A2P
 TWILIO_SMS_WEBHOOK_URL=https://<host>/joshu/api/twilio/sms/inbound
-TWILIO_OWNER_CALLER=+1…                   # owner mobile — inbound allowlist
+TWILIO_OWNER_CALLER=+1…                   # optional env fallback; or set owner mobile in Telephone
 ```
 
-Health: `GET /joshu/api/twilio/sms/health`. Keywords STOP / HELP / START are handled locally. Action-guard **approvals** remain Telegram/Slack — not SMS yet.
+Health: `GET /joshu/api/twilio/sms/health`. Keywords STOP / HELP / START are handled locally. When action guard is enabled, inbound **Y** / **N** (also yes/no/approve/deny) is consumed as HITL approval **before** Hermes chat — see [`agent-safety.md`](../agent-safety.md#owner-approval-sms).
 
 **Hermes tool surface (2026-08-26):** Joshu writes `platform_toolsets.sms: [memory, session_search, skills]` and SMS calls Hermes with `X-Hermes-Platform-Toolsets: sms` so owner texts do not inherit jChat’s full `api_server` surface (including Kanban worker lifecycle guidance). Self-hosters on Hermes **v0.14+** need the Joshu Hermes patches in `scripts/patch-hermes-kanban-guidance-gate.py` and `scripts/patch-hermes-api-server-platform-toolsets.py` (or [upstream PR #95857](https://github.com/NousResearch/hermes-agent/pull/95857) once merged). Optional: `TWILIO_SMS_SYSTEM_PROMPT` for per-box SMS copy.
 

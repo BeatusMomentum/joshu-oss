@@ -1,14 +1,9 @@
 import type { ActionGuardGateMode } from "../actionGuard/policy.js";
 
-export type OwnerChannelProvider = "telegram" | "slack";
+export type OwnerChannelProvider = "sms";
 
 export type OwnerChannelConfig = {
   provider: OwnerChannelProvider;
-  connectedAccountId?: string;
-  notify: {
-    telegramChatId?: string;
-    slackDmChannelId?: string;
-  };
   gateMode?: ActionGuardGateMode;
   updatedAt: string;
 };
@@ -16,9 +11,7 @@ export type OwnerChannelConfig = {
 export type OwnerChannelStatus = {
   linked: boolean;
   provider?: OwnerChannelProvider;
-  connectedAccountId?: string;
-  telegramChatId?: string;
-  slackDmChannelId?: string;
+  /** Masked owner phone (last 4 digits). */
+  ownerPhone?: string;
   gateMode?: ActionGuardGateMode;
-  legacyTelegramFallback: boolean;
 };

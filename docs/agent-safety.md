@@ -17,7 +17,7 @@ Joshu owns **agent write safety** end-to-end. Composio is OAuth and transport; H
 
 1. **Joshu decides** what is blocked, gated, or allowed — deterministically where possible.
 2. **Owner channel** is notification + approve/deny ingress only; it does not replace policy.
-3. **One HITL gate** — every gated path (`awaitOwnerApproval` in [`gate.ts`](../src/actionGuard/gate.ts)) shares one pending store and one resolve path. Slack reply polling, Telegram callbacks, and signed URL decide links are **ingress only**; they call `resolvePending` — not separate safety systems.
+3. **One HITL gate** — every gated path (`awaitOwnerApproval` in [`gate.ts`](../src/actionGuard/gate.ts)) shares one pending store and one resolve path. Inbound SMS Y/N replies via [`smsIngress.ts`](../src/actionGuard/smsIngress.ts) call `resolvePending` — not separate safety systems.
 4. **Same gate for every agent path** — Hermes MCP, `execute_code`, `curl`, browser writes, and Composio SDK calls that hit Joshu should converge on the same rules.
 5. **Owner human UI bypasses** — jMail compose and owner browser sessions (jWeb / noVNC) are not agent paths.
 
@@ -28,7 +28,7 @@ Joshu owns **agent write safety** end-to-end. Composio is OAuth and transport; H
 | Tier | When | Owner sees | Agent sees on block/deny |
 |------|------|------------|--------------------------|
 | **1 — Hard block** | Always-on policy (`mcpToolPolicy`) | Nothing (tool never listed or explicit error) | Error: use Nylas send / no delete / no Nylas calendar write |
-| **2 — HITL (action guard)** | Enabled + owner channel linked or approval bot configured | Approve / Deny on owner 1:1 (Telegram or Slack) | Success-shaped stub (no side effect) or timeout stub |
+| **2 — HITL (action guard)** | Enabled + owner SMS configured (Telephone mobile or `TWILIO_OWNER_CALLER`) | Approve / Deny by SMS (reply Y/N) | Success-shaped stub (no side effect) or timeout stub |
 | **3 — Soft deny (LLM classifier)** | Optional; ambiguous actions only | Same as tier 2 if escalated to HITL | Classifier may skip gate when below threshold |
 
 Hard blocks run **before** HITL. Example: Composio `GMAIL_SEND_EMAIL` is hard-blocked by MCP policy — it never reaches the approval flow. Agent mail must use `nylas_send_message` (tier 2 when guard is on).
@@ -57,7 +57,7 @@ flowchart TB
   end
 
   subgraph owner [Owner]
-    DM[Telegram / Slack 1:1]
+    SMS[Owner SMS]
   end
 
   MCP --> Conn
@@ -69,8 +69,8 @@ flowchart TB
   REST --> Gate
   Term --> REST
   Browser --> Gate
-  Gate --> DM
-  DM --> Gate
+  Gate --> SMS
+  SMS --> Gate
   Gate -->|approved| REST
   CompGuard -->|approved| ComposioCloud[Composio cloud]
 ```
@@ -96,7 +96,7 @@ When action guard is enabled, Hermes `mcp_servers.composio.url` points at `http:
 | Terminal mail bypass block | [`scripts/patch-hermes-terminal-mail-guard.mjs`](../scripts/patch-hermes-terminal-mail-guard.mjs) |
 | Browser write gate (Hermes) | [`scripts/patch-hermes-camofox-action-guard.mjs`](../scripts/patch-hermes-camofox-action-guard.mjs) → `POST …/api/action-guard/browser` |
 | Browser gate logic | [`src/actionGuard/browserGate.ts`](../src/actionGuard/browserGate.ts) |
-| Slack Y/N reply polling | [`src/ownerChannel/slackReplyPoll.ts`](../src/ownerChannel/slackReplyPoll.ts) |
+| SMS approval ingress | [`src/actionGuard/smsIngress.ts`](../src/actionGuard/smsIngress.ts) (via [`twilioSmsGateway.ts`](../src/twilioSmsGateway.ts)) |
 | Safety settings API + UI | [`src/safetySettings/`](../src/safetySettings/), [`apps/safety-settings/`](../apps/safety-settings/) |
 
 ---
@@ -121,7 +121,7 @@ API: `GET /joshu/api/mcp-tool-policy`
 
 ## Tier 2 — Action guard (HITL)
 
-Before an **agent write** that affects third parties, Joshu notifies the owner on the **owner 1:1 channel** with Approve / Deny. Deny and timeout return **success-shaped stubs** so the agent does not retry blindly; no write occurs.
+Before an **agent write** that affects third parties, Joshu texts the owner on **SMS** (Telephone owner mobile, or `TWILIO_OWNER_CALLER`) with a Y/N approval prompt. Deny and timeout return **success-shaped stubs** so the agent does not retry blindly; no write occurs.
 
 ### Gate modes
 
@@ -170,9 +170,9 @@ camofox_click / camofox_type / camofox_press
 Action guard is active when **all** of:
 
 1. `enabled: true` (`JOSHU_ACTION_GUARD_ENABLED` or `policy.json`)
-2. Owner channel linked **or** `JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN` set (env or `.joshu/safety-settings/local-env.json`)
+2. Owner SMS configured (owner mobile in **Telephone** / Welcome, or `TWILIO_OWNER_CALLER`, plus Twilio account/number/webhook — `twilioSmsGatewayEnabled()`)
 
-If guard is enabled but neither channel nor bot is configured, agent sends return **503** `action_guard_telegram_not_linked` (Joshu stays up).
+If guard is enabled but SMS is not configured, agent sends return **503** `owner_channel_sms_not_configured` (Joshu stays up).
 
 ### MCP timeout vs approval wait
 
@@ -185,52 +185,36 @@ Status: `GET /joshu/api/action-guard/status`
 
 ---
 
-## Owner 1:1 channel
+## Owner approval (SMS)
 
-Unified channel for **write approvals** (v1). Plain-text owner chat ingress is stubbed for future use.
+Action-guard write approvals use **owner SMS only** — the same Twilio gateway as owner ↔ Joshu chat.
 
-| Provider | Link | Delivery | Approve / deny |
-|----------|------|----------|----------------|
-| **Telegram** | `/start` on approval bot, or paste chat ID | Bot API or Composio send | Inline **Approve** / **Deny** buttons |
-| **Slack** | Composio Slack OAuth + channel ID (`D…` self-DM, or private channel `C…` e.g. `#my-approvals`) | Composio `SLACK_SEND_MESSAGE` (Block Kit — companion avatar + name in message body) | Reply **Y** or **N** in channel (`yes`/`no`/`approve`/`deny` also accepted) |
+The owner mobile is captured on the box:
 
-**Not Hermes Slack chat:** owner-channel Slack uses **Composio** only (approvals). Full agent chat in Slack is a separate Hermes Socket Mode app — configure in **Safety → Hermes Slack chat** ([hermes-integration — Slack chat](hermes-integration.md#slack-chat-hermes-messaging-gateway)).
+1. **Telephone** → Your mobile (`.joshu/telephone/settings.json` `ownerCaller`)
+2. **Welcome** Schedule & email (same file on complete)
+3. Fallback: `TWILIO_OWNER_CALLER` in `instance.env` (ops `rotate_secrets`)
 
-### Slack approval flow (v1)
+| Step | Behavior |
+|------|----------|
+| Notify | `notifyOwnerForApproval` sends a plain-text SMS summary + “Reply Y to approve or N to deny” |
+| Ingress | Inbound SMS on `/api/twilio/sms/inbound` → `handleSmsApprovalIngress` before Hermes chat routing |
+| Resolve | Y/N (also `yes`/`no`/`approve`/`deny`) → `resolvePending` on the newest open pending |
 
-1. **`notifyOwnerForApproval`** posts a Block Kit message: companion **avatar + name** context row (`resolveJoshuIdentity`), action id, **full** preview fields (recipients, subject, email body — no truncation; long bodies split across section blocks), and “Reply with *Y* or *N*”. Composio does not support per-message `username`/`icon_url` — identity is **in-message** only.
-2. While the pending is open, **`attachSlackReplyPollingForPending`** polls conversation history via Composio `SLACK_FETCH_CONVERSATION_HISTORY` (default **8s** interval; **30s** backoff on `ratelimited`).
-3. **`parseSlackApprovalReply`** maps the owner’s message → `resolvePending` (same gate as Telegram).
-4. **`confirmSlackApprovalDecision`** posts ✅/❌ confirmation (also Block Kit with companion context).
+**Configure:** Twilio subaccount vars on the box — see [`vps-sandbox/twilio-self-host.md`](vps-sandbox/twilio-self-host.md). Enable action guard in **Safety** or `JOSHU_ACTION_GUARD_ENABLED=1`. Test: **Safety → Test approval** — reply Y or N by SMS.
 
-**Fallback:** signed URL links `GET /joshu/api/owner-channel/slack/decide?…` (useful when polling is slow or on VPS — set `JOSHU_OWNER_CHANNEL_PUBLIC_URL` to the public box URL). Interactive Block Kit **buttons** were dropped in v1 (app interactivity not configured); Y/N reply is primary UX.
+**Not Hermes Slack/Telegram chat:** those remain separate agent chat surfaces in **Safety → Hermes Slack chat** / `TELEGRAM_BOT_TOKEN` ([hermes-integration](hermes-integration.md)).
 
-**Configure**
+**Storage:** optional `.joshu/owner-channel/owner-channel.json` for `gateMode` override only. Owner mobile lives in Telephone settings (then `TWILIO_OWNER_CALLER`).
 
-- **Safety → Owner 1:1 channel** (provider + chat/DM ID; Telegram `/start` to the action-guard bot)
-- **Safety** app → Owner 1:1 channel section (manual chat IDs)
-- API: `GET/PUT /joshu/api/connectors/owner-channel`, `POST /joshu/api/owner-channel/await`, `POST /joshu/api/owner-channel/test`
-- Test: **Safety → Test approval** or Connectors test — reply Y/N in Slack; polling runs until policy timeout.
-
-**Storage:** `.joshu/owner-channel/owner-channel.json` (migrates legacy `.joshu/action-guard/telegram.json`)
-
-Legacy `JOSHU_ACTION_GUARD_TELEGRAM_*` env vars still work until owner channel is linked.
-
-**Two Telegram bots (do not conflate)**
-
-| Bot | Env | Purpose |
-|-----|-----|---------|
-| Action-guard / approval | `JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN` | HITL Approve/Deny |
-| Hermes 1:1 chat | `TELEGRAM_BOT_TOKEN` | Owner ↔ agent chat (jChat / Telegram gateway) |
-
-**Four Slack integrations (do not conflate)**
+**Slack / Telegram integrations (agent tools & chat — not action guard)**
 
 | Integration | Config | Purpose |
 |-------------|--------|---------|
-| Owner approval channel | Connectors + Composio user `slack`; channel ID in Safety/Connectors | HITL Y/N only |
 | Composio Slack | Connectors OAuth (`slack`) | Agent MCP tools (`SLACK_SEND_MESSAGE`, …) |
 | Hermes Slack chat | Safety → `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` | Full agent chat (Socket Mode) |
-| Share-chat Slackbot | Connectors toolkit **`slackbot`** (in-app setup wizard) + Chat sharing dialog | KB-scoped channel Q&A (scoped RAG only; see [share-chat.md](share-chat.md)) |
+| Hermes Telegram chat | Safety → `TELEGRAM_BOT_TOKEN` | Owner ↔ agent chat |
+| Share-chat Slackbot | Connectors toolkit **`slackbot`** | KB-scoped channel Q&A ([share-chat.md](share-chat.md)) |
 
 ---
 
@@ -285,13 +269,10 @@ This keeps SDK and MCP paths aligned without relying on Composio-hosted modifier
 | `JOSHU_ACTION_GUARD_BROWSER_GATE` | Gate Camofox writes |
 | `JOSHU_ACTION_GUARD_LLM` | Soft classifier for ambiguous actions |
 | `JOSHU_ACTION_GUARD_TIMEOUT_MS` | Approval wait (default 30m) |
-| `JOSHU_ACTION_GUARD_TELEGRAM_BOT_TOKEN` | Approval bot |
-| `JOSHU_ACTION_GUARD_TELEGRAM_ALLOWED_USERS` | Approver user ID allowlist |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`, `TWILIO_SMS_WEBHOOK_URL` | Twilio SMS gateway — see managed fleet A2P runbook (not in OSS) |
+| `TWILIO_OWNER_CALLER` | Optional env fallback for owner mobile (Telephone / Welcome preferred) |
 | `JOSHU_TERMINAL_MAIL_GUARD` | Terminal mail bypass block (default on) |
-| `JOSHU_OWNER_CHANNEL_PROVIDER` | `telegram` \| `slack` |
-| `JOSHU_OWNER_CHANNEL_PUBLIC_URL` | Public Joshu base for Slack decide links on VPS |
-| `JOSHU_COMPOSIO_SLACK_TOOLKIT_VERSION` | Optional Composio Slack toolkit pin (owner-channel notify) |
-| `TELEGRAM_BOT_TOKEN` | Hermes chat bot (separate from approval bot) |
+| `TELEGRAM_BOT_TOKEN` | Hermes chat bot (separate from action guard) |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | Hermes Slack chat (Socket Mode) |
 | `SLACK_ALLOWED_USERS` | Required allowlist of Slack member IDs (`U…`) for Hermes chat |
 | `SLACK_HOME_CHANNEL`, `SLACK_ALLOWED_CHANNELS` | Optional Hermes Slack routing |
@@ -303,9 +284,9 @@ See [`.env.example`](../.env.example) for full list.
 
 | File | Contents |
 |------|----------|
-| `.joshu/action-guard/policy.json` | Gate mode, timeouts, browser gate, LLM, MCP policy toggle, allowlist |
-| `.joshu/owner-channel/owner-channel.json` | Provider, DM targets, Composio account id |
-| `.joshu/safety-settings/local-env.json` | Bot tokens, Slack/Telegram messaging, terminal guard when not in `.env` |
+| `.joshu/action-guard/policy.json` | Gate mode, timeouts, browser gate, LLM, MCP policy toggle |
+| `.joshu/owner-channel/owner-channel.json` | Optional `gateMode` override (`provider` is always `sms`) |
+| `.joshu/safety-settings/local-env.json` | Hermes Slack/Telegram chat tokens, terminal guard when not in `.env` |
 | `.joshu/action-guard/audit.jsonl` | Approval audit trail |
 
 **Precedence:** process `.env` overrides UI for keys present at boot. Policy file merges with env for non-env-locked fields.
@@ -319,19 +300,18 @@ See [`.env.example`](../.env.example) for full list.
 | `/joshu/api/safety-settings/slack-setup` | GET | Hermes Slack setup steps + status |
 | `/joshu/api/safety-settings/slack-manifest` | POST | Generate Hermes Slack app manifest |
 | `/joshu/api/safety-settings/slack-verify` | POST | Verify Slack bot/app tokens |
-| `/joshu/api/safety-settings/test-approval` | POST | Send test approval to owner channel |
-| `/joshu/api/action-guard/status` | GET | Guard + Telegram/owner channel status |
-| `/joshu/api/connectors/owner-channel` | GET/PUT | Owner channel config (Connectors UI) |
+| `/joshu/api/safety-settings/test-approval` | POST | Send test approval SMS |
+| `/joshu/api/action-guard/status` | GET | Guard + SMS owner-channel status |
+| `/joshu/api/connectors/owner-channel` | GET/PUT | Owner channel status (`provider: sms`) |
 | `/joshu/api/owner-channel/await` | POST | Internal: MCP proxy approval wait |
 | `/joshu/api/action-guard/browser` | POST | Internal: Hermes Camofox write gate |
-| `/joshu/api/owner-channel/slack/decide` | GET | Signed approve/deny URL fallback (Slack) |
 | `/joshu/api/mcp-tool-policy` | GET | Hard policy snapshot for proxies |
 
 ---
 
 ## Safety desktop app
 
-The **Safety** ArozOS app is the operator UI for tiers 1–2 and owner channel IDs. Full detail: [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md).
+The **Safety** ArozOS app is the operator UI for tiers 1–2 and SMS approval status. Full detail: [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md).
 
 Quick start:
 
@@ -347,13 +327,12 @@ npm run dev:safety-settings # Vite only on :3010
 
 ## Operational checklist
 
-1. Enable action guard in **Safety** or env; link owner channel in **Safety** (Telegram `/start` or paste chat ID).
-2. **Telegram:** set approval bot token (env or Safety → Bot tokens). **Slack:** Composio Slack OAuth + channel ID (`C…` or `D…`).
-3. Confirm: `curl -fsS http://127.0.0.1:8788/joshu/api/action-guard/status | jq .` → `ownerChannelLinked: true`.
-4. Test: **Safety → Test approval** — Telegram buttons or Slack **Y/N** reply.
-5. **Browser writes (optional):** enable **Gate browser writes** in Safety; run `scripts/apply-hermes-hitl-patch.sh`; restart Hermes gateway.
-6. Verify Composio guard: Hermes config `mcp_servers.composio.url` → `http://127.0.0.1:8796/mcp`.
-7. After policy/token/browser-gate/messaging changes affecting Hermes: **Safety → Restart gateway**, or `GET …/hermes-chat/status?after_mcp_boot=1` on VPS.
+1. Enable action guard in **Safety** or env; set owner mobile in **Telephone** (or `TWILIO_OWNER_CALLER`) and Twilio SMS.
+2. **Test:** Safety → Test approval — reply Y or N by SMS.
+3. Confirm: `curl -fsS http://127.0.0.1:8788/joshu/api/action-guard/status | jq .` → `ownerChannelLinked: true`, `smsConfigured: true`.
+4. **Browser writes (optional):** enable **Gate browser writes** in Safety; run `scripts/apply-hermes-hitl-patch.sh`; restart Hermes gateway.
+5. Verify Composio guard: Hermes config `mcp_servers.composio.url` → `http://127.0.0.1:8796/mcp`.
+6. After policy/browser-gate/messaging changes affecting Hermes: **Safety → Restart gateway**, or `GET …/hermes-chat/status?after_mcp_boot=1` on VPS.
 
 ---
 
@@ -361,8 +340,8 @@ npm run dev:safety-settings # Vite only on :3010
 
 - Egress allowlist for `execute_code` / arbitrary `curl`
 - Stripping API keys from shell environment
-- Full owner ↔ agent chat demux on approval bot (ingress stubbed)
+- Full owner ↔ agent chat demux on approval SMS (chat and approvals share one inbound webhook; Y/N is handled first)
 - Composio-hosted `beforeExecute` modifiers (Joshu-owned only)
-- Slack Events API / thread replies (polling v1; Events API backlog)
-- Slack Block Kit interactive **buttons** (Y/N reply is primary UX; companion identity uses in-message Block Kit context)
+- Slack Events API / thread replies for approvals (SMS only for HITL)
+- Slack Block Kit interactive **buttons** for approvals
 - Browser `evaluate` / `submit` Hermes hooks (click/type/press only)

@@ -1,19 +1,13 @@
 import type { Request, Response, Router } from "express";
 import { awaitOwnerApproval } from "../actionGuard/gate.js";
 import { isActionGuardEnabled, loadActionGuardPolicy } from "../actionGuard/policy.js";
+import { createPending, cleanupPending } from "../actionGuard/pending.js";
 import {
-  defaultOwnerChannelProvider,
   ownerChannelStatus,
   readOwnerChannelConfig,
   writeOwnerChannelConfig,
 } from "./config.js";
-import { handleOwnerChannelTelegramUpdate } from "./ingress/telegram.js";
-import { handleOwnerChannelSlackInteractivity } from "./ingress/slack.js";
-import { handleSlackApprovalDecideQuery } from "./ingress/slackDecide.js";
-import { attachSlackReplyPollingForPending } from "./slackReplyPoll.js";
 import { notifyOwnerForApproval } from "./notify.js";
-import { createPending, cleanupPending } from "../actionGuard/pending.js";
-import type { OwnerChannelProvider } from "./types.js";
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -65,9 +59,6 @@ export function registerOwnerChannelRoutes(router: Router, opts: { projectRoot: 
 
   router.put("/api/connectors/owner-channel", (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const providerRaw = readString(body.provider).toLowerCase();
-    const provider: OwnerChannelProvider =
-      providerRaw === "slack" ? "slack" : providerRaw === "telegram" ? "telegram" : defaultOwnerChannelProvider();
     const existing = readOwnerChannelConfig(projectRoot);
     const gateModeRaw = readString(body.gateMode);
     const gateMode =
@@ -77,12 +68,7 @@ export function registerOwnerChannelRoutes(router: Router, opts: { projectRoot: 
 
     writeOwnerChannelConfig(
       {
-        provider,
-        connectedAccountId: readString(body.connectedAccountId) || existing?.connectedAccountId,
-        notify: {
-          telegramChatId: readString(body.telegramChatId) || existing?.notify.telegramChatId,
-          slackDmChannelId: readString(body.slackDmChannelId) || existing?.notify.slackDmChannelId,
-        },
+        provider: "sms",
         gateMode,
         updatedAt: new Date().toISOString(),
       },
@@ -112,15 +98,10 @@ export function registerOwnerChannelRoutes(router: Router, opts: { projectRoot: 
         { note: readString(body.note) || "Test approval from Connectors" },
         projectRoot,
       );
-      const slackPoll = attachSlackReplyPollingForPending(pending.id, projectRoot);
-      if (slackPoll) {
-        setTimeout(() => slackPoll.stop(), policy.approvalTimeoutMs);
-      }
       res.json({
         ok: true,
         pendingId: pending.id,
-        message:
-          "Test sent — reply Y or N in your Slack approval channel (polling active until policy timeout).",
+        message: "Test sent — reply Y or N by SMS to approve or deny.",
       });
     } catch (err) {
       cleanupPending(pending.id, projectRoot);
@@ -129,60 +110,6 @@ export function registerOwnerChannelRoutes(router: Router, opts: { projectRoot: 
         error: err instanceof Error && "code" in err ? (err as { code: string }).code : "owner_channel_test_failed",
         message: err instanceof Error ? err.message : String(err),
       });
-    }
-  });
-
-  router.post("/api/owner-channel/telegram/webhook", async (req: Request, res: Response) => {
-    const secret = process.env.JOSHU_OWNER_CHANNEL_TELEGRAM_WEBHOOK_SECRET?.trim()
-      || process.env.JOSHU_ACTION_GUARD_TELEGRAM_WEBHOOK_SECRET?.trim();
-    if (secret) {
-      const header = readString(req.headers["x-telegram-bot-api-secret-token"]);
-      if (header !== secret) {
-        res.status(401).json({ error: "invalid webhook secret" });
-        return;
-      }
-    }
-    try {
-      await handleOwnerChannelTelegramUpdate(req.body ?? {}, projectRoot);
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-
-  router.get("/api/owner-channel/slack/decide", async (req: Request, res: Response) => {
-    try {
-      const result = await handleSlackApprovalDecideQuery(
-        {
-          pending: readString(req.query.pending),
-          decision: readString(req.query.decision),
-          exp: readString(req.query.exp),
-          sig: readString(req.query.sig),
-        },
-        projectRoot,
-      );
-      res.status(result.status).type("html").send(result.html);
-    } catch (err) {
-      res.status(500).type("html").send(`<html><body><p>${err instanceof Error ? err.message : String(err)}</p></body></html>`);
-    }
-  });
-
-  router.post("/api/owner-channel/slack/interactivity", async (req: Request, res: Response) => {
-    const rawBody = typeof req.body === "string" ? req.body : "";
-    let payload: Record<string, unknown> = {};
-    if (typeof req.body === "object" && req.body && "payload" in (req.body as object)) {
-      const encoded = readString((req.body as { payload?: unknown }).payload);
-      payload = encoded ? JSON.parse(encoded) : {};
-    } else if (rawBody.startsWith("payload=")) {
-      payload = JSON.parse(decodeURIComponent(rawBody.slice("payload=".length)));
-    } else if (req.body && typeof req.body === "object") {
-      payload = req.body as Record<string, unknown>;
-    }
-    try {
-      const result = await handleOwnerChannelSlackInteractivity(payload, projectRoot);
-      res.json(result);
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 }

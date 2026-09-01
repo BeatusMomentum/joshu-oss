@@ -3,6 +3,8 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { resolveJoshuFilesPaths } from "../joshuFilesPaths.js";
 import { updateAgentProfile } from "../nylas/profile.js";
+import { writeTelephoneSettingsFile } from "../telephoneSettings/store.js";
+import { normalizeOwnerMobile } from "../telephoneSettings/resolve.js";
 import { readAgentGrant } from "../nylas/store.js";
 import { writeJoshuIdentity } from "../joshuIdentity.js";
 import type { OnboardingDraft } from "./types.js";
@@ -210,6 +212,19 @@ export async function completeOnboarding(
     },
     projectRoot,
   );
+
+  const ownerMobile = normalizeOwnerMobile(resolved.communicationContacts?.sms ?? "");
+  if (ownerMobile) {
+    try {
+      writeTelephoneSettingsFile({ ownerCaller: ownerMobile }, projectRoot);
+    } catch (err) {
+      console.warn(
+        `[onboarding] could not write owner mobile to telephone settings: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
 
   writeJoshuIdentity(
     {

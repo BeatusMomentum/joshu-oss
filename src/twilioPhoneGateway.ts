@@ -25,7 +25,7 @@ import {
   rmsInt16,
 } from "./hermesVoiceVad.js";
 import { markdownSpeechPlaintext } from "./markdownSpeechPlaintext.js";
-import { resolveThinkPassword } from "./telephoneSettings/resolve.js";
+import { resolveOwnerCaller, resolveThinkPassword } from "./telephoneSettings/resolve.js";
 
 const SAMPLE_RATE = 8000;
 /** Twilio frames near 20ms; encode outbound similarly */
@@ -540,7 +540,7 @@ export function registerTwilioVoiceRoutes(
 
     const callSid = typeof req.body?.CallSid === "string" ? req.body.CallSid : "";
     const from = typeof req.body?.From === "string" ? req.body.From : "";
-    const ownerCaller = envTrim("TWILIO_OWNER_CALLER");
+    const ownerCaller = resolveOwnerCaller();
     console.info(`[twilio-phone] inbound voice callSid=${callSid} from=${from}`);
 
     const vr = new twilio.twiml.VoiceResponse();

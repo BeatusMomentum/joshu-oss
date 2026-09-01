@@ -13,21 +13,26 @@ type TelephoneStatus = {
   phoneNumberDisplay: string;
   thinkPassword: string;
   thinkPasswordConfigured: boolean;
+  ownerCaller: string;
+  ownerCallerDisplay: string;
+  ownerCallerConfigured: boolean;
   pstnEnabled: boolean;
   sources: {
     phoneNumber: "settings-file" | "env" | "unset";
     thinkPassword: "settings-file" | "env" | "unset";
+    ownerCaller: "settings-file" | "env" | "unset";
   };
 };
 
 function App() {
   const [status, setStatus] = useState<TelephoneStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState<"passphrase" | "owner" | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [draftPassphrase, setDraftPassphrase] = useState("");
+  const [draftOwnerCaller, setDraftOwnerCaller] = useState("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -39,6 +44,7 @@ function App() {
       setStatus(json.telephone);
       // Never prefill the edit box with the live passphrase — Show/Hide covers that.
       setDraftPassphrase("");
+      setDraftOwnerCaller(json.telephone.ownerCaller || "");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -50,28 +56,46 @@ function App() {
     void refresh();
   }, [refresh]);
 
+  const putTelephone = async (body: Record<string, string>) => {
+    const res = await fetch(API, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as { error?: string; telephone?: TelephoneStatus; note?: string };
+    if (!res.ok) throw new Error(json.error || res.statusText);
+    if (json.telephone) {
+      setStatus(json.telephone);
+      setDraftOwnerCaller(json.telephone.ownerCaller || "");
+    }
+    setMessage(json.note || "Saved.");
+  };
+
   const savePassphrase = async () => {
-    setSaving(true);
+    setSaving("passphrase");
     setError("");
     setMessage("");
     try {
-      const res = await fetch(API, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thinkPassword: draftPassphrase }),
-      });
-      const json = (await res.json()) as { error?: string; telephone?: TelephoneStatus; note?: string };
-      if (!res.ok) throw new Error(json.error || res.statusText);
-      if (json.telephone) {
-        setStatus(json.telephone);
-        setDraftPassphrase("");
-        setShowPassphrase(false);
-      }
-      setMessage(json.note || "Passphrase saved.");
+      await putTelephone({ thinkPassword: draftPassphrase });
+      setDraftPassphrase("");
+      setShowPassphrase(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      setSaving(null);
+    }
+  };
+
+  const saveOwnerCaller = async () => {
+    setSaving("owner");
+    setError("");
+    setMessage("");
+    try {
+      await putTelephone({ ownerCaller: draftOwnerCaller.trim() });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(null);
     }
   };
 
@@ -90,7 +114,9 @@ function App() {
       <header>
         <p className="eyebrow">Joshu</p>
         <h1>Telephone</h1>
-        <p className="sub">Your box phone number and spoken unlock passphrase for inbound calls.</p>
+        <p className="sub">
+          Box number, your mobile (SMS approvals), and the spoken unlock passphrase for inbound calls.
+        </p>
       </header>
 
       {error ? <div className="banner error">{error}</div> : null}
@@ -129,6 +155,45 @@ function App() {
       </section>
 
       <section className="card">
+        <h2>Your mobile</h2>
+        <p className="hint muted" style={{ marginTop: 0 }}>
+          Joshu texts this number for write approvals (reply Y/N) and uses it to recognize you on
+          inbound calls. This is <em>your</em> cell, not the box number above.
+        </p>
+        {status?.ownerCallerConfigured ? (
+          <p className="muted" style={{ marginBottom: "0.85rem" }}>
+            Current: {status.ownerCallerDisplay || status.ownerCaller}
+            {status.sources.ownerCaller === "env" ? " (from box env)" : ""}
+          </p>
+        ) : (
+          <p className="muted">No owner mobile yet — SMS approvals stay off until one is saved.</p>
+        )}
+        <div className="field">
+          <label htmlFor="owner-caller">Mobile number</label>
+          <input
+            id="owner-caller"
+            type="tel"
+            autoComplete="tel"
+            inputMode="tel"
+            value={draftOwnerCaller}
+            onChange={(e) => setDraftOwnerCaller(e.target.value)}
+            placeholder="+1 555 123 4567"
+          />
+          <p className="hint">Saved on this box. Takes effect immediately — no restart.</p>
+        </div>
+        <div className="actions">
+          <button
+            type="button"
+            className="primary"
+            disabled={saving !== null}
+            onClick={() => void saveOwnerCaller()}
+          >
+            {saving === "owner" ? "Saving…" : "Save mobile"}
+          </button>
+        </div>
+      </section>
+
+      <section className="card">
         <h2>Think passphrase</h2>
         <p className="hint muted" style={{ marginTop: 0 }}>
           Callers must say this phrase at the start of every call (three wrong tries hang up). Prefer
@@ -161,10 +226,10 @@ function App() {
           <button
             type="button"
             className="primary"
-            disabled={saving || !draftPassphrase.trim()}
+            disabled={saving !== null || !draftPassphrase.trim()}
             onClick={() => void savePassphrase()}
           >
-            {saving ? "Saving…" : "Save passphrase"}
+            {saving === "passphrase" ? "Saving…" : "Save passphrase"}
           </button>
         </div>
       </section>
