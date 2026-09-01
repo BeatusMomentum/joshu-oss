@@ -14,6 +14,7 @@ import {
   XQUIK_RELAY_SENTINEL,
   sanitizePathNoYtdlp,
   writeConfigFile,
+  resolveLast30DaysEngine,
 } from "../src/last30days/config.ts";
 import { buildHardenedEnv, hardenArgv } from "../src/last30days/runner.ts";
 import {
@@ -167,6 +168,7 @@ testWatchingSkillSupport();
 testWritingStyleMarkdown();
 testQueryPlan();
 testLast30daysStatePaths();
+testEngineResolution();
 console.log("all last30days config/runner unit checks passed");
 
 function testExaEnvPassThrough() {
@@ -727,5 +729,54 @@ function testLast30daysStatePaths() {
     fs.rmSync(projectRoot, { recursive: true, force: true });
     fs.rmSync(arozData, { recursive: true, force: true });
     fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+function testEngineResolution() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "l30d-eng-"));
+  const projectRoot = path.join(tmp, "proj");
+  const emptyMount = path.join(projectRoot, "integrations", "last30days-skill");
+  const baked = path.join(tmp, "image-skill");
+  const envRoot = path.join(tmp, "env-skill");
+  const pyRel = path.join("skills", "last30days", "scripts", "last30days.py");
+  fs.mkdirSync(emptyMount, { recursive: true });
+  fs.mkdirSync(path.dirname(path.join(baked, pyRel)), { recursive: true });
+  fs.writeFileSync(path.join(baked, pyRel), "# baked\n");
+  fs.mkdirSync(path.dirname(path.join(envRoot, pyRel)), { recursive: true });
+  fs.writeFileSync(path.join(envRoot, pyRel), "# env\n");
+
+  const prevImage = process.env.LAST30DAYS_IMAGE_ENGINE_ROOT;
+  const prevEngine = process.env.LAST30DAYS_ENGINE_ROOT;
+  try {
+    delete process.env.LAST30DAYS_ENGINE_ROOT;
+    process.env.LAST30DAYS_IMAGE_ENGINE_ROOT = baked;
+    const missingMount = resolveLast30DaysEngine(projectRoot);
+    assert.equal(missingMount.source, "image", "empty bind-mount must not hide image copy");
+    assert.equal(missingMount.present, true);
+    assert.equal(missingMount.script, path.join(baked, pyRel));
+
+    process.env.LAST30DAYS_ENGINE_ROOT = envRoot;
+    const fromEnv = resolveLast30DaysEngine(projectRoot);
+    assert.equal(fromEnv.source, "env");
+    assert.equal(fromEnv.root, envRoot);
+
+    fs.mkdirSync(path.dirname(path.join(emptyMount, pyRel)), { recursive: true });
+    fs.writeFileSync(path.join(emptyMount, pyRel), "# project\n");
+    const fromProject = resolveLast30DaysEngine(projectRoot);
+    assert.equal(fromProject.source, "project");
+    assert.ok(fromProject.script.startsWith(emptyMount));
+
+    delete process.env.LAST30DAYS_ENGINE_ROOT;
+    process.env.LAST30DAYS_IMAGE_ENGINE_ROOT = path.join(tmp, "no-such-image");
+    const gone = resolveLast30DaysEngine(path.join(tmp, "no-engine"));
+    assert.equal(gone.source, "missing");
+    assert.equal(gone.present, false);
+    console.log("ok engine resolution fallback");
+  } finally {
+    if (prevImage === undefined) delete process.env.LAST30DAYS_IMAGE_ENGINE_ROOT;
+    else process.env.LAST30DAYS_IMAGE_ENGINE_ROOT = prevImage;
+    if (prevEngine === undefined) delete process.env.LAST30DAYS_ENGINE_ROOT;
+    else process.env.LAST30DAYS_ENGINE_ROOT = prevEngine;
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 }

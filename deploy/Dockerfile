@@ -264,6 +264,14 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
 RUN node scripts/copy-runtime-assets.mjs --check \
     && test -f apps/share-chat/index.html
 
+# last30days engine is gitignored; CI must run sync-last30days-skill.sh before docker build.
+# Bake a second copy outside integrations/ so a future bind-mount cannot shadow it.
+RUN test -f integrations/last30days-skill/skills/last30days/scripts/last30days.py \
+    || (echo "ERROR: last30days engine missing; run scripts/sync-last30days-skill.sh before docker build" >&2; exit 1)
+RUN mkdir -p /opt/joshu/.image \
+    && cp -a integrations/last30days-skill /opt/joshu/.image/last30days-skill \
+    && test -f /opt/joshu/.image/last30days-skill/skills/last30days/scripts/last30days.py
+
 # Camofox 1.6+ ships plugins.vnc.enabled=false; ENABLE_VNC alone never loads the plugin.
 RUN python3 - <<'PY'
 import json
@@ -291,6 +299,7 @@ ENV PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin
     HERMES_BIN=${HERMES_DIR}/venv/bin/hermes \
     HERMES_AGENT_REF=${HERMES_AGENT_REF} \
     LAST30DAYS_PYTHON=/opt/joshu/.local/python312/bin/python3.12 \
+    LAST30DAYS_IMAGE_ENGINE_ROOT=/opt/joshu/.image/last30days-skill \
     ENABLE_VNC=1 \
     NOVNC_URL=/novnc \
     NOVNC_PROXY_TARGET=http://127.0.0.1:6080 \

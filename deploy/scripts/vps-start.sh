@@ -917,6 +917,15 @@ ensure_last30days_python() {
 }
 ensure_last30days_python
 
+# Source so LAST30DAYS_ENGINE_ROOT (image fallback) is visible to node.
+ensure_last30days_engine() {
+  local script="${APP_DIR}/scripts/ensure-last30days-engine.sh"
+  [[ -f "${script}" ]] || return 0
+  # shellcheck disable=SC1090
+  source "${script}" || echo "[vps-start] WARN: last30days engine ensure failed" >&2
+}
+ensure_last30days_engine
+
 echo "[vps-start] Joshu ${HOST}:${PORT}"
 export JOSHU_DEFER_HERMES_GATEWAY_WARM=true
 ( cd "${APP_DIR}" && node dist/server.js ) &

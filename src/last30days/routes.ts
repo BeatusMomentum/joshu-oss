@@ -12,7 +12,7 @@ import {
   publicConfigView,
   readConfigFile,
   resolveConfigDir,
-  resolveEngineScript,
+  resolveLast30DaysEngine,
   resolvePythonBin,
   resolveWebBackendChoice,
   scrapeCreatorsRelayConfigured,
@@ -95,14 +95,15 @@ export function registerLast30DaysRoutes(router: Router, opts: { projectRoot: st
   initRunStore(projectRoot);
 
   router.get("/api/last30days/status", (_req: Request, res: Response) => {
-    const script = resolveEngineScript(projectRoot);
+    const engine = resolveLast30DaysEngine(projectRoot);
     const configDir = resolveConfigDir(undefined, projectRoot);
     const entries = readConfigFile(configDir);
     const webBackend = resolveWebBackendChoice(projectRoot, entries);
     res.json({
       ok: true,
-      enginePresent: fs.existsSync(script),
-      engineScript: script,
+      enginePresent: engine.present,
+      engineScript: engine.script,
+      engineSource: engine.source,
       python: resolvePythonBin(),
       configDir,
       config: publicConfigView(entries, projectRoot),

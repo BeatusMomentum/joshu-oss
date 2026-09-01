@@ -95,9 +95,11 @@ else
   unset COMPOSE_PROFILES 2>/dev/null || true
 fi
 
-# Host compose bind-mounts ../dist over the image; git clone leaves dist/ empty.
-if [[ ! -f "${INSTALL_DIR}/dist/server.js" ]]; then
-  echo "[bootstrap-vps] syncing dist/ from ${JOSHU_IMAGE_REF:-image}"
+# Host compose bind-mounts gitignored trees over the image (dist/, last30days-skill/).
+# git clone leaves those dirs empty and shadows the baked copies.
+LAST30DAYS_ENGINE="${INSTALL_DIR}/integrations/last30days-skill/skills/last30days/scripts/last30days.py"
+if [[ ! -f "${INSTALL_DIR}/dist/server.js" || ! -f "${LAST30DAYS_ENGINE}" ]]; then
+  echo "[bootstrap-vps] syncing dist/ + last30days-skill from ${JOSHU_IMAGE_REF:-image}"
   JOSHU_IMAGE_REF="${JOSHU_IMAGE_REF:?JOSHU_IMAGE_REF required}" \
     JOSHU_RELEASE_VERSION="${JOSHU_RELEASE_VERSION:-}" \
     bash "${INSTALL_DIR}/scripts/sync-dist-from-image.sh"

@@ -1,6 +1,7 @@
 /**
- * Sync host bind-mounted dist/ from a pulled Joshu sandbox image.
- * Host ../dist overrides image dist in compose — this keeps them aligned after release updates.
+ * Sync host bind-mounted dist/ (and last30days-skill) from a pulled Joshu sandbox image.
+ * Host ../dist and ../integrations/last30days-skill override the image in compose —
+ * this keeps them aligned after release updates / first boot.
  */
 
 import { execFile } from "node:child_process";
@@ -91,6 +92,16 @@ export async function syncDistFromImage(opts: {
     } catch (err) {
       console.warn(
         `[instance-agent] box-state dist sync skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    // Gitignored last30days engine — empty host dir shadows the image and research 400s.
+    const skillDir = path.join(installDir, "integrations", "last30days-skill");
+    try {
+      await dockerCp(cid, "/opt/joshu/integrations/last30days-skill", skillDir);
+      console.info(`[instance-agent] last30days-skill synced -> ${skillDir}`);
+    } catch (err) {
+      console.warn(
+        `[instance-agent] last30days-skill sync skipped: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   } finally {

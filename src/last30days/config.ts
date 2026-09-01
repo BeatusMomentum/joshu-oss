@@ -534,31 +534,91 @@ export function sanitizePathNoYtdlp(originalPath = process.env.PATH || ""): stri
   return kept.join(sep);
 }
 
+/** Relative path from an engine root to last30days.py. */
+const ENGINE_SCRIPT_SEGMENTS = ["skills", "last30days", "scripts", "last30days.py"] as const;
+
+export type Last30DaysEngineSource = "project" | "env" | "image" | "missing";
+
+export type Last30DaysEngineResolution = {
+  root: string;
+  script: string;
+  present: boolean;
+  source: Last30DaysEngineSource;
+};
+
+function engineScriptUnder(root: string): string {
+  return path.join(root, ...ENGINE_SCRIPT_SEGMENTS);
+}
+
+function isEngineRoot(root: string): boolean {
+  try {
+    return fs.existsSync(engineScriptUnder(root));
+  } catch {
+    return false;
+  }
+}
+
+/** Image-baked copy that compose must never bind-mount (empty host dir would shadow it). */
+export function imageBakedEngineRoot(): string {
+  const fromEnv = process.env.LAST30DAYS_IMAGE_ENGINE_ROOT?.trim();
+  if (fromEnv) return fromEnv;
+  return "/opt/joshu/.image/last30days-skill";
+}
+
+/**
+ * Prefer the project/bind-mount tree when last30days.py is there.
+ * Fall back to LAST30DAYS_ENGINE_ROOT, then the image-baked copy, so an empty
+ * gitignored host mount cannot take Research down.
+ */
+export function resolveLast30DaysEngine(projectRoot: string): Last30DaysEngineResolution {
+  const projectRootEngine = path.join(projectRoot, "integrations", "last30days-skill");
+  if (isEngineRoot(projectRootEngine)) {
+    return {
+      root: projectRootEngine,
+      script: engineScriptUnder(projectRootEngine),
+      present: true,
+      source: "project",
+    };
+  }
+  const envRoot = process.env.LAST30DAYS_ENGINE_ROOT?.trim();
+  if (envRoot && isEngineRoot(envRoot)) {
+    return {
+      root: envRoot,
+      script: engineScriptUnder(envRoot),
+      present: true,
+      source: "env",
+    };
+  }
+  const imageRoot = imageBakedEngineRoot();
+  if (isEngineRoot(imageRoot)) {
+    return {
+      root: imageRoot,
+      script: engineScriptUnder(imageRoot),
+      present: true,
+      source: "image",
+    };
+  }
+  return {
+    root: projectRootEngine,
+    script: engineScriptUnder(projectRootEngine),
+    present: false,
+    source: "missing",
+  };
+}
+
 export function resolveEngineRoot(projectRoot: string): string {
-  return path.join(projectRoot, "integrations", "last30days-skill");
+  return resolveLast30DaysEngine(projectRoot).root;
 }
 
 export function resolveEngineScript(projectRoot: string): string {
-  return path.join(
-    resolveEngineRoot(projectRoot),
-    "skills",
-    "last30days",
-    "scripts",
-    "last30days.py",
-  );
+  return resolveLast30DaysEngine(projectRoot).script;
 }
 
 export function resolveCompanionScript(
   projectRoot: string,
   name: "watchlist.py" | "store.py" | "briefing.py",
 ): string {
-  return path.join(
-    resolveEngineRoot(projectRoot),
-    "skills",
-    "last30days",
-    "scripts",
-    name,
-  );
+  return path.join(resolveEngineRoot(projectRoot), "skills", "last30days", "scripts", name);
 }
 
 /** True when a python binary resolves on PATH or as an absolute path. */

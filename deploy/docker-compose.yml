@@ -68,7 +68,10 @@ services:
       - ../packages/email-signature/dist:/opt/joshu/packages/email-signature/dist:ro
       - ../integrations/hermes/skills-enabled.yaml:/opt/joshu/integrations/hermes/skills-enabled.yaml:ro
       - ../integrations/hermes/skills:/opt/joshu/integrations/hermes/skills:ro
-      - ../integrations/last30days-skill:/opt/joshu/integrations/last30days-skill:ro
+      # last30days-skill is gitignored — do NOT bind-mount it. An empty host dir
+      # shadows the image-baked engine (Research 400 / Caddy 502 on first boot).
+      # Source of truth: image COPY + /opt/joshu/.image/last30days-skill fallback.
+      # Operator hotpatch: docker cp into the container (or next image).
       - ../factory/manifest.yaml:/opt/joshu/factory/manifest.yaml:ro
       - ../arozos/system-setting:/opt/joshu/arozos/system-setting:ro
       - ../arozos/locale:/opt/joshu/arozos/locale:ro
@@ -88,6 +91,7 @@ services:
       - ../scripts/gbrain-mcp-http-server.mjs:/opt/joshu/scripts/gbrain-mcp-http-server.mjs:ro
       - ../scripts/ensure-gbrain-indexed.sh:/opt/joshu/scripts/ensure-gbrain-indexed.sh:ro
       - ../scripts/ensure-last30days-python.sh:/opt/joshu/scripts/ensure-last30days-python.sh:ro
+      - ../scripts/ensure-last30days-engine.sh:/opt/joshu/scripts/ensure-last30days-engine.sh:ro
       - ../scripts/ensure-hermes-gbrain-mcp.mjs:/opt/joshu/scripts/ensure-hermes-gbrain-mcp.mjs:ro
       - ../scripts/joshu-connectors-mcp-http-server.mjs:/opt/joshu/scripts/joshu-connectors-mcp-http-server.mjs:ro
       - ../scripts/start-joshu-connectors-mcp.sh:/opt/joshu/scripts/start-joshu-connectors-mcp.sh:ro

@@ -15,6 +15,7 @@ import {
   type DistProvenanceStatus,
 } from "./distProvenance.js";
 import { resolveJoshuIdentity } from "./joshuIdentity.js";
+import { resolveLast30DaysEngine } from "./last30days/config.js";
 import {
   syncCompanionIdentityFromEnv,
   type CompanionIdentitySyncResult,
@@ -106,6 +107,7 @@ export interface InstanceHealthReport {
     // (a snapshot will run); `ok` = creds are usable. Surfaces a missing/broken SA key
     // BEFORE a managed update tries (and fails) to snapshot.
     snapshot: { ok: boolean; expected: boolean; reason?: string };
+    last30days: { ok: boolean; enginePresent: boolean; source: string };
   };
   uptimeSec: number;
 }
@@ -188,6 +190,8 @@ export function registerInstanceHealthRoutes(
       distStatus = { ...distStatus, ok: true, status: "updating" };
     }
 
+    const last30daysEngine = resolveLast30DaysEngine(process.cwd());
+
     const components = {
       joshu: { ok: true },
       camofox: { ok: camofox.reachable },
@@ -212,6 +216,11 @@ export function registerInstanceHealthRoutes(
         expected: snapshotCred.configured,
         ...(snapshotCred.reason ? { reason: snapshotCred.reason } : {}),
       },
+      last30days: {
+        ok: last30daysEngine.present,
+        enginePresent: last30daysEngine.present,
+        source: last30daysEngine.source,
+      },
     };
 
     const connectorsMcpRequired = deps.connectorsMcpRequired !== false;
@@ -223,7 +232,11 @@ export function registerInstanceHealthRoutes(
       components.camofox.ok &&
       components.hermes.ok &&
       components.dist.ok &&
-      (!connectorsMcpRequired || components.connectorsMcp.ok);
+      (!connectorsMcpRequired || components.connectorsMcp.ok) &&
+      // Fleet/Aroz boxes ship last30days; an empty gitignored bind-mount used to
+      // 400 Research while health stayed 200. Local npm start without the engine
+      // (no Aroz desktop) is unaffected.
+      (!arozosExpected || components.last30days.ok);
     // Overall health additionally reflects the desktop + edge when the box is
     // configured to serve them, so "site down" surfaces as 503 instead of 200.
     const healthy =
