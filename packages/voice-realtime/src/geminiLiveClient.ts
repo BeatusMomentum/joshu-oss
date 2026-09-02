@@ -122,6 +122,8 @@ export class GeminiLiveClient implements VoiceS2sClient {
           realtimeInputConfig: {
             automaticActivityDetection: this.vadConfig(),
           },
+          // Native-audio Live models auto-detect language; languageCode is unsupported.
+          // Wrong-language STT is classified unclear in userInputGate (do not burn passphrase tries).
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         },

@@ -37,6 +37,24 @@ function compact(text: string): string {
   return normalizePassphraseText(text).replace(/\s+/g, "");
 }
 
+/**
+ * Rough English phonetic skeleton so PSTN STT homophones match.
+ * "quartz" and "courts" both collapse to "krts" (Gideon 2026-09-01).
+ */
+function phoneticKey(word: string): string {
+  let s = word.toLowerCase();
+  s = s.replace(/ph/g, "f");
+  s = s.replace(/^gn/, "n").replace(/^kn/, "n").replace(/^wr/, "r");
+  s = s.replace(/qu/g, "k");
+  s = s.replace(/x/g, "ks");
+  s = s.replace(/z/g, "s");
+  s = s.replace(/c(?=[eiy])/g, "s");
+  s = s.replace(/c/g, "k");
+  s = s.replace(/[aeiouhwy]/g, "");
+  s = s.replace(/(.)\1+/g, "$1");
+  return s;
+}
+
 function tokenSimilar(a: string, b: string): boolean {
   if (a === b) return true;
   if (a.length < 2 || b.length < 2) return a === b;
@@ -44,7 +62,14 @@ function tokenSimilar(a: string, b: string): boolean {
   const maxLen = Math.max(a.length, b.length);
   const maxDist = maxLen <= 4 ? 1 : maxLen <= 7 ? 2 : 3;
   if (dist <= maxDist) return true;
-  return 1 - dist / maxLen >= 0.72;
+  if (1 - dist / maxLen >= 0.72) return true;
+  // Orthography can be far apart while the phone line sounds the same.
+  if (a.length >= 4 && b.length >= 4) {
+    const pa = phoneticKey(a);
+    const pb = phoneticKey(b);
+    if (pa && pb && pa === pb) return true;
+  }
+  return false;
 }
 
 /**

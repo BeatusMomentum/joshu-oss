@@ -15,6 +15,13 @@ test("fuzzy match accepts STT drift around a two-word passphrase", () => {
   assert.equal(matchesThinkPassphrase("hello there", secret), false);
 });
 
+test("phonetic match accepts quartz heard as courts (PSTN STT)", () => {
+  const secret = "quartz citadel";
+  assert.equal(matchesThinkPassphrase("Courts Citadel", secret), true);
+  assert.equal(matchesThinkPassphrase("quartz citadel", secret), true);
+  assert.equal(matchesThinkPassphrase("harbor lantern", secret), false);
+});
+
 test("passphrase-only turns are not task requests", () => {
   const secret = "Falken's Maze";
   assert.equal(isPassphraseOnlyTurn("Falcon's Maze", secret), true);
