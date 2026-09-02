@@ -1,11 +1,11 @@
 {
-  "version": "0.1.41",
+  "version": "0.1.43",
   "channel": "stable",
-  "imageRef": "ghcr.io/db-aeon/joshu-oss:0.1.41",
-  "voiceImageRef": "ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.41",
+  "imageRef": "ghcr.io/db-aeon/joshu-oss:0.1.43",
+  "voiceImageRef": "ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.43",
   "hermesRef": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
   "gbrainRef": "fa2c7a6990a7a57b251979ef6e1988ff09529021",
   "camofoxBase": "ghcr.io/jo-inc/camofox-browser@sha256:3ab61b4742105922aab6f8c99460f55563b6f93e906975383ddce16ec8917f3f",
-  "builtAt": "2026-08-22T05:15:00.000Z",
-  "notes": "0.1.41 - CWM dist fix; voice dictation; jChat multi-window; EA owner-reply; Watching/QueryPlan; Share Chat email Q&A; self-host DO quickstart"
+  "builtAt": "2026-09-02T22:20:00.000Z",
+  "notes": "0.1.43 - last30days engine (no empty bind-mount; image fallback); PSTN phonetic unlock + wrong-language STT; match fleet 0.1.43"
 }
