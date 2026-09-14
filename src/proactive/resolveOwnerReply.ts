@@ -11,6 +11,7 @@ import { getProactiveHermesRunner } from "./composeMessage.js";
 import { wakeProactiveTaskAfterOwnerReply } from "./replyRouter.js";
 import { readProactiveState, writeProactiveState } from "./state.js";
 import type { ProactiveLastNudge } from "./types.js";
+import { smsHermesAbortSignal } from "../twilioSmsConfig.js";
 
 export type ProactiveResolveContext = {
   taskId: string;
@@ -86,7 +87,14 @@ export async function prepareProactiveOwnerReply(opts: {
   }
 
   const state = readProactiveState(opts.projectRoot);
-  writeProactiveState({ ...state, feedbackPending: false }, opts.projectRoot);
+  writeProactiveState(
+    {
+      ...state,
+      feedbackPending: false,
+      lastOwnerReplyAt: new Date().toISOString(),
+    },
+    opts.projectRoot,
+  );
 
   // Enrich title/blockReason from live card when lastNudge was for a different task.
   if (!context.title) {
@@ -135,6 +143,7 @@ export function buildProactiveResolveSystemMessage(
       : null,
     "5. Reply to the owner with what you did or what you still need — conversational, not a status footer.",
     "Do not invent a thin 'got it, picking that up' ack without looking at the card.",
+    "Do not use session_search, execute_code, or terminal on SMS resolve — kanban_show + card context is enough.",
   ].filter((l): l is string => l !== null);
 
   return { role: "system", content: lines.join("\n") };
@@ -214,7 +223,7 @@ export async function resolveProactiveOwnerReply(opts: {
         sessionId: resolveSessionKey,
         sessionKey: resolveSessionKey,
         messages,
-        signal: AbortSignal.timeout(180_000),
+        signal: smsHermesAbortSignal(),
       },
       {},
     );

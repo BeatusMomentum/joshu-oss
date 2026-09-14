@@ -2,7 +2,7 @@
  * Multi Google Calendar account discovery + registry (Composio googlecalendar toolkit).
  */
 import { getOrCreateComposioSession, isComposioEnabled, resolveComposioUserId } from "../../composioApi.js";
-import { composioClient } from "./client.js";
+import { listActiveConnectedAccounts } from "./connectedAccountsList.js";
 import { resolveGmailAccountKey } from "./gmailAccounts.js";
 import { fetchGoogleCalendarList } from "./calendar.js";
 import { readConnectorsRegistry, writeConnectorsRegistry, type ConnectorsRegistry } from "../registry.js";
@@ -16,35 +16,17 @@ export type CalendarRegistryAccount = {
   isDefault?: boolean;
 };
 
-type ComposioConnectedAccountRow = {
-  id: string;
-  status?: string;
-  toolkit?: { slug?: string };
-  appName?: string;
-  appUniqueId?: string;
-};
-
-async function listComposioCalendarConnectedAccounts(
-  projectRoot: string,
-): Promise<ComposioConnectedAccountRow[]> {
+async function listComposioCalendarConnectedAccounts(projectRoot: string) {
   if (!isComposioEnabled()) return [];
   await getOrCreateComposioSession(projectRoot);
   const userId = resolveComposioUserId(projectRoot);
-  const composio = composioClient();
-  const listFn = (
-    composio.connectedAccounts as {
-      list: (params: { userIds: string[]; toolkitSlugs?: string[] }) => Promise<{
-        items?: ComposioConnectedAccountRow[];
-      }>;
-    }
-  ).list;
-
-  const result = await listFn({ userIds: [userId], toolkitSlugs: ["googlecalendar"] });
-  const items = result.items ?? [];
+  const items = await listActiveConnectedAccounts({
+    userIds: [userId],
+    toolkitSlugs: ["googlecalendar"],
+  });
   return items.filter((row) => {
     const slug = row.toolkit?.slug?.toLowerCase() ?? row.appUniqueId?.toLowerCase() ?? "";
-    const active = (row.status ?? "ACTIVE").toUpperCase() === "ACTIVE";
-    return active && (slug === "googlecalendar" || slug.includes("calendar"));
+    return slug === "googlecalendar" || slug.includes("calendar");
   });
 }
 

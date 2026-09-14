@@ -24,6 +24,11 @@ import { extractHardDates, isDateStaleForNudge } from "../src/proactive/stale.js
 import { rankCandidate, isProjectActiveForNudge } from "../src/proactive/prioritize.js";
 import { extractSchedulingTaskIdsFromText } from "../src/proactive/schedulingHandoff.js";
 import { proactiveResolveSessionKey, buildProactiveResolveSystemMessage } from "../src/proactive/resolveOwnerReply.js";
+import {
+  shouldRouteOwnerReplyToProactiveResolve,
+  resolveProactiveFollowUpWindowMs,
+} from "../src/proactive/ownerReplyRouting.js";
+import { resolveSmsHermesTimeoutMs, SMS_HERMES_TIMEOUT_MS_DEFAULT } from "../src/twilioSmsConfig.js";
 import { normalizeKanbanCreatedAtMs } from "../src/proactive/crossBoardKanban.js";
 import { sortHygieneCandidates } from "../src/proactive/hygienePrepare.js";
 import { pickTopStaleReviewCandidate, recordHygieneRun } from "../src/proactive/hygieneRecord.js";
@@ -230,6 +235,56 @@ const defaultPrefs = {
   assert.equal(isProjectActiveForNudge(filesRoot, "missing-slug"), true);
   assert.equal(isProjectActiveForNudge(filesRoot, undefined), true);
   fs.rmSync(root, { recursive: true, force: true });
+}
+
+// proactive follow-up routing (second SMS after first resolve)
+{
+  const nudgeAt = "2026-09-14T16:00:32.710Z";
+  const replyAt = "2026-09-14T18:20:00.000Z";
+  const base = {
+    ...factoryProactiveState("2026-09-14"),
+    lastNudge: {
+      taskId: "t_b590a811",
+      board: "project-joshu-venture-investing",
+      sentAt: nudgeAt,
+      channel: "sms",
+    },
+    feedbackPending: false,
+    lastOwnerReplyAt: replyAt,
+  };
+  const nowInside = Date.parse(replyAt) + 30 * 60_000;
+  assert.equal(
+    shouldRouteOwnerReplyToProactiveResolve(base, "Nah, most of those are Spam really", {
+      nowMs: nowInside,
+    }),
+    true,
+    "follow-up within window should route to proactive resolve",
+  );
+  const windowMs = resolveProactiveFollowUpWindowMs();
+  const nowOutside = Date.parse(replyAt) + windowMs + 60_000;
+  assert.equal(
+    shouldRouteOwnerReplyToProactiveResolve(base, "random chat", { nowMs: nowOutside }),
+    false,
+    "unrelated text after follow-up window should not hijack proactive router",
+  );
+  assert.equal(
+    shouldRouteOwnerReplyToProactiveResolve(
+      { ...base, feedbackPending: true },
+      "first reply",
+      { nowMs: nowInside },
+    ),
+    true,
+    "feedbackPending still routes first reply",
+  );
+}
+
+// SMS Hermes timeout default bumped from 180s
+{
+  const prev = process.env.JOSHU_SMS_HERMES_TIMEOUT_MS;
+  delete process.env.JOSHU_SMS_HERMES_TIMEOUT_MS;
+  assert.equal(resolveSmsHermesTimeoutMs(), SMS_HERMES_TIMEOUT_MS_DEFAULT);
+  assert.equal(SMS_HERMES_TIMEOUT_MS_DEFAULT, 300_000);
+  if (prev !== undefined) process.env.JOSHU_SMS_HERMES_TIMEOUT_MS = prev;
 }
 
 // proactive resolve asks for project-slug reconcile on project boards

@@ -2,7 +2,7 @@
  * Microsoft OneNote account discovery via Composio ONENOTE toolkit.
  */
 import { getOrCreateComposioSession, isComposioEnabled, resolveComposioUserId } from "../../composioApi.js";
-import { composioClient } from "./client.js";
+import { listActiveConnectedAccounts } from "./connectedAccountsList.js";
 import { resolveGmailAccountKey } from "./gmailAccounts.js";
 import { readConnectorsRegistry, writeConnectorsRegistry, type ConnectorsRegistry } from "../registry.js";
 
@@ -15,35 +15,17 @@ export type OnenoteRegistryAccount = {
   isDefault?: boolean;
 };
 
-type ComposioConnectedAccountRow = {
-  id: string;
-  status?: string;
-  toolkit?: { slug?: string };
-  appName?: string;
-  appUniqueId?: string;
-};
-
-async function listComposioOnenoteConnectedAccounts(
-  projectRoot: string,
-): Promise<ComposioConnectedAccountRow[]> {
+async function listComposioOnenoteConnectedAccounts(projectRoot: string) {
   if (!isComposioEnabled()) return [];
   await getOrCreateComposioSession(projectRoot);
   const userId = resolveComposioUserId(projectRoot);
-  const composio = composioClient();
-  const listFn = (
-    composio.connectedAccounts as {
-      list: (params: { userIds: string[]; toolkitSlugs?: string[] }) => Promise<{
-        items?: ComposioConnectedAccountRow[];
-      }>;
-    }
-  ).list;
-
-  const result = await listFn({ userIds: [userId], toolkitSlugs: ["onenote"] });
-  const items = result.items ?? [];
+  const items = await listActiveConnectedAccounts({
+    userIds: [userId],
+    toolkitSlugs: ["onenote"],
+  });
   return items.filter((row) => {
     const slug = row.toolkit?.slug?.toLowerCase() ?? row.appUniqueId?.toLowerCase() ?? "";
-    const active = (row.status ?? "ACTIVE").toUpperCase() === "ACTIVE";
-    return active && (slug === "onenote" || slug.includes("onenote"));
+    return slug === "onenote" || slug.includes("onenote");
   });
 }
 

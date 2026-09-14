@@ -124,6 +124,8 @@
     </div>
     <script type="module">
       import { attachVncClipboard } from "./vnc-clipboard.js";
+      import { configureNovncRfb, loadNovncRfb, preferVncLocalGestures } from "./vnc-client.js";
+      import { attachVncLocalGestures } from "./vnc-gestures.js";
       import { attachVncScrollBridge } from "./vnc-scroll.js";
       const DEBUG_VNC = new URLSearchParams(location.search).get("debugVnc") === "1";
       const statusEl = document.getElementById("status");
@@ -202,11 +204,9 @@
         const base = data.novnc?.clientBaseUrl?.replace(/\/+$/, "");
         const path = data.novnc?.websocketPath;
         if (!base || !path) throw new Error("noVNC not configured");
-        const { default: RFB } = await import(`${base}/core/rfb.js`);
+        const RFB = await loadNovncRfb(base);
         rfb = new RFB(screenEl, wsUrl(path), { shared: false });
-        rfb.scaleViewport = true;
-        rfb.resizeSession = false;
-        rfb.showDotCursor = true;
+        configureNovncRfb(rfb);
         clipboardDetach?.();
         clipboardDetach = attachVncClipboard(rfb, {
           targetEl: screenEl,
@@ -245,7 +245,17 @@
           },
         });
         scrollDetach?.();
-        scrollDetach = attachVncScrollBridge(screenEl);
+        const useGestures = preferVncLocalGestures();
+        scrollDetach = attachVncScrollBridge(screenEl, { skipWheel: useGestures });
+        if (useGestures) {
+          attachVncLocalGestures(screenEl, {
+            onScroll: (direction, amount) => {
+              if (typeof scrollDetach?.enqueueWheel === "function") {
+                scrollDetach.enqueueWheel(direction, amount);
+              }
+            },
+          });
+        }
         rfb.addEventListener("connect", () => {
           const fw = rfb._fbWidth;
           const fh = rfb._fbHeight;

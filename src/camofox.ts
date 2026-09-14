@@ -16,6 +16,16 @@ export function buildNoVncStandaloneUrl(appBasePath: string): string {
   return `${base}/camofox-viewer.html?v=vnc-fill-8`;
 }
 
+/** Joshu-served noVNC 1.7 library (not Camofox /usr/share/novnc). */
+export function buildNovncLibraryUrl(appBasePath: string): string {
+  const base = (appBasePath || "").replace(/\/+$/, "");
+  return `${base}/vendor/novnc`;
+}
+
+export function buildNovncWebsocketPath(proxyClientUrl: string): string {
+  return `${proxyClientUrl.replace(/\/+$/, "")}/websockify`;
+}
+
 async function fetchHealth(camofoxUrl: string, signal: AbortSignal): Promise<CamofoxHealth | null> {
   try {
     const res = await fetch(`${camofoxUrl.replace(/\/+$/, "")}/health`, { signal });
@@ -30,6 +40,7 @@ export async function getCamofoxStatus(opts: {
   camofoxUrl: string;
   novncUrl: string;
   novncClientUrl?: string;
+  novncLibraryUrl?: string;
   appBasePath?: string;
   timeoutMs?: number;
 }): Promise<Pick<StatusReport, "camofox" | "novnc">> {
@@ -43,7 +54,8 @@ export async function getCamofoxStatus(opts: {
     clearTimeout(timer);
   }
 
-  const clientBaseUrl = (opts.novncClientUrl ?? opts.novncUrl).replace(/\/+$/, "");
+  const proxyClientUrl = (opts.novncClientUrl ?? opts.novncUrl).replace(/\/+$/, "");
+  const clientBaseUrl = (opts.novncLibraryUrl || buildNovncLibraryUrl(opts.appBasePath ?? "")).replace(/\/+$/, "");
 
   return {
     camofox: {
@@ -56,7 +68,7 @@ export async function getCamofoxStatus(opts: {
       baseUrl: opts.novncUrl,
       embedUrl: buildNoVncStandaloneUrl(opts.appBasePath ?? ""),
       clientBaseUrl,
-      websocketPath: `${clientBaseUrl}/websockify`,
+      websocketPath: buildNovncWebsocketPath(proxyClientUrl),
     },
   };
 }

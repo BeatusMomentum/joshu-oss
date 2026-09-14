@@ -1,4 +1,6 @@
 import { attachVncClipboard } from "./vnc-clipboard.js";
+import { configureNovncRfb, loadNovncRfb } from "./vnc-client.js";
+import { attachVncLocalGestures } from "./vnc-gestures.js";
 import { attachVncScrollBridge } from "./vnc-scroll.js";
 
 function readConfig() {
@@ -15,12 +17,10 @@ function truncateUrl(url, max = 72) {
 function renderShell(root, cfg) {
   root.innerHTML = `
     <header class="handoff-header">
-      <h1>Finish in browser</h1>
-      <p class="handoff-instructions"></p>
-      <p class="handoff-meta"></p>
-      <div class="handoff-actions">
-        <button type="button" class="handoff-btn" id="handoff-scan">Scan fields</button>
-        <button type="button" class="handoff-btn handoff-btn-primary" id="handoff-done">I'm done</button>
+      <img class="handoff-logo" src="joshu-mark.svg" alt="Joshu" width="22" height="22" />
+      <div class="handoff-brand-copy">
+        <p class="handoff-instructions"></p>
+        <p class="handoff-meta"></p>
       </div>
     </header>
     <div id="vnc-frame">
@@ -32,20 +32,27 @@ function renderShell(root, cfg) {
       <form class="handoff-fields" id="handoff-fields"></form>
       <div class="handoff-overlay-actions">
         <button type="button" class="handoff-btn handoff-btn-primary" id="handoff-fill" disabled>Fill fields</button>
+        <button type="button" class="handoff-btn" id="handoff-done">I'm done</button>
       </div>
-      <details class="handoff-clipboard-fallback">
-        <summary>Paste into focused field</summary>
-        <div class="vnc-clipboard-bar">
-          <textarea id="vnc-clipboard-text" class="vnc-clipboard-text" rows="2" spellcheck="false" autocapitalize="off" autocorrect="off"
-            placeholder="Tap a field in the picture, type here, then Paste" aria-label="Fallback clipboard for missed fields"></textarea>
-          <button type="button" id="vnc-paste-remote" class="vnc-clipboard-btn vnc-clipboard-btn-primary">Paste into field</button>
-          <button type="button" id="vnc-copy-remote" class="vnc-clipboard-btn">Copy from browser</button>
-          <p class="vnc-clipboard-hint">Fallback when a control is not in the list above (CAPTCHA, custom widgets).</p>
+      <details class="handoff-more">
+        <summary>More Options</summary>
+        <div class="handoff-more-body">
+          <button type="button" class="handoff-btn" id="handoff-scan">Scan fields</button>
+          <div class="vnc-clipboard-bar">
+            <textarea id="vnc-clipboard-text" class="vnc-clipboard-text" rows="2" spellcheck="false" autocapitalize="off" autocorrect="off"
+              placeholder="Tap a field in the picture, type here, then Paste" aria-label="Fallback clipboard for missed fields"></textarea>
+            <button type="button" id="vnc-paste-remote" class="vnc-clipboard-btn vnc-clipboard-btn-primary">Paste into field</button>
+            <button type="button" id="vnc-copy-remote" class="vnc-clipboard-btn">Copy from browser</button>
+            <p class="vnc-clipboard-hint">Fallback when a control is not in the list above (CAPTCHA, custom widgets).</p>
+          </div>
         </div>
       </details>
     </section>
   `;
-  root.querySelector(".handoff-instructions").textContent = cfg.instructions || "Complete the staged checkout step.";
+  const instructions = cfg.instructions || "Complete the staged checkout step.";
+  const instructionsEl = root.querySelector(".handoff-instructions");
+  instructionsEl.textContent = instructions;
+  instructionsEl.title = instructions;
   root.querySelector(".handoff-meta").textContent = cfg.pageTitle
     ? `${cfg.pageTitle} — ${truncateUrl(cfg.pageUrl)}`
     : truncateUrl(cfg.pageUrl);
@@ -109,18 +116,21 @@ function renderOverlayFields(formEl, scan) {
         sel.appendChild(o);
       }
       if (field.prefill) sel.value = field.prefill;
+      sel.dataset.initialValue = sel.value;
       wrap.appendChild(sel);
     } else if (field.inputType === "checkbox") {
       const input = document.createElement("input");
       input.type = "checkbox";
       input.dataset.fieldId = field.id;
       input.checked = field.checked === true;
+      input.dataset.initialChecked = input.checked ? "true" : "false";
       wrap.appendChild(input);
     } else if (field.inputType === "radio") {
       const input = document.createElement("input");
       input.type = "checkbox";
       input.dataset.fieldId = field.id;
       input.checked = field.checked === true;
+      input.dataset.initialChecked = input.checked ? "true" : "false";
       wrap.appendChild(input);
     } else {
       const input = document.createElement("input");
@@ -131,6 +141,7 @@ function renderOverlayFields(formEl, scan) {
       input.spellcheck = false;
       if (field.inputType === "password") input.autocomplete = "off";
       if (field.prefill && field.inputType !== "password") input.value = field.prefill;
+      input.dataset.initialValue = input.value;
       wrap.appendChild(input);
     }
     formEl.appendChild(wrap);
@@ -182,9 +193,23 @@ async function main() {
     return data;
   }
 
+  function overlayHasOwnerEdits() {
+    for (const el of fieldsForm.querySelectorAll("[data-field-id]")) {
+      if (el.type === "checkbox" || el.type === "radio") {
+        const initial = el.dataset.initialChecked === "true";
+        if (el.checked !== initial) return true;
+        continue;
+      }
+      const initial = el.dataset.initialValue ?? "";
+      const value = typeof el.value === "string" ? el.value : "";
+      if (value !== initial) return true;
+    }
+    return false;
+  }
+
   function updateFillButton() {
     const label = lastScan.primaryButtonLabel;
-    fillBtn.disabled = (lastScan.fields || []).length === 0 && !lastScan.primaryButtonId;
+    fillBtn.disabled = fillInFlight || !overlayHasOwnerEdits();
     fillBtn.textContent = label ? `Fill and continue (${label})` : "Fill fields";
   }
 
@@ -264,7 +289,7 @@ async function main() {
       lastPageKey = "";
     } catch (err) {
       overlayStatus.textContent = String(err.message || err);
-      fillBtn.disabled = false;
+      updateFillButton();
     } finally {
       fillInFlight = false;
     }
@@ -320,8 +345,11 @@ async function main() {
   fillBtn.addEventListener("click", () => {
     fillFields().catch(() => undefined);
   });
+  fieldsForm.addEventListener("input", () => updateFillButton());
+  fieldsForm.addEventListener("change", () => updateFillButton());
   fieldsForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (fillBtn.disabled) return;
     fillFields().catch(() => undefined);
   });
 
@@ -345,17 +373,13 @@ async function main() {
     const base = data.novnc?.clientBaseUrl?.replace(/\/+$/, "");
     const path = data.novnc?.websocketPath;
     if (!base || !path) throw new Error("noVNC not configured");
-    const { default: RFB } = await import(`${base}/core/rfb.js`);
+    const RFB = await loadNovncRfb(base);
     if (rfb) {
       rfb.disconnect();
       rfb = null;
     }
     rfb = new RFB(screenEl, wsUrl(path), { shared: false });
-    rfb.viewOnly = false;
-    rfb.focusOnClick = true;
-    rfb.scaleViewport = true;
-    rfb.resizeSession = false;
-    rfb.showDotCursor = true;
+    configureNovncRfb(rfb);
     attachVncClipboard(rfb, {
       targetEl: screenEl,
       pasteViaApi: async (text) => {
@@ -392,7 +416,14 @@ async function main() {
         hint: document.querySelector(".vnc-clipboard-hint"),
       },
     });
-    attachVncScrollBridge(screenEl);
+    const scrollDetach = attachVncScrollBridge(screenEl, { skipWheel: true });
+    attachVncLocalGestures(screenEl, {
+      onScroll: (direction, amount) => {
+        if (typeof scrollDetach.enqueueWheel === "function") {
+          scrollDetach.enqueueWheel(direction, amount);
+        }
+      },
+    });
     rfb.addEventListener("connect", () => {
       statusEl.textContent = `connected ${fb.width}×${fb.height}`;
       layout();

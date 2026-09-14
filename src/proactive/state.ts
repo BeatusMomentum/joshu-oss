@@ -28,6 +28,7 @@ export function factoryProactiveState(localDate: string): ProactiveState {
     lastHygieneSummary: null,
     hygieneAmbiguousQueue: [],
     lastOnboardingNudgeDate: null,
+    lastOwnerReplyAt: null,
   };
 }
 
@@ -123,6 +124,10 @@ export function readProactiveState(projectRoot = process.cwd(), timezone?: strin
       lastOnboardingNudgeDate:
         typeof parsed.lastOnboardingNudgeDate === "string"
           ? parsed.lastOnboardingNudgeDate.trim()
+          : null,
+      lastOwnerReplyAt:
+        typeof parsed.lastOwnerReplyAt === "string" && parsed.lastOwnerReplyAt.trim()
+          ? parsed.lastOwnerReplyAt.trim()
           : null,
     };
 

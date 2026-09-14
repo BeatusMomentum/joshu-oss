@@ -4,7 +4,7 @@ description: Live browser HITL — hand shared Camofox tab to owner on mobile fo
 metadata:
   hermes:
     category: browser
-    version: "1.3.0"
+    version: "1.4.1"
 ---
 
 # Joshu browser handoff (live HITL)
@@ -95,7 +95,7 @@ During **pending handoff**, do **not** navigate away — the server pins `pageUr
 
 ## Owner experience
 
-Owner opens the handoff link on their phone → your instructions + embedded noVNC → paste OTP/card via clipboard bar → **I'm done**.
+Owner opens the handoff link on their phone → **signs in with the box username and password** (a desktop session is not enough) → compact Joshu header + embedded noVNC → types in native fields (**Fill** enables after an edit) or **More Options** for scan/paste → **I'm done** (bottom right).
 
 If desktop jWeb/noVNC is also connected, only one viewer may hold the session — ask the owner to close desktop jWeb if the phone viewer disconnects.
 

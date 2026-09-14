@@ -4,7 +4,7 @@
 import { readdir, rename, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { getOrCreateComposioSession, isComposioEnabled, resolveComposioUserId } from "../../composioApi.js";
-import { composioClient } from "./client.js";
+import { listActiveConnectedAccounts } from "./connectedAccountsList.js";
 import { fetchGmailProfile } from "./gmail.js";
 import {
   gmailLegacyThreadsDir,
@@ -23,14 +23,6 @@ export type GmailRegistryAccount = {
   isDefault?: boolean;
 };
 
-type ComposioConnectedAccountRow = {
-  id: string;
-  status?: string;
-  toolkit?: { slug?: string };
-  appName?: string;
-  appUniqueId?: string;
-};
-
 /** Stable directory key under connectors/mail/gmail/{accountKey}/threads/ */
 export function resolveGmailAccountKey(opts: {
   email?: string;
@@ -46,25 +38,17 @@ export function resolveGmailAccountKey(opts: {
   return `acct_${id || "default"}`;
 }
 
-async function listComposioGmailConnectedAccounts(projectRoot: string): Promise<ComposioConnectedAccountRow[]> {
+async function listComposioGmailConnectedAccounts(projectRoot: string) {
   if (!isComposioEnabled()) return [];
   await getOrCreateComposioSession(projectRoot);
   const userId = resolveComposioUserId(projectRoot);
-  const composio = composioClient();
-  const listFn = (
-    composio.connectedAccounts as {
-      list: (params: { userIds: string[]; toolkitSlugs?: string[] }) => Promise<{
-        items?: ComposioConnectedAccountRow[];
-      }>;
-    }
-  ).list;
-
-  const result = await listFn({ userIds: [userId], toolkitSlugs: ["gmail"] });
-  const items = result.items ?? [];
+  const items = await listActiveConnectedAccounts({
+    userIds: [userId],
+    toolkitSlugs: ["gmail"],
+  });
   return items.filter((row) => {
     const slug = row.toolkit?.slug?.toLowerCase() ?? row.appUniqueId?.toLowerCase() ?? "";
-    const active = (row.status ?? "ACTIVE").toUpperCase() === "ACTIVE";
-    return active && (slug === "gmail" || slug.includes("gmail"));
+    return slug === "gmail" || slug.includes("gmail");
   });
 }
 

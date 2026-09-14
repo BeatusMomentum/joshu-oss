@@ -1,5 +1,9 @@
 export { registerBrowserHandoffRoutes, browserHandoffLockStub, getPendingHandoffPinUrl } from "./routes.js";
 export {
+  sanitizeHandoffReturnPath,
+  boxLoginRedirectLocation,
+} from "./boxAuth.js";
+export {
   createHandoff,
   getHandoffRecord,
   getPendingHandoff,

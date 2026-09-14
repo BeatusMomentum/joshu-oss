@@ -7,6 +7,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { Composio } from "@composio/core";
+import { listActiveConnectedAccounts } from "./connectors/composio/connectedAccountsList.js";
 import { resolveJoshuFilesPaths } from "./joshuFilesPaths.js";
 import { joshuConfigDir } from "./nylas/paths.js";
 import { applyComposioMcpToHermesConfig, type ComposioMcpEndpoint } from "./hermesApi.js";
@@ -49,14 +50,6 @@ export type ComposioToolkitRow = {
   connectedAccounts: ComposioConnectedAccountSummary[];
 };
 
-type ComposioConnectedAccountRow = {
-  id: string;
-  status?: string;
-  toolkit?: { slug?: string };
-  appName?: string;
-  appUniqueId?: string;
-};
-
 const CONNECTED_ACCOUNTS_CACHE_MS = 20_000;
 const TOOLKIT_LIST_CACHE_MS = 45_000;
 
@@ -87,19 +80,10 @@ async function listConnectedAccountsByToolkit(
     return connectedAccountsCache.map;
   }
 
-  const composio = composioClient();
-  const listFn = (
-    composio.connectedAccounts as {
-      list: (params: { userIds: string[] }) => Promise<{ items?: ComposioConnectedAccountRow[] }>;
-    }
-  ).list;
-
-  const result = await listFn({ userIds: [userId] });
+  const items = await listActiveConnectedAccounts({ userIds: [userId] });
   const byToolkit = new Map<string, ComposioConnectedAccountSummary[]>();
 
-  for (const row of result.items ?? []) {
-    const active = (row.status ?? "ACTIVE").toUpperCase() === "ACTIVE";
-    if (!active) continue;
+  for (const row of items) {
     const slug = row.toolkit?.slug?.toLowerCase() ?? row.appUniqueId?.toLowerCase() ?? "";
     if (!slug) continue;
     const list = byToolkit.get(slug) ?? [];

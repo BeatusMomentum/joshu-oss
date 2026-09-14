@@ -77,6 +77,8 @@ export type ProactiveState = {
   hygieneAmbiguousQueue?: HygieneAmbiguousItem[];
   /** Owner-local date YYYY-MM-DD when last ea-onboarding nudge was sent. */
   lastOnboardingNudgeDate?: string | null;
+  /** Last owner reply routed to `lastNudge` — enables follow-up SMS within the follow-up window. */
+  lastOwnerReplyAt?: string | null;
 };
 
 export type ProactiveCandidate = {

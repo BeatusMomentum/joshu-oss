@@ -51,3 +51,21 @@ export function isDesktopBrowserOrLocalRequest(req: Request): boolean {
   const cookie = String(req.headers.cookie ?? "").trim();
   return cookie.length >= 8;
 }
+
+/**
+ * ArozOS desktop session cookie on the box hostname.
+ *
+ * SMS / iMessage opens send Sec-Fetch-Site: none, so isDesktopBrowserOrLocalRequest
+ * cannot be used for handoff. Cookie + Host is the gate; pair it with the signed
+ * handoff token. Direct localhost (no proxy headers) is allowed for tests.
+ */
+export function hasBoxOwnerSessionCookie(req: Request): boolean {
+  if (isDirectLocalhostRequest(req)) return true;
+
+  const customer = (process.env.CUSTOMER_DOMAIN ?? "").trim().toLowerCase();
+  const host = (req.headers.host ?? "").toLowerCase().split(":")[0] ?? "";
+  if (customer && host !== customer) return false;
+
+  const cookie = String(req.headers.cookie ?? "").trim();
+  return cookie.length >= 8;
+}

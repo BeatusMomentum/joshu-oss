@@ -42,7 +42,9 @@ export interface StatusReport {
   novnc: {
     embedUrl: string;
     baseUrl: string;
+    /** Joshu-served noVNC library (public/vendor/novnc). */
     clientBaseUrl: string;
+    /** Camofox websockify, still under /joshu/novnc/websockify. */
     websocketPath: string;
   };
   browserViewport?: {

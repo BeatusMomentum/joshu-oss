@@ -19,7 +19,8 @@ import {
   isBrowserHandoffLocked,
   setHandoffLastScan,
 } from "../src/browserHandoff/store.ts";
-import { mintHandoffToken, verifyHandoffToken } from "../src/browserHandoff/token.ts";
+import { boxLoginRedirectLocation, sanitizeHandoffReturnPath } from "../src/browserHandoff/boxAuth.ts";
+import { mintHandoffToken, mintHandoffAuthToken, verifyHandoffAuthToken, verifyHandoffToken } from "../src/browserHandoff/token.ts";
 import {
   catalogForScanPrompt,
   heuristicOverlayScan,
@@ -42,6 +43,13 @@ const token = mintHandoffToken(id, expMs);
 assert.equal(verifyHandoffToken(id, String(expMs), token).ok, true);
 assert.equal(verifyHandoffToken(id, String(expMs), "bad").ok, false);
 assert.equal(verifyHandoffToken(id, String(Date.now() - 1000), token).ok, false);
+const pastExp = Date.now() - 60_000;
+const pastTok = mintHandoffToken(id, pastExp);
+assert.equal(verifyHandoffToken(id, String(pastExp), pastTok).ok, true);
+const authTok = mintHandoffAuthToken(id, expMs);
+assert.equal(verifyHandoffAuthToken(id, String(expMs), authTok).ok, true);
+assert.equal(verifyHandoffAuthToken(id, String(expMs), token).ok, false);
+assert.notEqual(authTok, token);
 
 // --- store lifecycle ---
 const root = tempProjectRoot();
@@ -192,5 +200,37 @@ assert.equal(overlay.fields[1].inputType, "password");
 assert.equal(overlay.primaryButtonId, "f0-b0");
 assert.equal(overlay.fields[0].prefill, "owner@example.com");
 assert.equal(overlay.fields[1].prefill, undefined);
+
+// --- box login return path (open-redirect lock) ---
+const handoffPath =
+  "/joshu/handoff/b68eb2db-cae8-4d13-aa57-9d47bc31a79f?t=abc&exp=1";
+assert.equal(sanitizeHandoffReturnPath(handoffPath), handoffPath);
+assert.equal(sanitizeHandoffReturnPath("https://evil.example/joshu/handoff/x"), "");
+assert.equal(sanitizeHandoffReturnPath("//evil.example"), "");
+assert.equal(sanitizeHandoffReturnPath("/login.html"), "");
+assert.equal(sanitizeHandoffReturnPath("/joshu/api/status"), "");
+assert.match(boxLoginRedirectLocation(handoffPath), /^\/login\.html\?redirect=/);
+assert.match(boxLoginRedirectLocation(handoffPath), /handoff/);
+
+const loginHtml = fs.readFileSync(
+  path.join(process.cwd(), "arozos/web-overlays-vanilla/login.html"),
+  "utf8",
+);
+assert.match(loginHtml, /safeHandoffReturnPath/);
+assert.match(loginHtml, /handoffReturn/);
+
+const shellJs = fs.readFileSync(path.join(process.cwd(), "public/handoff.js"), "utf8");
+assert.match(shellJs, /More Options/);
+assert.match(shellJs, /overlayHasOwnerEdits/);
+assert.match(shellJs, /joshu-mark\.svg/);
+assert.doesNotMatch(shellJs, /Finish in browser/);
+
+const routesSrcNow = fs.readFileSync(path.join(process.cwd(), "src/browserHandoff/routes.ts"), "utf8");
+assert.match(routesSrcNow, /\/api\/browser-handoff\/:id\/login/);
+assert.match(routesSrcNow, /sendHandoffLoginPage/);
+assert.match(routesSrcNow, /verifyArozosPassword/);
+
+const loginJs = fs.readFileSync(path.join(process.cwd(), "public/handoff-login.js"), "utf8");
+assert.match(loginJs, /invalid_credentials/);
 
 console.log("browser-handoff fixtures: ok");

@@ -49,7 +49,7 @@ rsync -a "${RSYNC_DELETE[@]}" \
   --exclude 'arozos/subservice/telephone/app' \
   --exclude aeon-page-to-speech-config.json \
   --exclude proprietary \
-  --exclude vendor \
+  --exclude /vendor/ \
   --exclude .cursor \
   --exclude 'arozos/web-overlays' \
   --exclude .git \

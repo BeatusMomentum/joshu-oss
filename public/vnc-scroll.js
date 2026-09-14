@@ -6,6 +6,7 @@
 export function attachVncScrollBridge(targetEl, opts = {}) {
   if (!targetEl) return () => undefined;
 
+  const skipWheel = Boolean(opts.skipWheel);
   const scrollUrl = opts.scrollUrl || "api/camofox/scroll";
   // Hard cap: Camofox scroll is ~300ms; flooding it OOMs the box / fails healthchecks.
   const MIN_INTERVAL_MS = 180;
@@ -147,18 +148,23 @@ export function attachVncScrollBridge(targetEl, opts = {}) {
 
   targetEl.addEventListener("pointerdown", engage, true);
   targetEl.addEventListener("focusin", engage, true);
-  targetEl.addEventListener("wheel", onWheel, { capture: true, passive: false });
+  if (!skipWheel) {
+    targetEl.addEventListener("wheel", onWheel, { capture: true, passive: false });
+  }
   document.addEventListener("pointerdown", disengage, true);
   document.addEventListener("keydown", onKeyDown, true);
   targetEl.style.overscrollBehavior = "contain";
 
-  return () => {
+  const detach = () => {
     if (wheelTimer) window.clearTimeout(wheelTimer);
     pending = null;
     targetEl.removeEventListener("pointerdown", engage, true);
     targetEl.removeEventListener("focusin", engage, true);
-    targetEl.removeEventListener("wheel", onWheel, true);
+    if (!skipWheel) targetEl.removeEventListener("wheel", onWheel, true);
     document.removeEventListener("pointerdown", disengage, true);
     document.removeEventListener("keydown", onKeyDown, true);
   };
+  // Local pinch-pan (vnc-gestures.js) uses this at 1× two-finger drag.
+  detach.enqueueWheel = enqueueWheel;
+  return detach;
 }

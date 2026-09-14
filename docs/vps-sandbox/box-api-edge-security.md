@@ -18,8 +18,9 @@ Joshu listens on `127.0.0.1:8788`. Caddy reverse-proxies `/joshu/*` from the pub
 | `/api/instance/send-owner-email`, `sync-companion-identity` | Direct localhost |
 | `/api/desktop-actions/*`, `/api/app-gui-actions/*` | Direct localhost |
 | `/api/browser-handoff/request`, `/status/*`, `/lock`, `/:id/cancel` | Direct localhost (Hermes plugin + Camofox lock patch) |
-| `/api/browser-handoff/:id/heartbeat`, `/:id/complete` | Signed handoff token (`t` + `exp` query/body) |
-| `GET /handoff/:id` (mobile shell + noVNC) | Signed handoff token on URL |
+| `/api/browser-handoff/:id/login` | Signed handoff token; verifies box username/password against ArozOS; sets `joshu_handoff_auth` |
+| `/api/browser-handoff/:id/heartbeat`, `/:id/complete`, `/:id/form-fields`, `/:id/page-key`, `/:id/fill-form` | Signed handoff token **and** `joshu_handoff_auth` cookie (fresh password for this handoff) |
+| `GET /handoff/:id` (mobile shell + noVNC) | Signed token; missing auth cookie serves the Joshu sign-in gate (does **not** skip if already logged into the desktop) |
 | `/api/files/*`, `/api/excalidraw/cwm/*`, `/api/ag-ui/run` | Desktop browser or local |
 
 ## Remaining risk

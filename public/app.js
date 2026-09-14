@@ -1,4 +1,6 @@
 import { attachVncClipboard } from "./vnc-clipboard.js";
+import { configureNovncRfb, loadNovncRfb, preferVncLocalGestures } from "./vnc-client.js";
+import { attachVncLocalGestures } from "./vnc-gestures.js";
 import { attachVncScrollBridge } from "./vnc-scroll.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -82,6 +84,7 @@ const state = {
   novnc: null,
   vncClipboardDetach: null,
   vncScrollDetach: null,
+  vncGestureDetach: null,
   /** After a VNC drop, block auto-reconnect until this timestamp (ms). Reload VNC clears it. */
   vncReconnectAfter: 0,
   /** True after the first automatic connect attempt (status poll must not keep reconnecting). */
@@ -206,8 +209,7 @@ function buildWebsocketUrl(pathOrUrl) {
 
 async function loadRfb(clientBaseUrl) {
   if (state.RFB) return state.RFB;
-  const mod = await import(`${clientBaseUrl.replace(/\/+$/, "")}/core/rfb.js`);
-  state.RFB = mod.default;
+  state.RFB = await loadNovncRfb(clientBaseUrl);
   return state.RFB;
 }
 
@@ -219,6 +221,10 @@ function disconnectVnc({ clear = true } = {}) {
   if (state.vncScrollDetach) {
     state.vncScrollDetach();
     state.vncScrollDetach = null;
+  }
+  if (state.vncGestureDetach) {
+    state.vncGestureDetach();
+    state.vncGestureDetach = null;
   }
   const rfb = state.rfb;
   state.rfb = null;
@@ -338,14 +344,7 @@ async function connectVnc(novnc, { force = false } = {}) {
     // Exclusive session — shared viewers make x11vnc drop the previous client (connect/disconnect loop).
     const rfb = new RFB(els.vncScreen, buildWebsocketUrl(websocketPath), { shared: false });
     state.rfb = rfb;
-    rfb.viewOnly = false;
-    rfb.focusOnClick = true;
-    rfb.clipViewport = false;
-    rfb.dragViewport = false;
-    // scaleViewport fits remote desktop to #vnc-screen; CSS keeps that box at framebuffer aspect.
-    rfb.scaleViewport = true;
-    rfb.resizeSession = false;
-    rfb.showDotCursor = true;
+    configureNovncRfb(rfb);
     if (els.vncScreen) {
       if (state.vncClipboardDetach) state.vncClipboardDetach();
       state.vncClipboardDetach = attachVncClipboard(rfb, {
@@ -385,7 +384,21 @@ async function connectVnc(novnc, { force = false } = {}) {
         },
       });
       if (state.vncScrollDetach) state.vncScrollDetach();
-      state.vncScrollDetach = attachVncScrollBridge(els.vncScreen);
+      if (state.vncGestureDetach) {
+        state.vncGestureDetach();
+        state.vncGestureDetach = null;
+      }
+      const useGestures = preferVncLocalGestures();
+      state.vncScrollDetach = attachVncScrollBridge(els.vncScreen, { skipWheel: useGestures });
+      if (useGestures) {
+        state.vncGestureDetach = attachVncLocalGestures(els.vncScreen, {
+          onScroll: (direction, amount) => {
+            if (typeof state.vncScrollDetach?.enqueueWheel === "function") {
+              state.vncScrollDetach.enqueueWheel(direction, amount);
+            }
+          },
+        });
+      }
     }
     rfb.addEventListener("connect", () => {
       state.vncReconnectAfter = 0;

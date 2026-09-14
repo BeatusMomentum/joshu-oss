@@ -96,7 +96,27 @@ attach_x11vnc() {
   CURRENT_DISPLAY="$display"
   log "Attaching x11vnc to DISPLAY=$CURRENT_DISPLAY"
 
-  X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared -rfbport $VNC_PORT -noxdamage -quiet -bg -o /var/log/x11vnc.log"
+  # HITL tuning (env-gated). Defaults keep the historical -noxdamage behaviour;
+  # set X11VNC_NOXDAMAGE=0 to let X DAMAGE send partial updates (often smoother
+  # on Xvfb). Optional X11VNC_FRAMERATE / X11VNC_THREADS / X11VNC_DEFER / X11VNC_WAIT.
+  X11VNC_ARGS="-display $CURRENT_DISPLAY -forever -shared -rfbport $VNC_PORT -quiet -bg -o /var/log/x11vnc.log"
+  case "${X11VNC_NOXDAMAGE:-1}" in
+    0|false|no|FALSE|NO) ;;
+    *) X11VNC_ARGS="$X11VNC_ARGS -noxdamage" ;;
+  esac
+  case "${X11VNC_THREADS:-1}" in
+    0|false|no|FALSE|NO) ;;
+    *) X11VNC_ARGS="$X11VNC_ARGS -threads" ;;
+  esac
+  if [ -n "${X11VNC_FRAMERATE:-}" ]; then
+    X11VNC_ARGS="$X11VNC_ARGS -framerate ${X11VNC_FRAMERATE}"
+  fi
+  if [ -n "${X11VNC_DEFER:-}" ]; then
+    X11VNC_ARGS="$X11VNC_ARGS -defer ${X11VNC_DEFER}"
+  fi
+  if [ -n "${X11VNC_WAIT:-}" ]; then
+    X11VNC_ARGS="$X11VNC_ARGS -wait ${X11VNC_WAIT}"
+  fi
   [ "${VIEW_ONLY:-0}" = "1" ] && X11VNC_ARGS="$X11VNC_ARGS -viewonly"
   if [ -n "$PASSFILE" ]; then
     X11VNC_ARGS="$X11VNC_ARGS -rfbauth $PASSFILE"

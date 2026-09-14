@@ -575,6 +575,7 @@ function buildAppRouter(): {
         camofoxUrl: CAMOFOX_URL,
         novncUrl: NOVNC_URL,
         novncClientUrl: normalizedNovncClientPath,
+        novncLibraryUrl: withPublicBase("/vendor/novnc"),
         appBasePath: PUBLIC_BASE_PATH || "/",
       }),
       dockerSupervisor.report(),
@@ -586,6 +587,7 @@ function buildAppRouter(): {
         camofoxUrl: CAMOFOX_URL,
         novncUrl: NOVNC_URL,
         novncClientUrl: normalizedNovncClientPath,
+        novncLibraryUrl: withPublicBase("/vendor/novnc"),
         appBasePath: PUBLIC_BASE_PATH || "/",
         timeoutMs: 5_000,
       });
@@ -618,6 +620,7 @@ function buildAppRouter(): {
       camofoxUrl: CAMOFOX_URL,
       novncUrl: NOVNC_URL,
       novncClientUrl: normalizedNovncClientPath,
+      novncLibraryUrl: withPublicBase("/vendor/novnc"),
       appBasePath: PUBLIC_BASE_PATH || "/",
       timeoutMs: 5_000,
     });

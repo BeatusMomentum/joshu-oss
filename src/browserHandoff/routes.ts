@@ -1,6 +1,7 @@
 import type { Request, Response, Router } from "express";
 import type { CamofoxSessionCoordinator } from "../camofoxSession.js";
 import { isDirectLocalhostRequest } from "../httpLocalhost.js";
+import { setHandoffAuthCookie, verifyArozosPassword, verifyOwnerHandoffSession } from "./boxAuth.js";
 import { browserHandoffLockStub, publicHandoffView } from "./lock.js";
 import {
   cancelHandoff,
@@ -16,6 +17,7 @@ import {
 import { verifyHandoffToken } from "./token.js";
 import { scanCatalogWithLlm } from "./formScan.js";
 import { deliverSmsHandoffContinuation } from "./smsContinue.js";
+import { checkShareChatRateLimit } from "../shareChat/rateLimit.js";
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -28,7 +30,20 @@ function handoffTokenFromRequest(req: Request): { t: string; exp: string } | nul
   return { t, exp };
 }
 
-function verifyHandoffAccess(req: Request, id: string): { ok: true } | { ok: false; status: number; error: string } {
+function clientIp(req: Request): string {
+  const xf = req.headers["x-forwarded-for"];
+  if (typeof xf === "string" && xf.trim()) return xf.split(",")[0]!.trim();
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+
+function suggestedBoxUser(): string {
+  return (process.env.JOSHU_AROZ_USER ?? process.env.JOSHU_OWNER_EMAIL ?? "").trim();
+}
+
+function verifyHandoffLink(
+  req: Request,
+  id: string,
+): { ok: true; exp: string; t: string } | { ok: false; status: number; error: string } {
   const tokenParts = handoffTokenFromRequest(req);
   if (!tokenParts) {
     return { ok: false, status: 401, error: "handoff_token_required" };
@@ -37,7 +52,77 @@ function verifyHandoffAccess(req: Request, id: string): { ok: true } | { ok: fal
   if (!verified.ok) {
     return { ok: false, status: 401, error: verified.reason };
   }
-  return { ok: true };
+  return { ok: true, exp: tokenParts.exp, t: tokenParts.t };
+}
+
+function verifyHandoffAccess(
+  req: Request,
+  id: string,
+): { ok: true } | { ok: false; status: number; error: string } {
+  const link = verifyHandoffLink(req, id);
+  if (!link.ok) return link;
+  // SMS token is not enough — owner must type the box password for this handoff.
+  return verifyOwnerHandoffSession(req, id, link.exp);
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function sendHandoffLoginPage(
+  res: Response,
+  opts: { handoffId: string; token: string; exp: string; instructions: string; suggestedUser: string },
+): void {
+  const config = JSON.stringify({
+    handoffId: opts.handoffId,
+    token: opts.token,
+    exp: opts.exp,
+    suggestedUser: opts.suggestedUser,
+  })
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e");
+  const brief = escapeHtml(opts.instructions || "Finish this step in the shared browser.");
+  res.setHeader("Cache-Control", "no-store");
+  res.type("html").send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <title>Sign in — Joshu</title>
+  <base href="../" />
+  <link rel="icon" href="joshu-mark.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="design-system/typography.css" />
+  <link rel="stylesheet" href="design-system/tokens.css" />
+  <link rel="stylesheet" href="design-system/base.css" />
+  <link rel="stylesheet" href="handoff-shell.css" />
+</head>
+<body class="handoff-gate-body">
+  <main class="handoff-gate">
+    <img class="handoff-gate-logo" src="joshu-mark.svg" alt="Joshu" width="36" height="36" />
+    <h1>Sign in to continue</h1>
+    <p class="handoff-gate-brief">${brief}</p>
+    <p class="handoff-gate-hint">Enter your Joshu box username and password. A desktop session is not enough for this step.</p>
+    <form id="handoff-login-form" class="handoff-gate-form" autocomplete="on">
+      <label class="handoff-field">
+        <span class="handoff-field-label">Username</span>
+        <input id="handoff-user" name="username" type="text" autocomplete="username" required />
+      </label>
+      <label class="handoff-field">
+        <span class="handoff-field-label">Password</span>
+        <input id="handoff-pass" name="password" type="password" autocomplete="current-password" required />
+      </label>
+      <p id="handoff-login-error" class="handoff-gate-error" hidden></p>
+      <button type="submit" class="handoff-btn handoff-btn-primary" id="handoff-login-submit">Sign in</button>
+    </form>
+  </main>
+  <script id="handoff-config" type="application/json">${config}</script>
+  <script type="module" src="handoff-login.js"></script>
+</body>
+</html>`);
 }
 
 async function touchCamofoxKeepalive(camofoxSession: CamofoxSessionCoordinator): Promise<void> {
@@ -320,11 +405,48 @@ export function registerBrowserHandoffRoutes(
     }
   });
 
+  /** Step-up: box username/password, even if the owner already has an ArozOS desktop session. */
+  router.post("/api/browser-handoff/:id/login", async (req: Request, res: Response) => {
+    const id = readString(req.params.id);
+    const link = verifyHandoffLink(req, id);
+    if (!link.ok) {
+      res.status(link.status).json({ error: link.error });
+      return;
+    }
+    const record = getHandoffRecord(projectRoot, id);
+    if (!record || record.status !== "pending") {
+      res.status(404).json({ error: "handoff_not_found" });
+      return;
+    }
+    const rate = checkShareChatRateLimit(`handoff-login:${clientIp(req)}`, {
+      limit: 8,
+      windowMs: 15 * 60 * 1000,
+    });
+    if (!rate.allowed) {
+      res.status(429).json({ error: "rate_limited" });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const username = readString(body.username);
+    const password = typeof body.password === "string" ? body.password : "";
+    const result = await verifyArozosPassword(username, password);
+    if (result === "unavailable") {
+      res.status(502).json({ error: "box_login_unavailable" });
+      return;
+    }
+    if (result !== "ok") {
+      res.status(401).json({ error: "invalid_credentials" });
+      return;
+    }
+    setHandoffAuthCookie(req, res, id, Number.parseInt(link.exp, 10), Date.parse(record.expiresAt));
+    res.json({ ok: true });
+  });
+
   router.get("/handoff/:id", (req: Request, res: Response) => {
     const id = readString(req.params.id);
-    const access = verifyHandoffAccess(req, id);
-    if (!access.ok) {
-      res.status(access.status).type("text/plain").send(`Handoff link invalid or expired (${access.error}).`);
+    const link = verifyHandoffLink(req, id);
+    if (!link.ok) {
+      res.status(link.status).type("text/plain").send(`Handoff link invalid or expired (${link.error}).`);
       return;
     }
     const record = getHandoffRecord(projectRoot, id);
@@ -337,12 +459,22 @@ export function registerBrowserHandoffRoutes(
       return;
     }
 
-    const t = readString(req.query.t);
-    const exp = readString(req.query.exp);
+    const session = verifyOwnerHandoffSession(req, id, link.exp);
+    if (!session.ok) {
+      sendHandoffLoginPage(res, {
+        handoffId: record.id,
+        token: link.t,
+        exp: link.exp,
+        instructions: record.instructions,
+        suggestedUser: suggestedBoxUser(),
+      });
+      return;
+    }
+
     const config = JSON.stringify({
       handoffId: record.id,
-      token: t,
-      exp,
+      token: link.t,
+      exp: link.exp,
       instructions: record.instructions,
       pageUrl: record.pageUrl,
       pageTitle: record.pageTitle,
@@ -351,13 +483,18 @@ export function registerBrowserHandoffRoutes(
       .replace(/</g, "\\u003c")
       .replace(/>/g, "\\u003e");
 
+    res.setHeader("Cache-Control", "no-store");
     res.type("html").send(`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
   <title>Joshu browser handoff</title>
   <base href="../" />
+  <link rel="icon" href="joshu-mark.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="design-system/typography.css" />
+  <link rel="stylesheet" href="design-system/tokens.css" />
+  <link rel="stylesheet" href="design-system/base.css" />
   <link rel="stylesheet" href="handoff-shell.css" />
 </head>
 <body>

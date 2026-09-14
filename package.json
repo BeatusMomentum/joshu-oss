@@ -9,8 +9,9 @@
     "packages/*"
   ],
   "scripts": {
-    "prepare": "node scripts/sync-design-system-public.mjs && patch-package",
+    "prepare": "node scripts/sync-design-system-public.mjs && node scripts/sync-novnc-public.mjs && patch-package",
     "sync-design-system": "node scripts/sync-design-system-public.mjs",
+    "sync-novnc": "node scripts/sync-novnc-public.mjs",
     "dev": "tsx watch src/server.ts",
     "dev:arozos": "bash scripts/dev-arozos.sh",
     "dev:arozos:daemon": "bash scripts/dev-arozos-daemon.sh",
@@ -91,6 +92,7 @@
     "test:onenote-url-parse": "tsx scripts/test-onenote-url-parse.mjs",
     "test:share-chat": "tsx scripts/test-share-chat.mjs",
     "test:browser-handoff": "tsx scripts/test-browser-handoff.mjs",
+    "test:novnc-client": "tsx scripts/test-novnc-client.mjs",
     "test:runtime-assets": "node scripts/copy-runtime-assets.mjs --check-source --check",
     "onenote:fetch-page": "tsx scripts/fetch-onenote-page.mjs",
     "test:filesystem-brain": "bash scripts/test-filesystem-brain-e2e.sh",

@@ -145,7 +145,10 @@ export async function handleProactiveTaskAction(opts: {
     const nudgedTaskIds = state.nudgedTaskIds.includes(taskId)
       ? state.nudgedTaskIds
       : [...state.nudgedTaskIds, taskId];
-    writeProactiveState({ ...state, nudgedTaskIds, feedbackPending: false }, projectRoot);
+    writeProactiveState(
+      { ...state, nudgedTaskIds, feedbackPending: false, lastOwnerReplyAt: null },
+      projectRoot,
+    );
     return { ok: true, action: "kept", taskId, board };
   }
 
@@ -159,7 +162,10 @@ export async function handleProactiveTaskAction(opts: {
     return { ok: false, action: "error", reason: completed.error, taskId, board };
   }
   const state = readProactiveState(projectRoot);
-  writeProactiveState({ ...state, feedbackPending: false }, projectRoot);
+  writeProactiveState(
+    { ...state, feedbackPending: false, lastOwnerReplyAt: null },
+    projectRoot,
+  );
   return { ok: true, action: "completed", taskId, board };
 }
 

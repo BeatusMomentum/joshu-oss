@@ -13,7 +13,6 @@ import type { HermesApiRunner, HermesChatMessage } from "./hermesApi.js";
 import { buildOwnerTimeSystemMessage } from "./ownerLocalTime.js";
 import { markdownSpeechPlaintext } from "./markdownSpeechPlaintext.js";
 import { recordProactiveFeedback, parseFeedbackKeyword, parseTaskActionKeyword } from "./proactive/feedback.js";
-import { parseProactiveTaskRef } from "./proactive/blockReason.js";
 import { handleProactiveTaskAction } from "./proactive/replyRouter.js";
 import { composeProactiveMessage } from "./proactive/composeMessage.js";
 import { resolveProactiveOwnerReply } from "./proactive/resolveOwnerReply.js";
@@ -27,6 +26,8 @@ import {
   twilioSmsAccountReady,
 } from "./twilioSmsSend.js";
 import { resolveOwnerSmsSessionKey } from "./twilioSmsSession.js";
+import { shouldRouteOwnerReplyToProactiveResolve } from "./proactive/ownerReplyRouting.js";
+import { defaultTwilioSmsSystemPrompt, smsHermesAbortSignal } from "./twilioSmsConfig.js";
 
 export { twilioSmsGatewayEnabled } from "./twilioSmsSend.js";
 
@@ -104,16 +105,7 @@ export function registerTwilioSmsRoutes(
 
   const authToken = envTrim("TWILIO_AUTH_TOKEN");
   const webhookUrl = smsInboundWebhookUrl()!;
-  const systemPrompt =
-    envTrim("TWILIO_SMS_SYSTEM_PROMPT") ||
-    [
-      "You are Joshu on SMS with the box owner. Reply in concise plain text — no markdown or tables.",
-      "Keep most replies short; Joshu splits long SMS automatically (handoff links are OK).",
-      "For login-gated sites (Amazon orders, bank, checkout, 2FA): load skill joshu-browser-handoff,",
-      "navigate in the shared Camofox tab, call browser_handoff_request, and text the returned handoff URL.",
-      "Do not guess from Gmail/Composio alone when the answer requires the owner's logged-in browser session.",
-      "After handoff completes, reply with the answer in your assistant message only — never nylas_send_message on SMS.",
-    ].join(" ");
+  const systemPrompt = envTrim("TWILIO_SMS_SYSTEM_PROMPT") || defaultTwilioSmsSystemPrompt();
 
   router.post("/api/twilio/sms/inbound", express.urlencoded({ extended: false }), (req, res) => {
     const sig = req.headers["x-twilio-signature"];
@@ -209,9 +201,7 @@ export function registerTwilioSmsRoutes(
 
         const paths = resolveJoshuFilesPaths(projectRoot);
         const state = readProactiveState(projectRoot);
-        const hasProactiveRef =
-          Boolean(parseProactiveTaskRef(body)) ||
-          Boolean(state.lastNudge && state.feedbackPending);
+        const hasProactiveRef = shouldRouteOwnerReplyToProactiveResolve(state, body);
         // SMS rides api_server (no Hermes platform idle-reset — that would hit jChat).
         // Rotate the session key after the same idle window as Slack/Telegram.
         const sessionKey = resolveOwnerSmsSessionKey(from, projectRoot);
@@ -258,7 +248,7 @@ export function registerTwilioSmsRoutes(
             sessionId: sessionKey,
             sessionKey,
             messages,
-            signal: AbortSignal.timeout(180_000),
+            signal: smsHermesAbortSignal(),
           },
           {},
         );

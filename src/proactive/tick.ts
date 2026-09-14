@@ -147,6 +147,7 @@ export function applySentNudge(
     sentCount: state.sentCount + 1,
     lastNudge: nudge,
     feedbackPending: true,
+    lastOwnerReplyAt: null,
     nudgedTaskIds,
     lastOnboardingNudgeDate,
   };

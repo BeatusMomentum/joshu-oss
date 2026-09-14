@@ -1,15 +1,9 @@
 import { getOrCreateComposioSession, isComposioEnabled, resolveComposioUserId } from "../composioApi.js";
+import { listActiveConnectedAccounts } from "../connectors/composio/connectedAccountsList.js";
 import { composioClient } from "../connectors/composio/client.js";
 import { composioSlackToolkitVersion } from "../connectors/composio/slackConfig.js";
 
 type ExecuteResult = { successful?: boolean; error?: string; data?: unknown };
-
-type ComposioConnectedAccountRow = {
-  id: string;
-  status?: string;
-  toolkit?: { slug?: string };
-  appUniqueId?: string;
-};
 
 function executeVersionParams(): { version: string } | { dangerouslySkipVersionCheck: true } {
   const version = composioSlackToolkitVersion();
@@ -26,21 +20,14 @@ async function resolveToolkitConnectedAccountId(
 
   await getOrCreateComposioSession(projectRoot);
   const userId = resolveComposioUserId(projectRoot);
-  const composio = composioClient();
-  const listFn = (
-    composio.connectedAccounts as {
-      list: (params: { userIds: string[]; toolkitSlugs?: string[] }) => Promise<{
-        items?: ComposioConnectedAccountRow[];
-      }>;
-    }
-  ).list;
-
-  const result = await listFn({ userIds: [userId], toolkitSlugs: [toolkitSlug] });
+  const items = await listActiveConnectedAccounts({
+    userIds: [userId],
+    toolkitSlugs: [toolkitSlug],
+  });
   const needle = toolkitSlug.toLowerCase();
-  const row = (result.items ?? []).find((item) => {
+  const row = items.find((item) => {
     const slug = item.toolkit?.slug?.toLowerCase() ?? item.appUniqueId?.toLowerCase() ?? "";
-    const active = (item.status ?? "ACTIVE").toUpperCase() === "ACTIVE";
-    return active && (slug === needle || slug.includes(needle));
+    return slug === needle || slug.includes(needle);
   });
   return row?.id;
 }
