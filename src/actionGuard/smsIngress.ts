@@ -1,4 +1,5 @@
 import { parseApprovalReply } from "./approvalReply.js";
+import { isActionGuardEnabled } from "./policy.js";
 import { listOpenPending, resolvePending } from "./pending.js";
 import { ownerSmsPhone, phonesMatch, sendSms } from "../twilioSmsSend.js";
 
@@ -12,6 +13,8 @@ export async function handleSmsApprovalIngress(
   body: string,
   projectRoot = process.cwd(),
 ): Promise<boolean> {
+  if (!isActionGuardEnabled(projectRoot)) return false;
+
   const decision = parseApprovalReply(body);
   if (!decision) return false;
 

@@ -1,0 +1,196 @@
+#!/usr/bin/env npx tsx
+/**
+ * Unit checks for browser handoff store, tokens, lock stub, and Hermes patch marker.
+ */
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { browserHandoffLockStub } from "../src/browserHandoff/lock.ts";
+import {
+  cancelHandoff,
+  completeHandoff,
+  createHandoff,
+  extendHandoffExpiry,
+  getHandoffRecord,
+  getPendingHandoff,
+  handoffUrlForRecord,
+  isBrowserHandoffLocked,
+  setHandoffLastScan,
+} from "../src/browserHandoff/store.ts";
+import { mintHandoffToken, verifyHandoffToken } from "../src/browserHandoff/token.ts";
+import {
+  catalogForScanPrompt,
+  heuristicOverlayScan,
+  sanitizeCatalog,
+} from "../src/browserHandoff/formCatalog.ts";
+import { buildHandoffScanPrompt } from "../src/browserHandoff/formScan.ts";
+
+function tempProjectRoot() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "joshu-handoff-test-"));
+}
+
+function rmRoot(root) {
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// --- token ---
+const id = "00000000-0000-4000-8000-000000000099";
+const expMs = Date.now() + 60_000;
+const token = mintHandoffToken(id, expMs);
+assert.equal(verifyHandoffToken(id, String(expMs), token).ok, true);
+assert.equal(verifyHandoffToken(id, String(expMs), "bad").ok, false);
+assert.equal(verifyHandoffToken(id, String(Date.now() - 1000), token).ok, false);
+
+// --- store lifecycle ---
+const root = tempProjectRoot();
+try {
+  const record = createHandoff(root, {
+    pageUrl: "https://example.com/checkout",
+    pageTitle: "Checkout",
+    instructions: "Review and pay",
+  });
+  assert.equal(record.status, "pending");
+  assert.equal(getPendingHandoff(root)?.id, record.id);
+
+  const lock = isBrowserHandoffLocked(root);
+  assert.equal(lock.locked, true);
+  assert.equal(lock.handoffId, record.id);
+
+  const stub = browserHandoffLockStub(root);
+  assert.equal(stub?.error, "browser_handoff_locked");
+
+  assert.throws(
+    () =>
+      createHandoff(root, {
+        pageUrl: "https://example.com/other",
+        pageTitle: "Other",
+        instructions: "second",
+      }),
+    /browser_handoff_already_pending/,
+  );
+
+  const url = handoffUrlForRecord(record);
+  assert.match(url, /\/handoff\//);
+  assert.match(url, /[?&]t=/);
+  assert.match(url, /[?&]exp=/);
+
+  const extended = extendHandoffExpiry(root, record.id);
+  assert.ok(extended);
+  assert.ok(Date.parse(extended.expiresAt) >= Date.parse(record.expiresAt));
+
+  const completed = completeHandoff(root, record.id);
+  assert.equal(completed?.status, "completed");
+  assert.equal(isBrowserHandoffLocked(root).locked, false);
+  assert.equal(browserHandoffLockStub(root), null);
+
+  const scanRoot = tempProjectRoot();
+  try {
+    const pending = createHandoff(scanRoot, {
+      pageUrl: "https://example.com/login",
+      pageTitle: "Login",
+      instructions: "sign in",
+    });
+    const scanned = setHandoffLastScan(scanRoot, pending.id, {
+      fieldIds: ["f0-e0", "f0-e1"],
+      primaryButtonId: "f0-b0",
+      scannedAt: new Date().toISOString(),
+    });
+    assert.deepEqual(scanned?.lastScan?.fieldIds, ["f0-e0", "f0-e1"]);
+    assert.equal(scanned?.lastScan?.primaryButtonId, "f0-b0");
+    assert.equal("value" in (scanned?.lastScan ?? {}), false);
+  } finally {
+    rmRoot(scanRoot);
+  }
+
+  const root2 = tempProjectRoot();
+  try {
+    const pending = createHandoff(root2, {
+      pageUrl: "https://example.com/a",
+      pageTitle: "A",
+      instructions: "pay",
+    });
+    cancelHandoff(root2, pending.id);
+    assert.equal(getHandoffRecord(root2, pending.id)?.status, "cancelled");
+  } finally {
+    rmRoot(root2);
+  }
+} finally {
+  rmRoot(root);
+}
+
+// --- Hermes patch script smoke ---
+const patchScript = fs.readFileSync(
+  path.join(process.cwd(), "scripts/patch-hermes-camofox-handoff-lock.mjs"),
+  "utf8",
+);
+assert.match(patchScript, /hitl_browser_handoff_lock/);
+assert.match(patchScript, /camofox_navigate/);
+
+const camofoxPatch = fs.readFileSync(
+  path.join(process.cwd(), "scripts/patch-camofox-single-tab.mjs"),
+  "utf8",
+);
+assert.match(camofoxPatch, /HITL_FORM_FIELDS_ROUTE/);
+assert.match(camofoxPatch, /HITL_FORM_PAGE_KEY_ROUTE/);
+assert.match(camofoxPatch, /data-joshu-handoff/);
+
+const routesSrc = fs.readFileSync(path.join(process.cwd(), "src/browserHandoff/routes.ts"), "utf8");
+assert.match(routesSrc, /\/page-key/);
+assert.match(routesSrc, /readFormSignature/);
+
+const scanSrc = fs.readFileSync(path.join(process.cwd(), "src/browserHandoff/formScan.ts"), "utf8");
+assert.doesNotMatch(scanSrc, /fillForm|fill-form|camofoxSession/);
+assert.match(scanSrc, /catalogForScanPrompt/);
+
+const secretCatalog = {
+  fields: [
+    {
+      id: "f0-e0",
+      tag: "INPUT",
+      type: "email",
+      name: "email",
+      elementId: "ap_email",
+      autocomplete: "email",
+      placeholder: "Email",
+      label: "Email",
+      value: "owner@example.com",
+    },
+    {
+      id: "f0-e1",
+      tag: "INPUT",
+      type: "password",
+      name: "password",
+      elementId: "ap_password",
+      autocomplete: "current-password",
+      placeholder: "Password",
+      label: "Password",
+      value: "secret123",
+    },
+  ],
+  buttons: [
+    { id: "f0-b0", text: "Continue", type: "submit", ariaLabel: "" },
+    { id: "f0-b1", text: "Cancel", type: "button", ariaLabel: "" },
+  ],
+};
+const sanitized = sanitizeCatalog(secretCatalog);
+assert.equal(sanitized.fields[0].value, undefined);
+assert.equal(sanitized.fields[1].value, undefined);
+const promptJson = catalogForScanPrompt(secretCatalog);
+assert.equal("value" in promptJson.fields[0], false);
+assert.equal("value" in promptJson.fields[1], false);
+const prompt = buildHandoffScanPrompt(secretCatalog);
+assert.doesNotMatch(prompt.user, /secret123/);
+assert.doesNotMatch(prompt.user, /owner@example.com/);
+assert.match(prompt.user, /f0-e0/);
+assert.match(prompt.system, /Never ask for or echo field values/);
+
+const overlay = heuristicOverlayScan(secretCatalog);
+assert.equal(overlay.fields[0].inputType, "email");
+assert.equal(overlay.fields[1].inputType, "password");
+assert.equal(overlay.primaryButtonId, "f0-b0");
+assert.equal(overlay.fields[0].prefill, "owner@example.com");
+assert.equal(overlay.fields[1].prefill, undefined);
+
+console.log("browser-handoff fixtures: ok");

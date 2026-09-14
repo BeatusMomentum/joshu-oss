@@ -81,6 +81,7 @@ import { createTwilioUpgradeHandler, registerTwilioVoiceRoutes } from "./twilioP
 import { registerTwilioSmsRoutes } from "./twilioSmsGateway.js";
 import { registerAgUiRoutes } from "./agUiApi.js";
 import { registerAppInvokeRoutes } from "./appInvokeApi.js";
+import { getPendingHandoffPinUrl, registerBrowserHandoffRoutes } from "./browserHandoff/index.js";
 import { registerHindsightRecallRoute } from "./hindsightRecallApi.js";
 import type { CreateRunRequest, CreateRunResponse, RunRecord, StatusReport } from "./types.js";
 
@@ -251,6 +252,13 @@ const dockerSupervisor = new DockerSupervisor({
 
 let lastCamofoxBootstrapAt = 0;
 
+/** Start URL for bootstrap — pinned checkout page wins during pending owner handoff. */
+function resolveCamofoxBootstrapUrl(): string | undefined {
+  const pinUrl = getPendingHandoffPinUrl(PROJECT_ROOT);
+  if (pinUrl && !isBlankBrowserUrl(pinUrl)) return pinUrl;
+  return isBlankBrowserUrl(CAMOFOX_START_URL) ? undefined : CAMOFOX_START_URL;
+}
+
 /** Open CAMOFOX_START_URL (default joshu.me) when Camofox has no tab or only a blank page. */
 async function bootstrapCamofoxStartUrl(force = false): Promise<void> {
   const now = Date.now();
@@ -269,15 +277,15 @@ async function bootstrapCamofoxStartUrl(force = false): Promise<void> {
     }
     // No tab after idle shutdown / cold boot: always create one so VNC has a
     // live Firefox. Omit URL when start is about:blank (Camofox rejects about:*).
+    const bootstrapUrl = resolveCamofoxBootstrapUrl();
     if (!tab) {
-      const start = isBlankBrowserUrl(CAMOFOX_START_URL) ? undefined : CAMOFOX_START_URL;
-      tab = await camofoxSession.ensureTab(start);
+      tab = await camofoxSession.ensureTab(bootstrapUrl);
       runner.rememberBrowserTarget(tab.url, HITL_CAMOFOX_USER_ID);
-      console.log(`[joshu] Camofox opened start URL: ${tab.url}`);
-    } else if (isBlankBrowserUrl(tab.url) && !isBlankBrowserUrl(CAMOFOX_START_URL)) {
-      tab = await camofoxSession.ensureTab(CAMOFOX_START_URL);
+      console.log(`[joshu] Camofox opened bootstrap URL: ${tab.url}`);
+    } else if (isBlankBrowserUrl(tab.url) && bootstrapUrl) {
+      tab = await camofoxSession.ensureTab(bootstrapUrl);
       runner.rememberBrowserTarget(tab.url, HITL_CAMOFOX_USER_ID);
-      console.log(`[joshu] Camofox opened start URL: ${tab.url}`);
+      console.log(`[joshu] Camofox opened bootstrap URL: ${tab.url}`);
     }
     await camofoxSession.fitViewport(tab.tabId).catch((err: Error) => {
       console.warn(`[joshu] Camofox viewport fit skipped: ${err.message}`);
@@ -495,6 +503,7 @@ function buildAppRouter(): {
   registerTelephoneRoutes(router, { projectRoot: PROJECT_ROOT });
   registerOwnerChannelRoutes(router, { projectRoot: PROJECT_ROOT });
   registerActionGuardRoutes(router, { projectRoot: PROJECT_ROOT });
+  registerBrowserHandoffRoutes(router, { projectRoot: PROJECT_ROOT, camofoxSession });
   registerVoiceWebRoutes(router);
 
   const joshuApiBase = `http://127.0.0.1:${PORT}${withPublicBase("/api")}`;
@@ -641,8 +650,7 @@ function buildAppRouter(): {
       await bootstrapCamofoxStartUrl(true);
       let tab = (await alignSharedBrowserTab()).tab;
       if (!tab) {
-        const start = isBlankBrowserUrl(CAMOFOX_START_URL) ? undefined : CAMOFOX_START_URL;
-        tab = await camofoxSession.ensureTab(start);
+        tab = await camofoxSession.ensureTab(resolveCamofoxBootstrapUrl());
         runner.rememberBrowserTarget(tab.url, HITL_CAMOFOX_USER_ID);
       }
       await camofoxSession.fitViewport(tab.tabId);
@@ -665,8 +673,7 @@ function buildAppRouter(): {
       await bootstrapCamofoxStartUrl(true);
       let tab = (await alignSharedBrowserTab()).tab;
       if (!tab) {
-        const start = isBlankBrowserUrl(CAMOFOX_START_URL) ? undefined : CAMOFOX_START_URL;
-        tab = await camofoxSession.ensureTab(start);
+        tab = await camofoxSession.ensureTab(resolveCamofoxBootstrapUrl());
         runner.rememberBrowserTarget(tab.url, HITL_CAMOFOX_USER_ID);
       }
       res.json({ ok: true, warmed: true, tab });

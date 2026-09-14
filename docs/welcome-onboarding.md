@@ -114,7 +114,7 @@ On **complete**, work/personal emails resolve into `profile.json` ([`src/onboard
 | `Projects/<slug>/` | One folder per Welcome big-picture priority (`about.md`, `todo.md`) |
 | `Projects/_system/summary-email.md` | Morning/evening email template |
 | `.joshu-ea-version` | `ea-layout: 2.0.0` |
-| Hermes cron jobs | **EA morning**, **EA evening**, **EA weekly** (midday removed) via `syncEaCronJobs` — morning/evening prep **`Planning/daily-review-*.md`** + pointer email; owner completes in jChat ("morning review" / "shutdown") |
+| Hermes cron jobs | **EA morning**, **EA evening**, **EA weekly** via `syncEaCronJobs`; **Joshu proactive tick** (hourly) + **Joshu proactive hygiene** (weekday) via `syncProactiveCron` / `syncProactiveHygieneCron` |
 | `.joshu/nylas/agent.json` | If agent mailbox created on Review |
 
 ## API
@@ -128,7 +128,52 @@ Mounted under `PUBLIC_BASE_PATH` (default `/joshu`). JSON body routes require `e
 | `PUT` | `/joshu/api/onboarding/draft` | Save partial progress (`ownerName` + `assistantName` required) |
 | `POST` | `/joshu/api/onboarding/complete` | Seed Projects + mark complete; `timezone` required |
 | `GET` | `/joshu/api/onboarding/setup-status` | Open required setup prompts + predicate snapshot (desktop session or localhost only) |
-| `POST` | `/joshu/api/onboarding/resync-ea-crons` | Ops repair: re-sync timezone + EA crons from draft or Nylas profile; dedupes duplicate job names |
+| `POST` | `/joshu/api/onboarding/resync-ea-crons` | Ops repair: re-sync timezone + EA crons from draft or Nylas profile; **also installs proactive tick + hygiene**; dedupes duplicate job names |
+
+### Fleet backfill (proactive)
+
+Proactive is **three install surfaces** — image pull alone does not enable all of them on existing boxes. See [troubleshooting — Proactive fleet rollout](../vps-sandbox/troubleshooting-and-lessons.md#proactive-fleet-rollout--lessons-learned-2026-09).
+
+| Surface | Install |
+|---------|---------|
+| Nudge API (`dist/`) | `sync-dist-from-image.sh` (in `upgrade-fleet-box-image.sh`) |
+| Hermes crons (`Joshu proactive tick` + hygiene) | **`POST /joshu/api/onboarding/resync-ea-crons`** — not boot or image pull |
+| `joshu-proactive` skill (hygiene + resolve) | `sync-skills-from-image.sh` → bootstrap merge into `~/.hermes/skills/joshu/` |
+
+**After shipping proactive (or any new factory skill) to existing fleet boxes:**
+
+```bash
+# Preferred: full upgrade path (dist + skills + recreate)
+bash scripts/upgrade-fleet-box-image.sh root@<slug>.box.joshu.me
+
+# Or fleet-wide skills + recreate only:
+bash scripts/sync-fleet-skills-from-image.sh
+
+# Crons (first proactive rollout — not in upgrade script):
+bash scripts/repair-fleet-ea-cron-timezone.sh
+```
+
+**Verify on a box:**
+
+```bash
+ssh root@<slug>.box.joshu.me bash -s <<'EOF'
+echo -n "host proactive skill: "
+test -f /opt/joshu/integrations/hermes/skills/proactive/joshu-proactive/SKILL.md && echo yes || echo no
+docker exec deploy-joshu-stack-1 bash -lc '
+  test -f /root/.hermes/skills/joshu/proactive/joshu-proactive/SKILL.md && echo "seeded proactive skill: yes" || echo "seeded proactive skill: no"
+  python3 -c "import json; d=json.load(open(\"/root/.hermes/cron/jobs.json\")); print(\"crons:\", [j[\"name\"] for j in d[\"jobs\"] if \"proactive\" in j.get(\"name\",\"\").lower()])"
+'
+EOF
+```
+
+**Boxes without Welcome profile** (no onboarding draft / Nylas `profile.json` with timezone + owner names) return **400** from `resync-ea-crons`. Install at least the hourly tick inside the container:
+
+```bash
+ssh root@<slug>.box.joshu.me \
+  "docker exec deploy-joshu-stack-1 bash -lc 'cd /opt/joshu && node --input-type=module -e \"import { syncProactiveCron } from \\\"./dist/proactive/proactiveCronJobs.js\\\"; console.log(await syncProactiveCron(\\\"/opt/joshu\\\"));\"'"
+```
+
+Hygiene cron still needs a completed Welcome profile (or manual `syncProactiveHygieneCron` with a draft). Proactive **nudges** require owner timezone in profile — fix via Welcome **Save changes** if ticks skip with `missing_timezone`. Most mail-track blocks use **`awaiting reply:`** and are **not** nudge-eligible — silence can mean no qualifying candidates, not missing crons.
 
 ### Box secrets (Connect AI)
 

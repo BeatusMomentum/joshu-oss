@@ -17,6 +17,7 @@ enabled:
   - hermes-agent
   - joshu-brain
   - joshu-browser
+  - joshu-browser-handoff
   - joshu-mail
   - joshu-proactive
   - mcporter

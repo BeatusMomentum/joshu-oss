@@ -718,12 +718,18 @@ repair_camfox_server_js() {
       needs_hitl_patch=1
     elif ! grep -q 'HITL_INSERT_TEXT_ROUTE' "$f" 2>/dev/null; then
       needs_hitl_patch=1
+    elif ! grep -q 'HITL_FORM_FIELDS_ROUTE' "$f" 2>/dev/null; then
+      needs_hitl_patch=1
+    elif ! grep -q 'HITL_FILL_FORM_ROUTE' "$f" 2>/dev/null; then
+      needs_hitl_patch=1
+    elif ! grep -q 'HITL_FORM_PAGE_KEY_ROUTE' "$f" 2>/dev/null; then
+      needs_hitl_patch=1
     elif ! grep -q 'window: \[__hitlVp.width, __hitlVp.height\]' "$f" 2>/dev/null; then
       needs_hitl_patch=1
     fi
   fi
   if [[ "${needs_hitl_patch}" -eq 1 ]]; then
-    echo "[vps-start] applying Camofox HITL patch (insert-text / selection / reaper / keepalive / window size)" >&2
+    echo "[vps-start] applying Camofox HITL patch (insert-text / selection / form overlay / reaper / keepalive / window size)" >&2
     node "${patch_script}" "$f" || echo "[vps-start] WARN: Camofox HITL patch failed" >&2
   fi
 }

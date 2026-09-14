@@ -106,7 +106,14 @@ export function registerTwilioSmsRoutes(
   const webhookUrl = smsInboundWebhookUrl()!;
   const systemPrompt =
     envTrim("TWILIO_SMS_SYSTEM_PROMPT") ||
-    "You are Joshu on SMS with the box owner. Reply in concise plain text - no markdown, tables, or long URLs. Keep replies under 500 characters so the carrier will deliver them.";
+    [
+      "You are Joshu on SMS with the box owner. Reply in concise plain text — no markdown or tables.",
+      "Keep most replies short; Joshu splits long SMS automatically (handoff links are OK).",
+      "For login-gated sites (Amazon orders, bank, checkout, 2FA): load skill joshu-browser-handoff,",
+      "navigate in the shared Camofox tab, call browser_handoff_request, and text the returned handoff URL.",
+      "Do not guess from Gmail/Composio alone when the answer requires the owner's logged-in browser session.",
+      "After handoff completes, reply with the answer in your assistant message only — never nylas_send_message on SMS.",
+    ].join(" ");
 
   router.post("/api/twilio/sms/inbound", express.urlencoded({ extended: false }), (req, res) => {
     const sig = req.headers["x-twilio-signature"];

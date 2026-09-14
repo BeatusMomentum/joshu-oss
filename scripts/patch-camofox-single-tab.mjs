@@ -779,6 +779,340 @@ app.post('/tabs/:tabId/selection', async (req, res) => {
   }
 }
 
+if (!source.includes("HITL_FORM_FIELDS_ROUTE")) {
+  const formFieldsRoute = `
+// HITL_FORM_FIELDS_ROUTE — enumerate fillable controls + buttons (no password/card values)
+app.post('/tabs/:tabId/form-fields', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId } = req.body || {};
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, tabId);
+    session.lastAccess = Date.now();
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+    const result = await withTabLock(tabId, async () => {
+      const frames = tabState.page.frames();
+      const fields = [];
+      const buttons = [];
+      for (let i = 0; i < frames.length; i++) {
+        const part = await frames[i].evaluate((frameIndex) => {
+          const MAX_FIELDS = 16;
+          const SKIP_TYPES = ['hidden', 'button', 'submit', 'file', 'image', 'reset', 'color', 'range'];
+          const SECRET_TYPES = ['password'];
+          const SECRET_AUTO = ['current-password', 'new-password', 'cc-number', 'cc-csc', 'cc-exp', 'cc-exp-month', 'cc-exp-year', 'one-time-code'];
+          function usable(el) {
+            if (!el || el.disabled) return false;
+            try {
+              const style = window.getComputedStyle(el);
+              if (style.display === 'none' || style.visibility === 'hidden') return false;
+              if (Number(style.opacity) === 0) return false;
+            } catch (e) {}
+            const r = el.getBoundingClientRect();
+            if ((r.width < 2 && r.height < 2) && el.offsetWidth < 2 && el.offsetHeight < 2) return false;
+            return true;
+          }
+          function labelFor(el) {
+            const aria = String(el.getAttribute('aria-label') || '').trim();
+            if (aria) return aria.slice(0, 80);
+            const id = el.id ? String(el.id) : '';
+            if (id) {
+              try {
+                const lab = document.querySelector('label[for="' + CSS.escape(id) + '"]');
+                if (lab) return String(lab.innerText || lab.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+              } catch (e) {}
+            }
+            const wrap = el.closest && el.closest('label');
+            if (wrap) return String(wrap.innerText || wrap.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+            return String(el.getAttribute('placeholder') || el.getAttribute('name') || '').slice(0, 80);
+          }
+          function walkRoots(root, visit) {
+            if (!root || !root.querySelectorAll) return;
+            visit(root);
+            const all = root.querySelectorAll('*');
+            for (let n = 0; n < all.length; n++) {
+              if (all[n].shadowRoot) walkRoots(all[n].shadowRoot, visit);
+            }
+          }
+          const outFields = [];
+          const outButtons = [];
+          let fieldN = 0;
+          let buttonN = 0;
+          walkRoots(document, (root) => {
+            const nodes = root.querySelectorAll('input, textarea, select, [contenteditable="true"], [contenteditable=""]');
+            for (let n = 0; n < nodes.length; n++) {
+              if (outFields.length >= MAX_FIELDS) break;
+              const el = nodes[n];
+              const tag = String(el.tagName || '').toUpperCase();
+              const type = tag === 'INPUT' ? String(el.type || 'text').toLowerCase() : (tag === 'TEXTAREA' ? 'textarea' : tag === 'SELECT' ? 'select' : 'text');
+              if (tag === 'INPUT' && SKIP_TYPES.indexOf(type) !== -1) continue;
+              if (!usable(el)) continue;
+              const hid = 'f' + frameIndex + '-e' + fieldN;
+              fieldN += 1;
+              el.setAttribute('data-joshu-handoff', hid);
+              const autocomplete = String(el.getAttribute('autocomplete') || '').trim();
+              const secret = SECRET_TYPES.indexOf(type) !== -1 || SECRET_AUTO.indexOf(autocomplete.toLowerCase()) !== -1;
+              const rec = {
+                id: hid,
+                tag: tag,
+                type: type,
+                name: String(el.getAttribute('name') || '').slice(0, 80),
+                elementId: String(el.id || '').slice(0, 80),
+                autocomplete: autocomplete.slice(0, 80),
+                placeholder: String(el.getAttribute('placeholder') || '').slice(0, 80),
+                label: labelFor(el),
+              };
+              if (tag === 'SELECT') {
+                rec.options = [];
+                const opts = el.options || [];
+                for (let o = 0; o < opts.length && rec.options.length < 24; o++) {
+                  rec.options.push({
+                    value: String(opts[o].value || ''),
+                    label: String(opts[o].text || opts[o].value || '').slice(0, 80),
+                  });
+                }
+              }
+              if (type === 'checkbox' || type === 'radio') rec.checked = !!el.checked;
+              if (!secret && tag !== 'SELECT' && type !== 'checkbox' && type !== 'radio' && typeof el.value === 'string' && el.value) {
+                rec.value = String(el.value).slice(0, 200);
+              }
+              outFields.push(rec);
+            }
+            const btnNodes = root.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]');
+            for (let n = 0; n < btnNodes.length; n++) {
+              if (outButtons.length >= 12) break;
+              const el = btnNodes[n];
+              if (!usable(el)) continue;
+              const hid = 'f' + frameIndex + '-b' + buttonN;
+              buttonN += 1;
+              el.setAttribute('data-joshu-handoff', hid);
+              const text = String(el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+              outButtons.push({
+                id: hid,
+                text: text,
+                type: String(el.type || el.getAttribute('type') || 'button').toLowerCase(),
+                ariaLabel: String(el.getAttribute('aria-label') || '').slice(0, 80),
+              });
+            }
+          });
+          return { fields: outFields, buttons: outButtons };
+        }, i);
+        if (part && Array.isArray(part.fields)) fields.push(...part.fields);
+        if (part && Array.isArray(part.buttons)) buttons.push(...part.buttons);
+      }
+      return { fields: fields.slice(0, 16), buttons: buttons.slice(0, 12) };
+    });
+    res.json({ ok: true, fields: result.fields || [], buttons: result.buttons || [] });
+  } catch (err) {
+    log('error', 'form-fields failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+`;
+  let formFieldsInserted = false;
+  for (const needle of hitlClipboardNeedles) {
+    if (source.includes(needle)) {
+      source = source.replace(needle, formFieldsRoute + needle);
+      formFieldsInserted = true;
+      break;
+    }
+  }
+  if (!formFieldsInserted) {
+    console.warn(`[joshu] form-fields route insertion point not found in ${target}; skipping`);
+  }
+}
+
+if (!source.includes("HITL_FILL_FORM_ROUTE")) {
+  const fillFormRoute = `
+// HITL_FILL_FORM_ROUTE — fill stamped controls then click a catalog button id (no LLM)
+app.post('/tabs/:tabId/fill-form', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId, fields, buttonId } = req.body || {};
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, tabId);
+    session.lastAccess = Date.now();
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+    const items = Array.isArray(fields) ? fields : [];
+    const clickId = buttonId ? String(buttonId) : '';
+    const result = await withTabLock(tabId, async () => {
+      const frames = tabState.page.frames();
+      const filled = [];
+      const missing = [];
+      let clicked = null;
+      for (let i = 0; i < frames.length; i++) {
+        const prefix = 'f' + i + '-';
+        const partFields = items.filter((row) => row && String(row.id || '').indexOf(prefix) === 0).map((row) => ({
+          id: String(row.id),
+          value: row.value,
+        }));
+        const partButton = clickId.indexOf(prefix) === 0 ? clickId : '';
+        if (!partFields.length && !partButton) continue;
+        const part = await frames[i].evaluate(({ fields, buttonId }) => {
+          function findStamp(root, id) {
+            if (!root || !root.querySelector) return null;
+            const direct = root.querySelector('[data-joshu-handoff="' + id + '"]');
+            if (direct) return direct;
+            const all = root.querySelectorAll('*');
+            for (let n = 0; n < all.length; n++) {
+              if (all[n].shadowRoot) {
+                const hit = findStamp(all[n].shadowRoot, id);
+                if (hit) return hit;
+              }
+            }
+            return null;
+          }
+          function setValue(el, value) {
+            const tag = String(el.tagName || '').toUpperCase();
+            const type = tag === 'INPUT' ? String(el.type || 'text').toLowerCase() : '';
+            if (type === 'checkbox' || type === 'radio') {
+              const want = value === true || value === 'true' || value === '1' || value === 'on' || value === 'yes';
+              el.checked = !!want;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return 'check';
+            }
+            if (tag === 'SELECT') {
+              el.value = String(value);
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return 'select';
+            }
+            if (el.isContentEditable) {
+              el.focus();
+              document.execCommand('selectAll', false, null);
+              document.execCommand('insertText', false, String(value));
+              return 'edit';
+            }
+            const proto = tag === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc && desc.set) desc.set.call(el, String(value));
+            else el.value = String(value);
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertReplacementText', data: String(value) }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return 'value';
+          }
+          const filled = [];
+          const missing = [];
+          for (let n = 0; n < fields.length; n++) {
+            const item = fields[n];
+            const el = findStamp(document, item.id);
+            if (!el) { missing.push(item.id); continue; }
+            filled.push({ id: item.id, via: setValue(el, item.value) });
+          }
+          let clicked = null;
+          if (buttonId) {
+            const btn = findStamp(document, buttonId);
+            if (btn) {
+              btn.click();
+              clicked = buttonId;
+            }
+          }
+          return { filled: filled, missing: missing, clicked: clicked };
+        }, { fields: partFields, buttonId: partButton });
+        if (part && Array.isArray(part.filled)) filled.push(...part.filled);
+        if (part && Array.isArray(part.missing)) missing.push(...part.missing);
+        if (part && part.clicked) clicked = part.clicked;
+      }
+      return { ok: missing.length === 0, filled: filled, missing: missing, clicked: clicked };
+    });
+    res.json(result || { ok: false, reason: 'no-result' });
+  } catch (err) {
+    log('error', 'fill-form failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+`;
+  let fillFormInserted = false;
+  for (const needle of hitlClipboardNeedles) {
+    if (source.includes(needle)) {
+      source = source.replace(needle, fillFormRoute + needle);
+      fillFormInserted = true;
+      break;
+    }
+  }
+  if (!fillFormInserted) {
+    console.warn(`[joshu] fill-form route insertion point not found in ${target}; skipping`);
+  }
+}
+
+if (!source.includes("HITL_FORM_PAGE_KEY_ROUTE")) {
+  const pageKeyRoute = `
+// HITL_FORM_PAGE_KEY_ROUTE — URL + control-shape fingerprint without stamping locators
+app.post('/tabs/:tabId/form-page-key', async (req, res) => {
+  const tabId = req.params.tabId;
+  try {
+    const { userId } = req.body || {};
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, tabId);
+    if (!found) return tabNotFoundResponse(res, tabId);
+    session.lastAccess = Date.now();
+    const { tabState } = found;
+    tabState.toolCalls++; tabState.consecutiveTimeouts = 0; tabState.consecutiveFailures = 0;
+    const result = await withTabLock(tabId, async () => {
+      const frames = tabState.page.frames();
+      const parts = [];
+      let url = '';
+      let title = '';
+      for (let i = 0; i < frames.length; i++) {
+        const part = await frames[i].evaluate((frameIndex) => {
+          const SKIP_TYPES = ['hidden', 'button', 'submit', 'file', 'image', 'reset', 'color', 'range'];
+          function usable(el) {
+            if (!el || el.disabled) return false;
+            try {
+              const style = window.getComputedStyle(el);
+              if (style.display === 'none' || style.visibility === 'hidden') return false;
+            } catch (e) {}
+            return true;
+          }
+          const parts = [];
+          document.querySelectorAll('input, textarea, select').forEach((el) => {
+            const type = String(el.type || '').toLowerCase();
+            if (el.tagName === 'INPUT' && SKIP_TYPES.indexOf(type) !== -1) return;
+            if (!usable(el)) return;
+            parts.push(['f', String(frameIndex), el.tagName, type, el.name || '', el.id || '', el.getAttribute('placeholder') || ''].join(':'));
+          });
+          document.querySelectorAll('button, input[type=submit], [role=button]').forEach((el) => {
+            if (!usable(el)) return;
+            const text = String(el.innerText || el.value || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+            parts.push(['b', String(frameIndex), text].join(':'));
+          });
+          return { url: String(location.href || ''), title: String(document.title || ''), parts: parts };
+        }, i);
+        if (part && i === 0) {
+          url = part.url || url;
+          title = part.title || title;
+        }
+        if (part && Array.isArray(part.parts)) parts.push(...part.parts);
+      }
+      return { url: url, title: title, key: parts.slice(0, 24).join('|') };
+    });
+    res.json({ ok: true, url: result.url || '', title: result.title || '', key: result.key || '' });
+  } catch (err) {
+    log('error', 'form-page-key failed', { reqId: req.reqId, error: err.message });
+    handleRouteError(err, req, res);
+  }
+});
+
+`;
+  let pageKeyInserted = false;
+  for (const needle of hitlClipboardNeedles) {
+    if (source.includes(needle)) {
+      source = source.replace(needle, pageKeyRoute + needle);
+      pageKeyInserted = true;
+      break;
+    }
+  }
+  if (!pageKeyInserted) {
+    console.warn(`[joshu] form-page-key route insertion point not found in ${target}; skipping`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tab reaper: VNC clicks do not increment toolCalls, so default inactivity kill
 // would wipe jWeb tabs ~every TAB_INACTIVITY_MS (upstream default 5m).

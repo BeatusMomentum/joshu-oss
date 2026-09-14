@@ -63,16 +63,23 @@ export function markPendingNotified(id: string, projectRoot = process.cwd()): vo
   writePending(req, projectRoot);
 }
 
-/** Open pending approvals (status still pending). */
+/** Open pending approvals (status still pending, not past expiresAt). */
 export function listOpenPending(projectRoot = process.cwd()): PendingRequest[] {
   const dir = actionGuardPendingDir(projectRoot);
   if (!dir || !fs.existsSync(dir)) return [];
+  const now = Date.now();
   const out: PendingRequest[] = [];
   for (const name of fs.readdirSync(dir)) {
-    if (!name.endsWith(".json")) continue;
+    if (!name.endsWith(".json") || name.startsWith("._")) continue;
     try {
       const req = JSON.parse(fs.readFileSync(`${dir}/${name}`, "utf8")) as PendingRequest;
-      if (req.status === "pending") out.push(req);
+      if (req.status !== "pending") continue;
+      const expiresMs = Date.parse(req.expiresAt);
+      if (Number.isFinite(expiresMs) && now > expiresMs) {
+        updatePendingStatus(req.id, "timeout", projectRoot);
+        continue;
+      }
+      out.push(req);
     } catch {
       /* ignore corrupt file */
     }

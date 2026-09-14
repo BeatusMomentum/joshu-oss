@@ -60,6 +60,36 @@ function mintSessionKey(phone: string, nowMs: number): string {
  * Rotates after `JOSHU_HERMES_MESSAGING_IDLE_MINUTES` (default 30) of inactivity.
  * When idle reset is disabled (`0` / `none`), keeps a sticky `sms:<e164>` key.
  */
+/** True when Hermes session id is an owner SMS chat (not jChat / kanban worker). */
+export function isSmsHermesSessionKey(sessionKey: string): boolean {
+  return sessionKey.startsWith("sms:");
+}
+
+/**
+ * True when the owner texted recently — used to block agent email sends that should
+ * be plain SMS assistant replies instead (e.g. after browser handoff on SMS).
+ */
+export function isOwnerSmsRecentlyActive(
+  projectRoot: string,
+  opts?: { nowMs?: number; withinMs?: number },
+): boolean {
+  const nowMs = opts?.nowMs ?? Date.now();
+  const idleMinutes = resolveJoshuMessagingIdleMinutes();
+  // Handoffs can run longer than one idle window; cover at least 60m or 2× idle.
+  const defaultWithinMs =
+    idleMinutes == null ? 60 * 60_000 : Math.max(60 * 60_000, idleMinutes * 2 * 60_000);
+  const withinMs = opts?.withinMs ?? defaultWithinMs;
+
+  const state = readState(projectRoot);
+  for (const entry of Object.values(state.sessions)) {
+    const lastMs = entry?.lastActiveAt ? Date.parse(entry.lastActiveAt) : NaN;
+    if (Number.isFinite(lastMs) && nowMs - lastMs < withinMs) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function resolveOwnerSmsSessionKey(
   fromPhone: string,
   projectRoot = process.cwd(),

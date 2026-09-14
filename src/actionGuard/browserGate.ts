@@ -1,3 +1,4 @@
+import { browserHandoffLockStub } from "../browserHandoff/lock.js";
 import { awaitOwnerApproval, buildBrowserActionSummary } from "./gate.js";
 import { browserActionId } from "./classify.js";
 import { isActionGuardEnabled, loadActionGuardPolicy } from "./policy.js";
@@ -14,6 +15,11 @@ export async function gateBrowserWriteRequest(
   args: Record<string, unknown>,
   projectRoot: string,
 ): Promise<BrowserWriteGateResult> {
+  const handoffStub = browserHandoffLockStub(projectRoot);
+  if (handoffStub) {
+    return { allowed: false, stub: handoffStub };
+  }
+
   const policy = loadActionGuardPolicy(projectRoot);
   if (!isActionGuardEnabled(projectRoot) || !policy.browserGateWrites) {
     return { allowed: true };

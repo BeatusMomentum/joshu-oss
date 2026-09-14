@@ -153,11 +153,12 @@ Cloud-init (control-plane provision) runs `bootstrap-vps.sh`, which clones the r
 | You changed | Update path |
 | --- | --- |
 | Boot scripts (`vps-start.sh`, `scripts/lib`, MCP start/patch) | New image, **or** `bash scripts/hotpatch-boot.sh root@host <path>` |
-| Factory skills, templates (still bind-mounted) | rsync those trees → recreate `joshu-stack` |
+| Factory skills, templates (still bind-mounted) | `bash scripts/sync-skills-from-image.sh` → recreate `joshu-stack` (fleet: `bash scripts/sync-fleet-skills-from-image.sh`) |
 | Compiled Joshu API (`src/` → `dist/`) | Sync host `dist/` from image (below) → recreate |
-| `deploy/Dockerfile`, Hermes pin, `deploy/runtime/package.json` | New image tag → pull → dist sync → recreate |
+| `deploy/Dockerfile`, Hermes pin, `deploy/runtime/package.json` | New image tag → **`bash scripts/upgrade-fleet-box-image.sh root@host`** (dist + skills + recreate) |
+| New Hermes crons (e.g. proactive tick) | **`bash scripts/repair-fleet-ea-cron-timezone.sh`** after upgrade — crons are not in the image |
 
-Fleet boxes with the optional instance-agent may automate dist sync — see [instance-agent-protocol.md](../docs/vps-sandbox/instance-agent-protocol.md).
+Fleet boxes with the optional instance-agent may automate dist + skills sync — see [instance-agent-protocol.md](../docs/vps-sandbox/instance-agent-protocol.md). Proactive rollout checklist: [troubleshooting — Proactive fleet rollout](../docs/vps-sandbox/troubleshooting-and-lessons.md#proactive-fleet-rollout--lessons-learned-2026-09).
 
 Quick dist recovery after a release image pull:
 

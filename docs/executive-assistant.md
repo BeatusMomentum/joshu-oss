@@ -109,6 +109,16 @@ Hourly sweep (`POST /api/proactive/tick`, localhost-only) picks blocked Kanban c
 
 Skill: [`joshu-proactive`](../integrations/hermes/skills/proactive/joshu-proactive/SKILL.md). Tests: `npm run test:proactive`.
 
+**Fleet ops:** Proactive has **three install surfaces** — do not assume image pull enables everything. See [troubleshooting — Proactive fleet rollout](vps-sandbox/troubleshooting-and-lessons.md#proactive-fleet-rollout--lessons-learned-2026-09).
+
+| Surface | Backfill |
+|---------|----------|
+| Nudge API | [`upgrade-fleet-box-image.sh`](../scripts/upgrade-fleet-box-image.sh) / `sync-dist-from-image.sh` |
+| Hermes crons | [`repair-fleet-ea-cron-timezone.sh`](../scripts/repair-fleet-ea-cron-timezone.sh) → `resync-ea-crons` |
+| `joshu-proactive` skill | [`sync-fleet-skills-from-image.sh`](../scripts/sync-fleet-skills-from-image.sh) |
+
+Owner **nudges** use API compose (no skill file). **Hygiene** and **owner-reply resolve** need the seeded skill under `~/.hermes/skills/joshu/proactive/`. Details: [welcome-onboarding.md — Fleet backfill](welcome-onboarding.md#fleet-backfill-proactive).
+
 ## Hermes skills (factory allowlist)
 
 Enabled in [`integrations/hermes/skills-enabled.yaml`](../integrations/hermes/skills-enabled.yaml):

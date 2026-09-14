@@ -164,6 +164,20 @@ camofox_click / camofox_type / camofox_press
 
 **Not gated:** owner clicking in jWeb/noVNC; agent **navigate** to open a scheduling page (only the confirm click is gated).
 
+### Browser handoff lock (owner mobile checkout)
+
+Separate from the optional browser **action guard**. When `browser_handoff_request` creates a **pending** handoff, Joshu **hard-locks** agent Camofox **navigate / click / type / press / back** until the owner completes via the signed handoff URL or the handoff expires/is cancelled.
+
+| Path | Role |
+|------|------|
+| [`src/browserHandoff/`](../src/browserHandoff/) | Pending record, HMAC URL tokens, lock API |
+| Hermes `patch-hermes-camofox-handoff-lock.mjs` | Pre-flight `GET /api/browser-handoff/lock` in `browser_camofox.py` |
+| [`src/actionGuard/browserGate.ts`](../src/actionGuard/browserGate.ts) | Also returns `browser_handoff_locked` stub before action-guard HITL |
+
+**Allowed during lock:** `browser_snapshot`, `browser_handoff_status`, owner noVNC on the handoff page.
+
+**Fail-open:** if Hermes cannot reach the lock endpoint, the handoff patch logs and allows the write (same as action guard).
+
 **Fail-open:** if Hermes cannot reach Joshu (`POST …/browser` errors), the patch logs a warning and allows the write (same pattern as other Hermes guards).
 
 **Deny/timeout:** Hermes receives a success-shaped browser stub; no click/type/press occurs.

@@ -1,3 +1,5 @@
+import type { CatalogButton, CatalogField } from "./browserHandoff/formCatalog.js";
+
 export interface CamofoxTab {
   tabId: string;
   targetId?: string;
@@ -128,6 +130,38 @@ const HITL_READ_FOCUSED_TEXT = `function () {
   }
   var sel = String(window.getSelection ? window.getSelection() : '') || '';
   return { text: sel };
+}`;
+
+/** Read-only page fingerprint — does not stamp data-joshu-handoff (safe to poll). */
+const HITL_FORM_SIGNATURE = `function () {
+  function skipType(t) {
+    return ['hidden', 'button', 'submit', 'file', 'image', 'reset', 'color', 'range'].indexOf(t) !== -1;
+  }
+  function usable(el) {
+    if (!el || el.disabled) return false;
+    try {
+      var s = window.getComputedStyle(el);
+      if (s.display === 'none' || s.visibility === 'hidden') return false;
+    } catch (e) {}
+    return true;
+  }
+  var parts = [];
+  document.querySelectorAll('input, textarea, select').forEach(function (el) {
+    var type = String(el.type || '').toLowerCase();
+    if (el.tagName === 'INPUT' && skipType(type)) return;
+    if (!usable(el)) return;
+    parts.push(['f', el.tagName, type, el.name || '', el.id || '', el.getAttribute('placeholder') || ''].join(':'));
+  });
+  document.querySelectorAll('button, input[type=submit], [role=button]').forEach(function (el) {
+    if (!usable(el)) return;
+    var text = String(el.innerText || el.value || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+    parts.push(['b', text].join(':'));
+  });
+  return {
+    url: String(location.href || ''),
+    title: String(document.title || ''),
+    key: parts.slice(0, 24).join('|')
+  };
 }`;
 
 function explainInsertFailure(reason?: string): string {
@@ -325,6 +359,105 @@ export class CamofoxSessionCoordinator {
     );
     if (result?.ok) return;
     throw new Error(explainInsertFailure(result?.reason));
+  }
+
+  async listFormFields(): Promise<{ fields: CatalogField[]; buttons: CatalogButton[] }> {
+    const tab = await this.currentTab();
+    if (!tab?.tabId) throw new Error("No Camofox tab");
+    const url = new URL(`/tabs/${tab.tabId}/form-fields`, this.opts.camofoxUrl);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: this.opts.userId }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      throw new Error(
+        res.status === 404 || res.status === 405
+          ? "Camofox form overlay patch missing (HITL_FORM_FIELDS_ROUTE)."
+          : `Camofox form-fields failed: ${res.status}`,
+      );
+    }
+    const data = (await res.json()) as { fields?: unknown; buttons?: unknown };
+    return {
+      fields: Array.isArray(data.fields) ? (data.fields as CatalogField[]) : [],
+      buttons: Array.isArray(data.buttons) ? (data.buttons as CatalogButton[]) : [],
+    };
+  }
+
+  /** URL + control shape for auto-rescan. Does not stamp locators or send values. */
+  async readFormSignature(): Promise<{ url: string; title: string; key: string }> {
+    const tab = await this.currentTab();
+    if (!tab?.tabId) throw new Error("No Camofox tab");
+    const keyUrl = new URL(`/tabs/${tab.tabId}/form-page-key`, this.opts.camofoxUrl);
+    const res = await fetch(keyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: this.opts.userId }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { url?: unknown; title?: unknown; key?: unknown };
+      return {
+        url: typeof data.url === "string" && data.url ? data.url : tab.url,
+        title: typeof data.title === "string" ? data.title : tab.title ?? "",
+        key: typeof data.key === "string" ? data.key : "",
+      };
+    }
+    // Unpatched Camofox: HTTP /evaluate is often 403 on login pages — last resort only.
+    const evaluated = await this.evaluateJson<{ url?: string; title?: string; key?: string }>(
+      tab.tabId,
+      `JSON.stringify((${HITL_FORM_SIGNATURE})())`,
+    );
+    return {
+      url: typeof evaluated?.url === "string" && evaluated.url ? evaluated.url : tab.url,
+      title: typeof evaluated?.title === "string" ? evaluated.title : tab.title ?? "",
+      key: typeof evaluated?.key === "string" ? evaluated.key : "",
+    };
+  }
+
+  /**
+   * Fill stamped overlay controls then click a catalog button id.
+   * Owner-typed values stay on this path — never pass them to an LLM.
+   */
+  async fillForm(opts: {
+    fields: Array<{ id: string; value: string | boolean }>;
+    buttonId?: string | null;
+  }): Promise<{ ok: boolean; filled: number; missing: string[]; clicked: string | null }> {
+    const tab = await this.currentTab();
+    if (!tab?.tabId) throw new Error("No Camofox tab");
+    const url = new URL(`/tabs/${tab.tabId}/fill-form`, this.opts.camofoxUrl);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: this.opts.userId,
+        fields: opts.fields,
+        buttonId: opts.buttonId || "",
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      throw new Error(
+        res.status === 404 || res.status === 405
+          ? "Camofox form overlay patch missing (HITL_FILL_FORM_ROUTE)."
+          : `Camofox fill-form failed: ${res.status}`,
+      );
+    }
+    const data = (await res.json()) as {
+      ok?: boolean;
+      filled?: unknown;
+      missing?: unknown;
+      clicked?: unknown;
+    };
+    const missing = Array.isArray(data.missing) ? data.missing.map((id) => String(id)) : [];
+    const filled = Array.isArray(data.filled) ? data.filled.length : 0;
+    return {
+      ok: data.ok === true,
+      filled,
+      missing,
+      clicked: typeof data.clicked === "string" && data.clicked ? data.clicked : null,
+    };
   }
 
   /** Read selection, or the whole focused field when nothing is selected. */

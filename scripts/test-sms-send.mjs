@@ -6,7 +6,13 @@
  */
 import assert from "node:assert/strict";
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { parseApprovalReply } from "../src/actionGuard/approvalReply.js";
+import { listOpenPending } from "../src/actionGuard/pending.js";
+import { handleSmsApprovalIngress } from "../src/actionGuard/smsIngress.js";
 import { SMS_MAX_CHARS, SMS_MAX_PARTS, smsGsmParts, smsGsmPlaintext } from "../src/twilioSmsSend.js";
 
 {
@@ -53,6 +59,50 @@ import { SMS_MAX_CHARS, SMS_MAX_PARTS, smsGsmParts, smsGsmPlaintext } from "../s
 {
   const one = smsGsmPlaintext("I've got your text — short.");
   assert.ok(one.length < SMS_MAX_CHARS);
+}
+
+function pendingDirForRoot(root) {
+  const arozUser = "test@example.com";
+  return path.join(root, ".local", "arozos-data", "files", "users", arozUser, ".joshu", "action-guard", "pending");
+}
+
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "joshu-sms-ingress-"));
+  process.env.JOSHU_AROZ_USER = "test@example.com";
+  process.env.AROZ_DATA = path.join(root, ".local", "arozos-data");
+  const pendingDir = pendingDirForRoot(root);
+  fs.mkdirSync(pendingDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(pendingDir, "stale.json"),
+    JSON.stringify(
+      {
+        id: "stale",
+        actionId: "nylas_send_message",
+        summary: { to: "old@example.com" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "2026-01-01T00:30:00.000Z",
+        status: "pending",
+      },
+      null,
+      2,
+    ),
+  );
+  assert.equal(listOpenPending(root).length, 0);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(pendingDir, "stale.json"), "utf8")).status, "timeout");
+}
+
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "joshu-sms-ingress-off-"));
+  process.env.JOSHU_AROZ_USER = "test@example.com";
+  process.env.AROZ_DATA = path.join(root, ".local", "arozos-data");
+  const policyDir = path.join(root, ".local", "arozos-data", "files", "users", "test@example.com", ".joshu", "action-guard");
+  fs.mkdirSync(path.join(policyDir, "pending"), { recursive: true });
+  fs.writeFileSync(
+    path.join(policyDir, "policy.json"),
+    JSON.stringify({ enabled: false }, null, 2),
+  );
+  const consumed = await handleSmsApprovalIngress("+15551234567", "ok", root);
+  assert.equal(consumed, false);
 }
 
 console.log("test-sms-send: ok");

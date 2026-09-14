@@ -39,11 +39,56 @@ Desktop shortcuts: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 JSON get mangled on keystroke paste; Cmd+C inside Camofox does not reach the
 host clipboard.
 
+## Mobile owner browser handoff
+
+When the agent has **staged a sensitive or owner-only step** (payment, login, 2FA, irreversible
+confirm, etc.) in the shared Camofox tab, use **`browser_handoff_request`** (Hermes plugin
+`joshu-browser-handoff`) to share a link for the box owner to take over on their phone.
+
+| Step | Who | Action |
+|------|-----|--------|
+| 1 | Agent | `browser_navigate` to the staged handoff page in shared tab |
+| 2 | Agent | `browser_handoff_request(instructions=…)` → returns `https://{slug}.box.joshu.me/joshu/handoff/{id}` |
+| 3 | Owner | Opens link on phone (log into box if needed) → instructions + embedded noVNC |
+| 4 | Owner | Taps **I'm done** when their step is complete |
+| 5 | Agent | Poll `browser_handoff_status` → `completed`, then `browser_snapshot` to verify |
+
+**Session continuity:** handoff pins the staged `pageUrl`, blocks `CAMOFOX_START_URL` bootstrap
+while pending, and the handoff page sends **heartbeat** every 20s (Camofox tab keepalive +
+extends expiry on owner activity). Do not navigate away or restart Camofox during pending handoff.
+
+Skill: [`integrations/hermes/skills/browser/joshu-browser-handoff/SKILL.md`](../integrations/hermes/skills/browser/joshu-browser-handoff/SKILL.md).
+
+**Implementation:** [`src/browserHandoff/`](../src/browserHandoff/) (store + APIs), mobile shell [`public/handoff.js`](../public/handoff.js) + [`public/handoff-shell.css`](../public/handoff-shell.css) served at `GET /joshu/handoff/:id?t=&exp=`, Hermes plugin [`.hermes/plugins/joshu-browser-handoff/`](../.hermes/plugins/joshu-browser-handoff/), lock patch [`scripts/patch-hermes-camofox-handoff-lock.mjs`](../scripts/patch-hermes-camofox-handoff-lock.mjs) (via `scripts/apply-hermes-hitl-patch.sh`).
+
+### Mobile overlay (native fields + VNC on top)
+
+noVNC is a canvas, so the phone OS will not open a keyboard on remote inputs. The handoff page
+puts **VNC on top** and a **native field panel below**:
+
+1. Joshu scans Camofox with Playwright (`POST /tabs/:id/form-fields`) — frames + shadow DOM.
+2. A Joshu-side JSON LLM call **labels fields and picks Continue / Sign in** from a **sanitized
+   catalog** (ids, types, placeholders, button text). Live values and owner overlay input never
+   go to the model, Hermes, or Langfuse.
+3. The owner types in real `<input>`s (keyboard works).
+4. **Fill and continue** posts values to `POST /joshu/api/browser-handoff/:id/fill-form` → Camofox
+   `fill-form` (native setter + click by catalog button id). No AI on this path.
+5. The overlay **auto-rescans** when the remote URL or field shape changes (poll `page-key`, no LLM).
+   **Scan fields** remains a manual override.
+
+Fallback: collapsed **Paste into focused field** for CAPTCHA / custom widgets. Heuristic labels
+are used if OpenRouter is down.
+
+Direct viewer (no instructions shell): `/joshu/camofox-viewer.html`.
+
 Joshu bypasses VNC entirely. One visible buffer + two buttons:
 
 | Action | UI | Joshu API | Camofox |
 |--------|----|-----------|---------|
 | Paste into focused field | **Paste into field**, or **Cmd+V** on the page | `POST /joshu/api/camofox/insert-text` | HITL `POST /tabs/:id/insert-text` (DOM insert at caret) |
+| Overlay scan (handoff) | **Scan fields** (auto on page change) | `GET /joshu/api/browser-handoff/:id/form-fields` | HITL `POST /tabs/:id/form-fields` + Joshu LLM labels |
+| Overlay page watch | (poll) | `GET /joshu/api/browser-handoff/:id/page-key` | Playwright evaluate — URL + control shape, no stamps |
+| Overlay fill (handoff) | **Fill and continue** | `POST /joshu/api/browser-handoff/:id/fill-form` | HITL `POST /tabs/:id/fill-form` (no LLM) |
 | Copy selection / focused field | **Copy from browser**, or **Cmd+C** on the page | `POST /joshu/api/camofox/copy-selection` | `evaluate` + HITL `POST /tabs/:id/selection` |
 | Wheel / arrow / Page keys | host bridge in jWeb | `POST /joshu/api/camofox/scroll` | Playwright `/scroll` or `/press` (VNC wheel often drops) |
 
@@ -58,8 +103,9 @@ keysyms — that path mangles `{`/`}` and is no longer used.
 
 The Camofox **insert-text** and **selection** routes are not upstream — they are
 injected by `scripts/patch-camofox-single-tab.mjs` (`HITL_INSERT_TEXT_ROUTE`,
-`HITL_SELECTION_ROUTE`). `vps-start` re-applies the patch when either marker is
-missing. Without insert-text, Joshu falls back to `/evaluate`.
+`HITL_SELECTION_ROUTE`, `HITL_FORM_FIELDS_ROUTE`, `HITL_FILL_FORM_ROUTE`). `vps-start`
+re-applies the patch when those markers are missing. Without insert-text, Joshu
+falls back to `/evaluate`. Overlay scan/fill require the form HITL routes.
 
 Live-box UI hotpatch: `public/` is image-baked — after recreate, `docker cp` the clipboard HTML/JS into `/opt/joshu/public/` or the next image bake. Lane table: [`vps-sandbox/hotpatch-running-box.md`](vps-sandbox/hotpatch-running-box.md).
 
@@ -180,7 +226,7 @@ Restart Hermes gateway after config changes.
 | `TAB_INACTIVITY_MS` | Camofox tab reaper; **`0` for jWeb HITL** (default on VPS) |
 | `BROWSER_IDLE_TIMEOUT_MS` | Firefox idle shutdown; default **`300000`** — jWeb warm-on-open relaunches |
 | `PROXY_*` / `PROXY_COUNTRY` | Residential egress for Camofox (Decodo). Self-host: set in `.env` / `instance.env`. Fleet boxes: `DEFAULT_PROXY_*` at provision; existing: control-plane `pnpm enable:camofox-proxy` |
-| `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, insert-text + selection, reaper/keepalive, **cold-launch warm** |
+| `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, insert-text + selection, form overlay scan/fill, reaper/keepalive, **cold-launch warm** |
 | `scripts/camofox-vnc-watcher.sh` | Reattach x11vnc after idle shutdown (same `:99`) |
 | `scripts/ensure-camofox-container.sh` | Create/start container + wait for `/health` |
 | `POST /joshu/api/camofox/fit-viewport` | Bootstrap tab → Camofox viewport route |

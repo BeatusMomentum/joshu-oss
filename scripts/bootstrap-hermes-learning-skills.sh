@@ -44,8 +44,20 @@ if [[ -f "${STAMP_FILE}" ]]; then
 fi
 
 if [[ -d "${TARGET_DIR}" && "${current_version}" == "${desired_version}" ]]; then
-  log "up to date (${desired_version})"
-  exit 0
+  # Image/host skills sync can add new factory dirs without bumping release — still merge them in.
+  missing_factory_skill=false
+  while IFS= read -r -d '' skill_md; do
+    rel="${skill_md#${SOURCE_DIR}/}"
+    if [[ ! -f "${TARGET_DIR}/${rel}" ]]; then
+      missing_factory_skill=true
+      break
+    fi
+  done < <(find "${SOURCE_DIR}" -name 'SKILL.md' -print0 2>/dev/null)
+  if [[ "${missing_factory_skill}" != "true" ]]; then
+    log "up to date (${desired_version})"
+    exit 0
+  fi
+  log "release ${desired_version} stamped but factory has new skills — merging"
 fi
 
 mkdir -p "${TARGET_DIR}"

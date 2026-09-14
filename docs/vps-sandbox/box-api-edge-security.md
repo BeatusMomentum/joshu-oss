@@ -17,6 +17,9 @@ Joshu listens on `127.0.0.1:8788`. Caddy reverse-proxies `/joshu/*` from the pub
 | `/api/box/snap\|restore\|…` + status/snapshots | Direct localhost |
 | `/api/instance/send-owner-email`, `sync-companion-identity` | Direct localhost |
 | `/api/desktop-actions/*`, `/api/app-gui-actions/*` | Direct localhost |
+| `/api/browser-handoff/request`, `/status/*`, `/lock`, `/:id/cancel` | Direct localhost (Hermes plugin + Camofox lock patch) |
+| `/api/browser-handoff/:id/heartbeat`, `/:id/complete` | Signed handoff token (`t` + `exp` query/body) |
+| `GET /handoff/:id` (mobile shell + noVNC) | Signed handoff token on URL |
 | `/api/files/*`, `/api/excalidraw/cwm/*`, `/api/ag-ui/run` | Desktop browser or local |
 
 ## Remaining risk

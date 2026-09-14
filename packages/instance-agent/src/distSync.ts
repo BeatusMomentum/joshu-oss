@@ -104,6 +104,34 @@ export async function syncDistFromImage(opts: {
         `[instance-agent] last30days-skill sync skipped: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    // Factory Hermes skills — host bind-mount shadows the image; merge from image on release update.
+    const hermesSkillsDir = path.join(installDir, "integrations", "hermes", "skills");
+    try {
+      await dockerCp(cid, "/opt/joshu/integrations/hermes/skills", hermesSkillsDir);
+      console.info(`[instance-agent] hermes factory skills synced -> ${hermesSkillsDir}`);
+    } catch (err) {
+      console.warn(
+        `[instance-agent] hermes skills sync skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    for (const rel of [
+      "factory/manifest.yaml",
+      "integrations/hermes/skills-enabled.yaml",
+      "factory/onboarding-prompts.yaml",
+    ] as const) {
+      const dest = path.join(installDir, ...rel.split("/"));
+      try {
+        await mkdir(path.dirname(dest), { recursive: true });
+        await execFileAsync("docker", ["cp", `${cid}:/opt/joshu/${rel}`, dest], {
+          timeout: 120_000,
+        });
+        console.info(`[instance-agent] synced ${rel}`);
+      } catch (err) {
+        console.warn(
+          `[instance-agent] ${rel} sync skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   } finally {
     await dockerRemove(cid);
   }
