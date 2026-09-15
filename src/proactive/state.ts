@@ -27,6 +27,7 @@ export function factoryProactiveState(localDate: string): ProactiveState {
     hygieneClosedTaskIds: [],
     lastHygieneSummary: null,
     hygieneAmbiguousQueue: [],
+    clarifyQueue: [],
     lastOnboardingNudgeDate: null,
     lastOwnerReplyAt: null,
   };
@@ -115,6 +116,38 @@ export function readProactiveState(projectRoot = process.cwd(), timezone?: strin
                   : q.blockReason === null
                     ? null
                     : null,
+              queuedAt:
+                typeof q.queuedAt === "string" && q.queuedAt.trim()
+                  ? q.queuedAt.trim()
+                  : new Date().toISOString(),
+            }))
+        : [],
+      clarifyQueue: Array.isArray(parsed.clarifyQueue)
+        ? parsed.clarifyQueue
+            .filter(
+              (q): q is NonNullable<ProactiveState["clarifyQueue"]>[number] =>
+                q &&
+                typeof q === "object" &&
+                typeof (q as { taskId?: unknown }).taskId === "string" &&
+                typeof (q as { board?: unknown }).board === "string" &&
+                typeof (q as { conflict?: unknown }).conflict === "string",
+            )
+            .map((q) => ({
+              taskId: q.taskId.trim(),
+              board: q.board.trim(),
+              title:
+                typeof q.title === "string" && q.title.trim() ? q.title.trim() : "(untitled)",
+              blockReason:
+                typeof q.blockReason === "string"
+                  ? q.blockReason
+                  : q.blockReason === null
+                    ? null
+                    : null,
+              conflict: q.conflict.trim(),
+              handoffAt:
+                typeof q.handoffAt === "string" && q.handoffAt.trim()
+                  ? q.handoffAt.trim()
+                  : null,
               queuedAt:
                 typeof q.queuedAt === "string" && q.queuedAt.trim()
                   ? q.queuedAt.trim()

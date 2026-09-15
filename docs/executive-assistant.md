@@ -92,7 +92,9 @@ Tests: `npm run test:coordination-scope` · `npm run test:owner-reply` · `npm r
 
 ## Proactive owner nudges (2026-09)
 
-Hourly sweep (`POST /api/proactive/tick`, localhost-only) picks blocked Kanban cards needing owner input and sends SMS/email nudges (1/day default). Owner replies route through [`resolveOwnerReply.ts`](../src/proactive/resolveOwnerReply.ts):
+Hourly sweep (`POST /api/proactive/tick`, localhost-only) picks blocked Kanban cards needing owner input and sends SMS/email nudges (1/day default). After **`mail_handoff_track_task`**, Joshu runs deterministic **track-signal reconcile** ([`trackSignalEvaluate.ts`](../src/ea/trackSignalEvaluate.ts)): high-confidence confirmation auto-completes the card; ambiguous signals enqueue a **`clarify`** nudge (priority over generic sweep) in `.joshu/proactive/state.json` `clarifyQueue`. File-only ingress (`agent_authorized: false`) still reconciles internally — no outbound mail on auto-resolve.
+
+Owner replies route through [`resolveOwnerReply.ts`](../src/proactive/resolveOwnerReply.ts):
 
 | Piece | Behavior |
 |-------|----------|
@@ -104,7 +106,8 @@ Hourly sweep (`POST /api/proactive/tick`, localhost-only) picks blocked Kanban c
 | **Daily hygiene** | MCP `proactive_hygiene_prepare` → per-card agent review → `proactive_hygiene_record`; ambiguous cards → hourly `stale_review` nudges |
 | **Cross-board Kanban** | [`crossBoardKanban.ts`](../src/proactive/crossBoardKanban.ts) — all boards on this box (not multi-box) |
 | **Meeting blackout** | Hourly tick skips nudges when Google Calendar FreeBusy shows owner in a busy block (+ 5 min pre-buffer) |
-| **Cadence hints** | Every nudge/stale_review includes MORE/LESS/USEFUL line (deterministic append if Hermes compose omits it) |
+| **Clarify queue** | Post-handoff model conflicts → `clarify` compose kind before stale_review / generic nudge ([`clarifyQueue.ts`](../src/proactive/clarifyQueue.ts)) |
+| **Cadence hints** | Every nudge/stale_review/clarify includes MORE/LESS/USEFUL line (deterministic append if Hermes compose omits it) |
 | **Inactive projects** | Hourly tick skips `mail_track` when `Projects/<slug>/about.md` `status` is not `active` |
 
 Skill: [`joshu-proactive`](../integrations/hermes/skills/proactive/joshu-proactive/SKILL.md). Tests: `npm run test:proactive`.

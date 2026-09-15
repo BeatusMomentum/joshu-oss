@@ -67,6 +67,7 @@
     "test:owner-mail-visibility": "tsx scripts/test-owner-mail-visibility.mjs",
     "test:coordination-scope": "tsx scripts/test-coordination-scope.mjs",
     "test:proactive": "tsx scripts/test-proactive.mjs",
+    "test:track-signal": "tsx scripts/test-track-signal-evaluate.mjs",
     "test:onboarding-reconcile": "tsx scripts/test-onboarding-reconcile.mjs",
     "test:kanban-bridge-max-runtime": "tsx scripts/test-kanban-bridge-max-runtime.mjs",
     "test:kanban-orphan-reaper": "tsx scripts/test-kanban-orphan-reaper.mjs",

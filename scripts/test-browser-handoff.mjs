@@ -27,6 +27,7 @@ import {
   sanitizeCatalog,
 } from "../src/browserHandoff/formCatalog.ts";
 import { buildHandoffScanPrompt } from "../src/browserHandoff/formScan.ts";
+import { isOauthPopupUrl } from "../src/camofoxSession.ts";
 
 function tempProjectRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "joshu-handoff-test-"));
@@ -142,6 +143,8 @@ const camofoxPatch = fs.readFileSync(
 );
 assert.match(camofoxPatch, /HITL_FORM_FIELDS_ROUTE/);
 assert.match(camofoxPatch, /HITL_FORM_PAGE_KEY_ROUTE/);
+assert.match(camofoxPatch, /__hitlPopupCoerceV5/);
+assert.match(camofoxPatch, /hitl oauth popup waiting for callback/);
 assert.match(camofoxPatch, /data-joshu-handoff/);
 
 const routesSrc = fs.readFileSync(path.join(process.cwd(), "src/browserHandoff/routes.ts"), "utf8");
@@ -232,5 +235,8 @@ assert.match(routesSrcNow, /verifyArozosPassword/);
 
 const loginJs = fs.readFileSync(path.join(process.cwd(), "public/handoff-login.js"), "utf8");
 assert.match(loginJs, /invalid_credentials/);
+
+assert.equal(isOauthPopupUrl("https://accounts.google.com/gsi/transform"), true);
+assert.equal(isOauthPopupUrl("https://rapidapi.com/auth/login"), false);
 
 console.log("browser-handoff fixtures: ok");

@@ -1,6 +1,7 @@
 import { readAgentProfile } from "../nylas/profile.js";
 import { resolveJoshuFilesPaths } from "../joshuFilesPaths.js";
 import { deliverProactiveNudge } from "./delivery.js";
+import { pickTopClarifyCandidate, clarifyToCandidate } from "./clarifyQueue.js";
 import { pickTopStaleReviewCandidate } from "./hygieneRecord.js";
 import { isOwnerAvailableForProactive } from "./meetingWindow.js";
 import { pickTopProactiveCandidate } from "./sweep.js";
@@ -66,13 +67,23 @@ export async function runProactiveTick(opts: RunProactiveTickOpts = {}): Promise
     return { ok: true, action: "skipped", reason: cap.reason ?? "daily_cap" };
   }
 
-  let candidate = await pickTopProactiveCandidate({
-    filesRoot: paths.filesRoot,
-    projectRoot,
-    state,
-    today,
-  });
-  let nudgeKind: "nudge" | "stale_review" = "nudge";
+  let candidate: ProactiveCandidate | null = null;
+  let nudgeKind: "clarify" | "nudge" | "stale_review" = "nudge";
+
+  const clarify = pickTopClarifyCandidate(state);
+  if (clarify) {
+    candidate = clarifyToCandidate(clarify);
+    nudgeKind = "clarify";
+  }
+
+  if (!candidate) {
+    candidate = await pickTopProactiveCandidate({
+      filesRoot: paths.filesRoot,
+      projectRoot,
+      state,
+      today,
+    });
+  }
 
   if (!candidate) {
     const stale = pickTopStaleReviewCandidate(state);

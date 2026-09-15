@@ -18,6 +18,8 @@ import {
   ONBOARDING_RANK_BOOST,
 } from "../onboarding/onboardingProactive.js";
 import { isOnboardingKanbanBody } from "../onboarding/promptState.js";
+import { shouldDeferSweepForHandoff } from "../ea/trackSignalEvaluate.js";
+import { isTaskInClarifyQueue } from "./clarifyQueue.js";
 
 async function toCandidate(
   row: {
@@ -31,9 +33,27 @@ async function toCandidate(
   board: string,
   filesRoot: string,
   projectRoot: string,
+  state: ProactiveState,
 ): Promise<ProactiveCandidate | null> {
   if (row.status !== "blocked") return null;
   if (!blockReasonNeedsOwnerInput(row.block_reason)) return null;
+
+  if (isTaskInClarifyQueue(state, row.task_id)) return null;
+
+  if (
+    shouldDeferSweepForHandoff({
+      filesRoot,
+      title: row.title,
+      body: row.body,
+      blockReason: row.block_reason ?? null,
+      status: row.status,
+    })
+  ) {
+    console.info(
+      `[proactive-sweep] defer handoff task=${row.task_id} board=${board} (resolve/clarify path)`,
+    );
+    return null;
+  }
 
   const taskText = `${row.title ?? ""}\n${row.body ?? ""}`;
   if (!isOnboardingKanbanBody(row.body) && isDateStaleForNudge(taskText)) return null;
@@ -83,7 +103,7 @@ export async function sweepProactiveCandidates(opts: {
     if (onboardingCapHit && board === EA_ONBOARDING_KANBAN_BOARD) continue;
     const rows = await listBlockedOnBoard(board, { limit: 50 });
     for (const row of rows) {
-      const c = await toCandidate(row, board, filesRoot, projectRoot);
+      const c = await toCandidate(row, board, filesRoot, projectRoot, state);
       if (c && !wasTaskNudgedToday(state, c.taskId)) raw.push(c);
     }
   }

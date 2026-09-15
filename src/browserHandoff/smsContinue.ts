@@ -8,7 +8,6 @@ import {
   buildTurnSystemMessages,
   type HermesChatMessage,
 } from "../hermesApi.js";
-import { readHermesGatewayPreference } from "../hermesGatewayPreference.js";
 import { buildOwnerTimeSystemMessage } from "../ownerLocalTime.js";
 import { markdownSpeechPlaintext } from "../markdownSpeechPlaintext.js";
 import { ownerSmsPhone, phonesMatch, sendSms } from "../twilioSmsSend.js";
@@ -17,20 +16,6 @@ import { getHandoffRecord, markSmsContinuationDelivered, type BrowserHandoffReco
 
 function envOr(name: string, fallback: string): string {
   return process.env[name]?.trim() || fallback;
-}
-
-function buildHermesRunner(projectRoot: string): HermesApiRunner {
-  const autoStart =
-    readHermesGatewayPreference(projectRoot) ?? envOr("HERMES_API_AUTO_START", "true") !== "false";
-  return new HermesApiRunner({
-    binary: envOr("HERMES_BIN", "/Users/danbenyamin/Documents/dev/hermes-agent/venv/bin/hermes"),
-    camofoxUrl: envOr("CAMOFOX_URL", "http://localhost:9377"),
-    apiBaseUrl: envOr("HERMES_API_BASE_URL", "http://127.0.0.1:8642"),
-    apiKey: envOr("HERMES_API_KEY", "change-me-local-dev"),
-    autoStartGateway: autoStart,
-    hitlCamofoxUserId: envOr("HITL_CAMOFOX_USER_ID", "hitl-camofox"),
-    hitlCamofoxSessionKey: envOr("HITL_CAMOFOX_SESSION_KEY", "hitl-main"),
-  });
 }
 
 /** Parse E.164 phone from `sms:+1…:epoch` or sticky `sms:+1…`. */
@@ -60,6 +45,7 @@ function sleep(ms: number): Promise<void> {
 export async function deliverSmsHandoffContinuation(
   projectRoot: string,
   record: BrowserHandoffRecord,
+  runner: HermesApiRunner,
 ): Promise<{ delivered: boolean; error?: string }> {
   if (!shouldDeliverSmsHandoffContinuation(record)) {
     return { delivered: false };
@@ -110,12 +96,10 @@ export async function deliverSmsHandoffContinuation(
     },
   ];
 
-  const runner = buildHermesRunner(projectRoot);
+  // Must use the Joshu process singleton runner — a second HermesApiRunner would call
+  // ensureApiServer() without owning this.gateway and SIGTERM the live gateway mid-stream.
   try {
-    const healthy = await runner.probeGatewayHealth();
-    if (!healthy) {
-      await runner.ensureGatewayReady().catch(() => undefined);
-    }
+    await runner.ensureGatewayReady();
 
     const { finalText } = await runner.streamHermesChat(
       {

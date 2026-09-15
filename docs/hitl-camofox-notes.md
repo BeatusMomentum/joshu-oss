@@ -99,10 +99,13 @@ confirm, etc.) in the shared Camofox tab, use **`browser_handoff_request`** (Her
 | 3 | Owner | Opens link on phone → **signs in with box username/password** (even if already on the desktop) → instructions + embedded noVNC |
 | 4 | Owner | Types in native fields (Fill stays disabled until something is typed), or **More Options** for Scan / paste; taps **I'm done** when finished |
 | 5 | Agent | Poll `browser_handoff_status` → `completed`, then `browser_snapshot` to verify |
+| 5b (SMS) | Joshu | After **I'm done**, `deliverSmsHandoffContinuation` waits 20s, runs a Hermes turn on the same `sms:` session, texts the owner the assistant reply (never `nylas_send_message`) |
 
 **Session continuity:** handoff pins the staged `pageUrl`, blocks `CAMOFOX_START_URL` bootstrap
 while pending, and the handoff page sends **heartbeat** every 20s (Camofox tab keepalive +
 extends expiry on owner activity). Do not navigate away or restart Camofox during pending handoff.
+
+**SMS continuation:** [`src/browserHandoff/smsContinue.ts`](../src/browserHandoff/smsContinue.ts) must use the **Joshu process singleton** `HermesApiRunner` from [`src/server.ts`](../src/server.ts) (passed through [`registerBrowserHandoffRoutes`](../src/browserHandoff/routes.ts)). Do **not** construct a second `HermesApiRunner` in the handoff path — an orphan runner sees a healthy `:8642` but does not own `this.gateway`, so `ensureApiServer()` logs `replacing existing Hermes gateway with current process env`, SIGTERMs the live gateway, and the in-flight chat stream aborts with **`terminated`**.
 
 Skill: [`integrations/hermes/skills/browser/joshu-browser-handoff/SKILL.md`](../integrations/hermes/skills/browser/joshu-browser-handoff/SKILL.md).
 
@@ -273,6 +276,22 @@ single-tab patch closing all tabs.
 `session_key`, `adopt_existing_tab: true`. Recreate Camofox after patch changes.
 Restart Hermes gateway after config changes.
 
+### Google / GitHub OAuth popups look like a crash-reload
+
+**Cause:** HITL single-tab used to coerce every popup into the opener (`location.assign`
+the popup URL, then close the popup). Google and GitHub OAuth need the **opener**
+(RapidAPI, etc.) to stay put while the IdP runs in `window.open`. Forcing the
+identifier URL into the main tab drops the OAuth client, Playwright can lose the
+page (`activeTabs: 0` while Firefox is still running), and the handoff overlay
+spam-polls `page-key` as 502 — looks like the picture loaded and reloaded.
+
+**Fix (v5):** `__hitlPopupCoerceV5` leaves Google / GitHub / Microsoft / Apple
+popups on the IdP, then **assigns the app callback URL into the opener** (classic
+OAuth `redirect_uri`). Do **not** fullscreen-resize GIS windows. Camofox
+**`MAX_TABS_PER_SESSION` default 4** so the opener is not recycled. Slack `/z-app/`
+magic links still coerce after the redirect chain. Logs:
+`hitl oauth popup waiting for callback`.
+
 ### Environment and scripts
 
 | Variable / script | Role |
@@ -281,6 +300,7 @@ Restart Hermes gateway after config changes.
 | `ENABLE_VNC` + Camofox `plugins.vnc.enabled` | noVNC on `:6080` — Camofox **1.6+** requires both (see troubleshooting) |
 | `CAMOFOX_START_URL` | Default tab URL when none exists (`https://joshu.me/`) |
 | `TAB_INACTIVITY_MS` | Camofox tab reaper; **`0` for jWeb HITL** (default on VPS) |
+| `MAX_TABS_PER_SESSION` / `CAMOFOX_MAX_TABS` | Default **4** so Google/GitHub OAuth popups are extra tabs, not a recycled opener |
 | `BROWSER_IDLE_TIMEOUT_MS` | Firefox idle shutdown; default **`300000`** — jWeb warm-on-open relaunches |
 | `PROXY_*` / `PROXY_COUNTRY` | Residential egress for Camofox (Decodo). Self-host: set in `.env` / `instance.env`. Fleet boxes: `DEFAULT_PROXY_*` at provision; existing: control-plane `pnpm enable:camofox-proxy` |
 | `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, insert-text + selection, form overlay scan/fill, reaper/keepalive, **cold-launch warm** |

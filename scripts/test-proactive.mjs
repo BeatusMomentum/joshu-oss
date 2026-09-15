@@ -32,6 +32,12 @@ import { resolveSmsHermesTimeoutMs, SMS_HERMES_TIMEOUT_MS_DEFAULT } from "../src
 import { normalizeKanbanCreatedAtMs } from "../src/proactive/crossBoardKanban.js";
 import { sortHygieneCandidates } from "../src/proactive/hygienePrepare.js";
 import { pickTopStaleReviewCandidate, recordHygieneRun } from "../src/proactive/hygieneRecord.js";
+import {
+  enqueueClarifyCandidate,
+  pickTopClarifyCandidate,
+  clarifyToCandidate,
+} from "../src/proactive/clarifyQueue.js";
+import { shouldDeferSweepForHandoff } from "../src/ea/trackSignalEvaluate.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -285,6 +291,68 @@ const defaultPrefs = {
   assert.equal(resolveSmsHermesTimeoutMs(), SMS_HERMES_TIMEOUT_MS_DEFAULT);
   assert.equal(SMS_HERMES_TIMEOUT_MS_DEFAULT, 300_000);
   if (prev !== undefined) process.env.JOSHU_SMS_HERMES_TIMEOUT_MS = prev;
+}
+
+// clarify queue priority over generic sweep candidates
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "proactive-clarify-"));
+  enqueueClarifyCandidate(root, {
+    taskId: "t_clarify",
+    board: "project-st-mary",
+    title: "Owner decision: Grade 5 RE",
+    blockReason: "awaiting owner or external party",
+    conflict: "New mail filed but card still open — close it?",
+    handoffAt: "2026-08-27T17:51:43.042Z",
+  });
+  const state = factoryProactiveState("2026-09-14");
+  state.clarifyQueue = [
+    {
+      taskId: "t_clarify",
+      board: "project-st-mary",
+      title: "Owner decision: Grade 5 RE",
+      blockReason: "awaiting owner or external party",
+      conflict: "New mail filed but card still open — close it?",
+      handoffAt: "2026-08-27T17:51:43.042Z",
+      queuedAt: new Date().toISOString(),
+    },
+  ];
+  const clarify = pickTopClarifyCandidate(state);
+  assert.equal(clarify?.taskId, "t_clarify");
+  const candidate = clarifyToCandidate(clarify);
+  assert.equal(candidate.body?.includes("still open"), true);
+  state.nudgedTaskIds = ["t_clarify"];
+  assert.equal(pickTopClarifyCandidate(state), null);
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// sweep defer for resolve-tier handoff (Finn-shaped body)
+{
+  const finnBody = `
+Owner decision: Grade 5 RE
+
+mail_handoff:
+  message_id: m1
+  source_path: connectors/mail/gmail/x/threads/m1.md
+  at: 2026-08-27T17:51:43.042Z
+  summary: "If you are receiving this email, I have you down to teach Grade 5 RE."
+`;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "proactive-sweep-defer-"));
+  const filesRoot = path.join(root, "files");
+  fs.mkdirSync(path.join(filesRoot, "connectors/mail/gmail/x/threads"), { recursive: true });
+  fs.writeFileSync(
+    path.join(filesRoot, "connectors/mail/gmail/x/threads/m1.md"),
+    "I have you down to teach or co-teach Grade 5 RE.",
+  );
+  assert.equal(
+    shouldDeferSweepForHandoff({
+      filesRoot,
+      title: "Owner decision: Grade 5 RE",
+      body: finnBody,
+      blockReason: "awaiting owner or external party",
+    }),
+    true,
+  );
+  fs.rmSync(root, { recursive: true, force: true });
 }
 
 // proactive resolve asks for project-slug reconcile on project boards

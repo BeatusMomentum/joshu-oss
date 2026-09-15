@@ -36,6 +36,18 @@ export type HygieneAmbiguousItem = {
   queuedAt: string;
 };
 
+/** Card queued after mail handoff when model conflict needs owner disambiguation. */
+export type ClarifyQueueItem = {
+  taskId: string;
+  board: string;
+  title: string;
+  blockReason: string | null;
+  /** Human-readable conflict description for compose. */
+  conflict: string;
+  handoffAt: string | null;
+  queuedAt: string;
+};
+
 export type HygieneCandidateHints = {
   createdAtMs: number | null;
   isDateStale: boolean;
@@ -75,6 +87,8 @@ export type ProactiveState = {
   lastHygieneSummary?: ProactiveHygieneSummary | null;
   /** Ambiguous hygiene cards — hourly tick may send stale_review nudges. */
   hygieneAmbiguousQueue?: HygieneAmbiguousItem[];
+  /** Model-conflict cards — hourly tick sends clarify nudges (priority over generic sweep). */
+  clarifyQueue?: ClarifyQueueItem[];
   /** Owner-local date YYYY-MM-DD when last ea-onboarding nudge was sent. */
   lastOnboardingNudgeDate?: string | null;
   /** Last owner reply routed to `lastNudge` — enables follow-up SMS within the follow-up window. */

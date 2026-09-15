@@ -4,7 +4,7 @@ description: "Proactive owner nudges for blocked Kanban tasks; reply resolution.
 metadata:
   hermes:
     category: joshu
-    version: "0.3.2"
+    version: "0.3.3"
 ---
 
 # Joshu Proactive
@@ -13,7 +13,7 @@ metadata:
 
 This skill covers:
 
-1. **Compose** — natural owner SMS/email (nudges, feedback acks, stale review).
+1. **Compose** — natural owner SMS/email (nudges, clarify, feedback acks, stale review).
 2. **Resolve (owner reply)** — when the owner answers a proactive nudge, interpret their text, update the originating Kanban card, and **reconcile the whole project slug** if waiting may have changed.
 3. **Hygiene** — daily stale Kanban cleanup (auto-close high-confidence; ambiguous → stale-review nudge only).
 4. **Evolve (preferences)** — off-hours opt-in, frequency tuning, pitfalls from owner feedback.
@@ -24,9 +24,10 @@ Used by Joshu API `composeProactiveMessage` — **first person**, SOUL.md voice,
 
 | Kind | When |
 |------|------|
-| `nudge` | Blocked task needs owner input |
+| `clarify` | **Priority 1** — model conflict after mail handoff (queued in `clarifyQueue`); cite open card vs new mail; one specific question |
+| `nudge` | **Priority 3** — blocked task needs owner input (hourly sweep) |
 | `nudge` (setup) | `ea-onboarding` card — e.g. missing owner mobile → **email** if no SMS yet; ask for Telephone / Welcome |
-| `stale_review` | Hygiene ambiguous — ask DONE/KEEP |
+| `stale_review` | **Priority 2** — hygiene ambiguous — ask DONE/KEEP |
 | `feedback_ack` | Owner sent MORE/LESS/USEFUL/etc. |
 | `reply_ack` | Owner reply routed to worker |
 

@@ -15,7 +15,7 @@ export type ProactiveDeliveryResult = {
 export type DeliverProactiveNudgeOpts = {
   candidate: ProactiveCandidate;
   projectRoot?: string;
-  nudgeKind?: "nudge" | "stale_review";
+  nudgeKind?: "nudge" | "stale_review" | "clarify";
 };
 
 /** SMS → email fallback; composed in SOUL.md voice via Hermes. */

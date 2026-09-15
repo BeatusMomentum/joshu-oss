@@ -631,9 +631,10 @@ export CAMOFOX_ADOPT_EXISTING_TAB="${CAMOFOX_ADOPT_EXISTING_TAB:-true}"
 # relaunches cleanly on next open — do not set 0 unless you need always-on VNC.
 export BROWSER_IDLE_TIMEOUT_MS="${BROWSER_IDLE_TIMEOUT_MS:-300000}"
 export SESSION_TIMEOUT_MS="${SESSION_TIMEOUT_MS:-1800000}"
-export MAX_TABS_PER_SESSION="${MAX_TABS_PER_SESSION:-1}"
-export MAX_TABS_GLOBAL="${MAX_TABS_GLOBAL:-1}"
-export CAMOFOX_MAX_TABS="${CAMOFOX_MAX_TABS:-1}"
+# 1 recycles the opener when Google/GitHub registers an OAuth popup as a tab.
+export MAX_TABS_PER_SESSION="${MAX_TABS_PER_SESSION:-4}"
+export MAX_TABS_GLOBAL="${MAX_TABS_GLOBAL:-8}"
+export CAMOFOX_MAX_TABS="${CAMOFOX_MAX_TABS:-4}"
 export HITL_FORCE_SINGLE_VISIBLE_PAGE="${HITL_FORCE_SINGLE_VISIBLE_PAGE:-true}"
 export MAX_OLD_SPACE_SIZE="${MAX_OLD_SPACE_SIZE:-256}"
 export HERMES_BIN="${HERMES_BIN:-${HERMES_DIR}/venv/bin/hermes}"

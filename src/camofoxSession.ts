@@ -22,6 +22,21 @@ function isBlankBrowserUrl(url: string | undefined): boolean {
   return !value || value === "about:blank" || value === "about:home";
 }
 
+/** Google / GitHub / Microsoft / Apple OAuth windows. Must stay a separate page from the opener. */
+export function isOauthPopupUrl(url: string | undefined): boolean {
+  const value = (url ?? "").toLowerCase();
+  if (!value) return false;
+  return (
+    value.includes("accounts.google.com") ||
+    value.includes("accounts.youtube.com") ||
+    value.includes("login.microsoftonline.com") ||
+    value.includes("login.live.com") ||
+    value.includes("github.com/login") ||
+    value.includes("github.com/session") ||
+    value.includes("appleid.apple.com")
+  );
+}
+
 const HITL_TAB_SHIM = `
 (() => {
   const SHIM_VERSION = 2;
@@ -214,6 +229,8 @@ export class CamofoxSessionCoordinator {
     const height = this.opts.viewportHeight ?? 768;
     const tab = tabId ? { tabId } : await this.currentTab();
     if (!tab?.tabId) return;
+    const listed = (await this.listTabs()).find((item) => item.tabId === tab.tabId);
+    if (isOauthPopupUrl(listed?.url)) return;
     const res = await fetch(new URL(`/tabs/${tab.tabId}/viewport`, this.opts.camofoxUrl), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -548,6 +565,9 @@ export class CamofoxSessionCoordinator {
 
   private async closeOtherTabs(keepTabId: string): Promise<void> {
     const tabs = await this.listTabs();
+    // OAuth popups must keep their opener. Pruning the RapidAPI tab while Google
+    // GIS is on gsi/transform leaves a hung Sign In page with no window.opener.
+    if (tabs.some((tab) => isOauthPopupUrl(tab.url))) return;
     await Promise.allSettled(tabs.filter((tab) => tab.tabId !== keepTabId).map((tab) => this.closeTab(tab.tabId)));
   }
 

@@ -1,5 +1,6 @@
 import type { Request, Response, Router } from "express";
 import type { CamofoxSessionCoordinator } from "../camofoxSession.js";
+import type { HermesApiRunner } from "../hermesApi.js";
 import { isDirectLocalhostRequest } from "../httpLocalhost.js";
 import { setHandoffAuthCookie, verifyArozosPassword, verifyOwnerHandoffSession } from "./boxAuth.js";
 import { browserHandoffLockStub, publicHandoffView } from "./lock.js";
@@ -148,9 +149,10 @@ export function registerBrowserHandoffRoutes(
   opts: {
     projectRoot: string;
     camofoxSession: CamofoxSessionCoordinator;
+    runner: HermesApiRunner;
   },
 ): void {
-  const { projectRoot, camofoxSession } = opts;
+  const { projectRoot, camofoxSession, runner } = opts;
 
   router.get("/api/browser-handoff/lock", (_req: Request, res: Response) => {
     if (!isDirectLocalhostRequest(_req)) {
@@ -277,7 +279,7 @@ export function registerBrowserHandoffRoutes(
     }
     await touchCamofoxKeepalive(camofoxSession);
     res.json({ ok: true, handoff: publicHandoffView(record) });
-    void deliverSmsHandoffContinuation(projectRoot, record).catch((err) => {
+    void deliverSmsHandoffContinuation(projectRoot, record, runner).catch((err) => {
       console.warn("[browser-handoff] SMS continuation error:", err);
     });
   });

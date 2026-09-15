@@ -40,10 +40,143 @@ const popupHandlerV2 = ` page.on('popup', async (popup) => {
  }
  });`;
 
+const popupHandlerV3 = ` page.on('popup', async (popup) => {
+ try {
+ // __hitlPopupCoerceV3 — leave Google/GitHub/Microsoft/Apple OAuth in the popup until the site closes it
+ const slackMagic = (u) => /\\/z-app-/.test(String(u || ''));
+ const oauthIdp = (u) => /accounts\\.google\\.com|accounts\\.youtube\\.com|login\\.microsoftonline\\.com|login\\.live\\.com|github\\.com\\/login|github\\.com\\/session|github\\.com\\/sessions|appleid\\.apple\\.com/.test(String(u || ''));
+ await popup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+ if (!popup.url() || popup.url() === 'about:blank') {
+ await popup.waitForURL((u) => u && u !== 'about:blank', { timeout: 60000 }).catch(() => {});
+ }
+ let url = popup.url();
+ if (!url || url === 'about:blank') {
+ await popup.close().catch(() => {});
+ return;
+ }
+ if (oauthIdp(url)) {
+ log('info', 'hitl oauth popup left open for IdP', { url });
+ await popup.bringToFront().catch(() => {});
+ await popup.evaluate(() => { try { window.moveTo(0, 0); window.resizeTo(screen.availWidth, screen.availHeight); } catch (e) {} }).catch(() => {});
+ return;
+ }
+ const magic = slackMagic(url);
+ const navTimeout = magic ? 90000 : 30000;
+ await popup.waitForLoadState('load', { timeout: magic ? 60000 : 15000 }).catch(() => {});
+ url = popup.url() || url;
+ try {
+ await page.evaluate((targetUrl) => { window.location.assign(String(targetUrl)); }, url);
+ await page.waitForLoadState('domcontentloaded', { timeout: navTimeout });
+ } catch (err) {
+ log('warn', 'popup assign navigation failed', { url, error: err.message });
+ await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch((err2) => {
+ log('warn', 'popup same-tab navigation failed', { url, error: err2.message });
+ });
+ }
+ await popup.close().catch(() => {});
+ log('info', 'popup coerced into opener tab', { url });
+ } catch (err) {
+ log('warn', 'popup coercion failed', { error: err.message });
+ await popup.close().catch(() => {});
+ }
+ });`;
+
+const popupHandlerV4 = ` page.on('popup', async (popup) => {
+ try {
+ // __hitlPopupCoerceV4 — leave IdP OAuth in the popup; do not resize (Google GIS/ITP hangs on gsi/transform)
+ const slackMagic = (u) => /\\/z-app-/.test(String(u || ''));
+ const oauthIdp = (u) => /accounts\\.google\\.com|accounts\\.youtube\\.com|login\\.microsoftonline\\.com|login\\.live\\.com|github\\.com\\/login|github\\.com\\/session|github\\.com\\/sessions|appleid\\.apple\\.com/.test(String(u || ''));
+ await popup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+ if (!popup.url() || popup.url() === 'about:blank') {
+ await popup.waitForURL((u) => u && u !== 'about:blank', { timeout: 60000 }).catch(() => {});
+ }
+ let url = popup.url();
+ if (!url || url === 'about:blank') {
+ await popup.close().catch(() => {});
+ return;
+ }
+ if (oauthIdp(url)) {
+ log('info', 'hitl oauth popup left open for IdP', { url });
+ await popup.bringToFront().catch(() => {});
+ return;
+ }
+ const magic = slackMagic(url);
+ const navTimeout = magic ? 90000 : 30000;
+ await popup.waitForLoadState('load', { timeout: magic ? 60000 : 15000 }).catch(() => {});
+ url = popup.url() || url;
+ try {
+ await page.evaluate((targetUrl) => { window.location.assign(String(targetUrl)); }, url);
+ await page.waitForLoadState('domcontentloaded', { timeout: navTimeout });
+ } catch (err) {
+ log('warn', 'popup assign navigation failed', { url, error: err.message });
+ await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch((err2) => {
+ log('warn', 'popup same-tab navigation failed', { url, error: err2.message });
+ });
+ }
+ await popup.close().catch(() => {});
+ log('info', 'popup coerced into opener tab', { url });
+ } catch (err) {
+ log('warn', 'popup coercion failed', { error: err.message });
+ await popup.close().catch(() => {});
+ }
+ });`;
+
+const popupHandlerV5 = ` page.on('popup', async (popup) => {
+ try {
+ // __hitlPopupCoerceV5 — wait on the IdP, then put the app callback into the opener (classic OAuth)
+ const slackMagic = (u) => /\\/z-app-/.test(String(u || ''));
+ const oauthIdp = (u) => /accounts\\.google\\.com|accounts\\.youtube\\.com|login\\.microsoftonline\\.com|login\\.live\\.com|github\\.com\\/login|github\\.com\\/session|github\\.com\\/sessions|appleid\\.apple\\.com/.test(String(u || ''));
+ await popup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+ if (!popup.url() || popup.url() === 'about:blank') {
+ await popup.waitForURL((u) => u && u !== 'about:blank', { timeout: 60000 }).catch(() => {});
+ }
+ let url = popup.url();
+ if (!url || url === 'about:blank') {
+ await popup.close().catch(() => {});
+ return;
+ }
+ if (oauthIdp(url)) {
+ log('info', 'hitl oauth popup waiting for callback', { url });
+ await popup.bringToFront().catch(() => {});
+ await popup.waitForURL((u) => {
+ const s = String(u || '');
+ return Boolean(s) && s !== 'about:blank' && !oauthIdp(s);
+ }, { timeout: 300000 }).catch(() => {});
+ if (popup.isClosed()) {
+ log('info', 'hitl oauth popup closed by site', {});
+ return;
+ }
+ url = popup.url() || url;
+ if (oauthIdp(url)) {
+ log('info', 'hitl oauth popup still on IdP — leaving open', { url });
+ return;
+ }
+ }
+ const magic = slackMagic(url);
+ const navTimeout = magic ? 90000 : 30000;
+ await popup.waitForLoadState('load', { timeout: magic ? 60000 : 15000 }).catch(() => {});
+ url = popup.url() || url;
+ try {
+ await page.evaluate((targetUrl) => { window.location.assign(String(targetUrl)); }, url);
+ await page.waitForLoadState('domcontentloaded', { timeout: navTimeout });
+ } catch (err) {
+ log('warn', 'popup assign navigation failed', { url, error: err.message });
+ await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch((err2) => {
+ log('warn', 'popup same-tab navigation failed', { url, error: err2.message });
+ });
+ }
+ await popup.close().catch(() => {});
+ log('info', 'popup coerced into opener tab', { url });
+ } catch (err) {
+ log('warn', 'popup coercion failed', { error: err.message });
+ await popup.close().catch(() => {});
+ }
+ });`;
+
 const popupPatch = `function createTabState(page) {
  if (process.env.HITL_FORCE_SINGLE_VISIBLE_PAGE !== 'false' && !page.__hitlSingleTabPopupPatch) {
  page.__hitlSingleTabPopupPatch = true;
-${popupHandlerV2}
+${popupHandlerV5}
  }
 `;
 
@@ -1222,6 +1355,9 @@ if (source.includes(tabsGetNeedle) && !source.includes("HITL keepalive: jWeb sta
 
 // Upgrade legacy popup coercion (closed popup before navigation — breaks Slack z-app 2FA links).
 const popupV2Marker = "__hitlPopupCoerceV2";
+const popupV3Marker = "__hitlPopupCoerceV3";
+const popupV4Marker = "__hitlPopupCoerceV4";
+const popupV5Marker = "__hitlPopupCoerceV5";
 const legacyPopupBlock = ` page.on('popup', async (popup) => {
  try {
  await popup.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
@@ -1238,9 +1374,31 @@ const legacyPopupBlock = ` page.on('popup', async (popup) => {
  await popup.close().catch(() => {});
  }
  });`;
-if (!source.includes(popupV2Marker) && source.includes(legacyPopupBlock)) {
-  source = source.replace(legacyPopupBlock, popupHandlerV2);
-  console.log(`[joshu] upgraded popup coercion to v2 in ${target}`);
+if (
+  !source.includes(popupV2Marker) &&
+  !source.includes(popupV3Marker) &&
+  !source.includes(popupV4Marker) &&
+  !source.includes(popupV5Marker) &&
+  source.includes(legacyPopupBlock)
+) {
+  source = source.replace(legacyPopupBlock, popupHandlerV5);
+  console.log(`[joshu] upgraded popup coercion to v5 in ${target}`);
+}
+if (source.includes(popupV2Marker) && !source.includes(popupV5Marker) && source.includes(popupHandlerV2)) {
+  source = source.replace(popupHandlerV2, popupHandlerV5);
+  console.log(`[joshu] upgraded popup coercion v2 → v5 in ${target}`);
+}
+if (source.includes(popupV3Marker) && !source.includes(popupV5Marker) && source.includes(popupHandlerV3)) {
+  source = source.replace(popupHandlerV3, popupHandlerV5);
+  console.log(`[joshu] upgraded popup coercion v3 → v5 in ${target}`);
+}
+if (source.includes(popupV4Marker) && !source.includes(popupV5Marker)) {
+  if (source.includes(popupHandlerV4)) {
+    source = source.replace(popupHandlerV4, popupHandlerV5);
+    console.log(`[joshu] upgraded popup coercion v4 → v5 in ${target}`);
+  } else {
+    console.warn(`[joshu] popup v4 marker present but handler block not found in ${target}; skipping v5 upgrade`);
+  }
 }
 
 // ---------------------------------------------------------------------------

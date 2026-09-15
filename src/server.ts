@@ -252,9 +252,25 @@ const dockerSupervisor = new DockerSupervisor({
 
 let lastCamofoxBootstrapAt = 0;
 
-/** Start URL for bootstrap — pinned checkout page wins during pending owner handoff. */
+/** Start URL for bootstrap — pinned checkout page wins during pending owner handoff
+ *  unless the user already progressed on the same origin (OAuth callback, etc.). */
 function resolveCamofoxBootstrapUrl(): string | undefined {
   const pinUrl = getPendingHandoffPinUrl(PROJECT_ROOT);
+  const lastUrl = runner.getLastBrowserUrl();
+  if (pinUrl && lastUrl) {
+    try {
+      const pin = new URL(pinUrl);
+      const last = new URL(lastUrl);
+      if (pin.origin === last.origin && pin.pathname !== last.pathname) {
+        if (/\/authentication\/.+\/callback/i.test(last.pathname) || last.searchParams.has("code")) {
+          return `${last.origin}/`;
+        }
+        return `${last.origin}${last.pathname}`;
+      }
+    } catch {
+      /* keep pin */
+    }
+  }
   if (pinUrl && !isBlankBrowserUrl(pinUrl)) return pinUrl;
   return isBlankBrowserUrl(CAMOFOX_START_URL) ? undefined : CAMOFOX_START_URL;
 }
@@ -503,7 +519,7 @@ function buildAppRouter(): {
   registerTelephoneRoutes(router, { projectRoot: PROJECT_ROOT });
   registerOwnerChannelRoutes(router, { projectRoot: PROJECT_ROOT });
   registerActionGuardRoutes(router, { projectRoot: PROJECT_ROOT });
-  registerBrowserHandoffRoutes(router, { projectRoot: PROJECT_ROOT, camofoxSession });
+  registerBrowserHandoffRoutes(router, { projectRoot: PROJECT_ROOT, camofoxSession, runner });
   registerVoiceWebRoutes(router);
 
   const joshuApiBase = `http://127.0.0.1:${PORT}${withPublicBase("/api")}`;

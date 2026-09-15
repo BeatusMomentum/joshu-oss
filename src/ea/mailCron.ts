@@ -33,6 +33,9 @@ import {
 } from "./conversationScope.js";
 import { listSchedulingMeetingTasks } from "./schedulingCron.js";
 import { listOwnerReplyTasks } from "./ownerReplyCron.js";
+import { evaluateTrackSignalAfterHandoff, latestMailHandoff } from "./trackSignalEvaluate.js";
+import { enqueueClarifyCandidate } from "../proactive/clarifyQueue.js";
+import { completeKanbanTask } from "../proactive/kanbanComplete.js";
 
 export type QueueMailIngressTaskResult = {
   queued: boolean;
@@ -448,6 +451,8 @@ export type HandoffMailTrackResult = {
   ok: boolean;
   error?: string;
   evaluation_queued?: boolean;
+  /** Post-handoff reconcile outcome: complete | clarify_queued | noop */
+  reconciled?: string;
 };
 
 function buildMailHandoffAppend(opts: {
@@ -486,6 +491,8 @@ export async function handoffMailToTrackTask(opts: {
   messageId: string;
   from?: string;
   summary: string;
+  /** Joshu project root for proactive clarify queue (default cwd). */
+  projectRoot?: string;
 }): Promise<HandoffMailTrackResult> {
   const taskId = opts.taskId.trim();
   const folderSlug = normalizeProjectSlug(opts.projectSlug);
@@ -532,6 +539,49 @@ export async function handoffMailToTrackTask(opts: {
     return { ok: true, evaluation_queued: false };
   }
 
+  const projectRoot = opts.projectRoot ?? process.cwd();
+  const updatedBody = `${before.task.body ?? ""}\n${append}`;
+  const verdict = evaluateTrackSignalAfterHandoff({
+    filesRoot: opts.filesRoot,
+    projectSlug: folderSlug,
+    taskId,
+    board,
+    title: before.task.title,
+    body: updatedBody,
+    blockReason: before.task.block_reason ?? null,
+    status: "blocked",
+  });
+
+  console.info(
+    `[ea-mail] handoff reconcile tier=${verdict.tier} task=${taskId} message=${messageId} reason=${verdict.reason}`,
+  );
+
+  if (verdict.tier === "resolve") {
+    const done = await completeKanbanTask({
+      board,
+      taskId,
+      comment: `## Track signal reconcile\n\n${verdict.evidence}`,
+      author: "track-signal-reconcile",
+    });
+    if (!done.ok) {
+      return { ok: false, error: done.error ?? "reconcile_complete_failed" };
+    }
+    return { ok: true, evaluation_queued: false, reconciled: "complete" };
+  }
+
+  if (verdict.tier === "clarify") {
+    const handoff = latestMailHandoff(updatedBody);
+    enqueueClarifyCandidate(projectRoot, {
+      taskId,
+      board,
+      title: before.task.title?.trim() || "(untitled)",
+      blockReason: before.task.block_reason ?? null,
+      conflict: verdict.conflict,
+      handoffAt: handoff?.at ?? null,
+    });
+    return { ok: true, evaluation_queued: false, reconciled: "clarify_queued" };
+  }
+
   const auth =
     (await lookupMailIngestAuthorization(opts.filesRoot, messageId)) ??
     (await resolveAuthorizationFromSourcePath({
@@ -542,7 +592,7 @@ export async function handoffMailToTrackTask(opts: {
     console.info(
       `[ea-mail] handoff file-only task=${taskId} message=${messageId} (${auth.reason})`,
     );
-    return { ok: true, evaluation_queued: false };
+    return { ok: true, evaluation_queued: false, reconciled: "noop" };
   }
 
   const wake = await queueMailTrackTaskHandler({
@@ -553,6 +603,7 @@ export async function handoffMailToTrackTask(opts: {
   return {
     ok: true,
     evaluation_queued: wake.queued,
+    reconciled: "noop",
     ...(wake.queued ? {} : { error: `handoff_ok_evaluation_failed:${wake.reason}` }),
   };
 }

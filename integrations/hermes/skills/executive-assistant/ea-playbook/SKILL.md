@@ -4,7 +4,7 @@ description: Triage mail to Projects. Not drips—use ea-project-kanban.
 metadata:
   hermes:
     category: executive-assistant
-    version: "2.22.0"
+    version: "2.23.0"
 ---
 
 # EA Playbook — Triage & rollups
@@ -98,6 +98,22 @@ Do **not** use category tables (recruiting vs investor vs vendor). One question:
 
 `mail_handoff_track_task` stays **neutral** (delivery only). Reconcile is this step, using `kanban_complete` + `about.md`.
 
+### Track signal reconcile (deterministic)
+
+After every successful `mail_handoff_track_task`, Joshu API runs **tier evaluation** on blocked owner-decision tracks (`trackSignalEvaluate.ts`) — supplement to step 4b above, not a replacement.
+
+| Tier | When | Action | Owner ping? |
+|------|------|--------|-------------|
+| **Resolve** | High-confidence confirmation in handoff summary and/or mail mirror | `kanban_complete` + audit comment | No |
+| **Clarify** | Owner-decision track + recent handoff but ambiguous confirmation | Queue proactive **`clarify`** nudge (model conflict) | Yes, once, specific |
+| **File / noop** | FYI, no open owner question, or weak signal | Append only; optional worker wake if authorized | No |
+
+**Authorization vs reconcile:** `agent_authorized: false` / `allowed_actions: file` still runs reconcile tiers — authorization gates **outbound** mail only. Auto-resolve never sends mail; it only completes Kanban + comment.
+
+**Clarify wording:** cite the conflict (open card vs new mail signal). Ask **one** disambiguation question — do not re-ask a decision already implied by the new mail. Do not imply counterparty outreach.
+
+Ingress step 4b remains the LLM path for sibling tracks and `about.md`; deterministic reconcile handles the handoff card itself when patterns are strong enough.
+
 ## Mail ingress (ea-mail-ingress)
 
 When your Kanban task body includes `kind: mail_ingress`, run this **short-circuit** — no browse-until-found loops.
@@ -116,7 +132,7 @@ When your Kanban task body includes `kind: mail_ingress`, run this **short-circu
    - **Match** → `mail_handoff_track_task(taskId=…, projectSlug=…, sourcePath=…, messageId=…, summary=…)`.
    - **No match** → `mail_create_track_task(…, projectSlug=…, threadId=…, messageId=…, sourcePath=…)` (**blocked**).
 4b. **[Project reconcile](#project-reconcile)** on that slug — list **all** open tracks, complete ones this mail supersedes, set `about.md` `status: done` if nothing is left waiting. Do this even when the new mail created a **new** track (sibling cards may already be waiting).
-5. **Scheduling decision** — only when **`scheduling_eligible: true`** (see [Scheduling decision gate](#scheduling-decision-gate-mail-ingress-step-5)). If **`agent_authorized: false`** or **`allowed_actions: file`** — **stop after step 4b**; no scheduling child, no outbound mail, no calendar probes.
+5. **Scheduling decision** — only when **`scheduling_eligible: true`** (see [Scheduling decision gate](#scheduling-decision-gate-mail-ingress-step-5)). If **`agent_authorized: false`** or **`allowed_actions: file`** — **stop after step 4b** (deterministic reconcile still runs on the API); no scheduling child, no outbound mail, no calendar probes.
 5b. **Owner-reply (path D)** — when **`owner_reply_eligible: true`** (owner mailed **agent Nylas** with a non-meeting ask). After filing: **`owner_reply_list_tasks`** by `thread_id` → match → **`owner_reply_handoff_task`**; else **`owner_reply_create_task`** (pass **`threadId`** + **`provider`** + **`from`**). If Joshu returns `existing_thread`, handoff. **Do not** research or **`nylas_send_message`** on this ingress card — the **`ea-owner-reply`** worker does that. Skip path D when you took scheduling **path A** (meeting worker owns outbound).
 6. **Stub done:** open `Triage/gmail-<account_key>-<thread_id>.stub.md` (or `Triage/<provider>-<thread_id>.stub.md` when no account_key) — set `state: done`, move to `Triage/_done/`. Prefer that path; do not recursive-search for stubs.
 7. **`kanban_complete`** the ingress card.
