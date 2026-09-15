@@ -6,7 +6,7 @@ import { hermesSoulFilePath } from "../hermesSoulFile.js";
 import { resolveJoshuIdentity } from "../joshuIdentity.js";
 import { readAgentProfile } from "../nylas/profile.js";
 import { buildOwnerTimeSystemMessage } from "../ownerLocalTime.js";
-import { markdownSpeechPlaintext } from "../markdownSpeechPlaintext.js";
+import { smsModelReplyPlaintext } from "../smsModelReplyPlaintext.js";
 import { isOnboardingKanbanBody, parseOnboardingPromptIdFromBody } from "../onboarding/promptState.js";
 import { ownerSmsPhone } from "../twilioSmsSend.js";
 import type { FeedbackKeyword } from "./feedback.js";
@@ -234,7 +234,7 @@ async function composeViaHermes(runner: HermesApiRunner, input: ProactiveCompose
     {},
   );
 
-  const plain = markdownSpeechPlaintext(finalText).trim();
+  const plain = smsModelReplyPlaintext(finalText);
   if (!plain) throw new Error("empty_compose_response");
   let out = plain;
   if (

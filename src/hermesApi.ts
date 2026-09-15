@@ -38,6 +38,10 @@ import {
   resolveFalMcpHttpUrl,
 } from "./meteredProviders/config.js";
 import { isActionGuardEnabled, loadActionGuardPolicy, resolveComposioMcpGuardProxyUrl } from "./actionGuard/index.js";
+import {
+  HermesStreamContentScrubber,
+  scrubHermesAssistantContent,
+} from "./hermesStreamContentScrubber.js";
 import { resolveEnvWithLocalFallback } from "./safetySettings/localEnv.js";
 import { buildHermesMessagingDotenvEntries } from "./hermesMessagingEnv.js";
 import {
@@ -1105,6 +1109,7 @@ export class HermesApiRunner extends EventEmitter {
     callbacks: StreamHermesChatCallbacks,
     clientToolNames?: Set<string>,
   ): Promise<string> {
+    const contentScrubber = new HermesStreamContentScrubber();
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1179,8 +1184,11 @@ export class HermesApiRunner extends EventEmitter {
         const content = delta?.content || "";
         const reasoning = delta?.reasoning || delta?.reasoning_content || "";
         if (content) {
-          finalText += content;
-          callbacks.onDelta?.(content);
+          const visible = contentScrubber.feed(content);
+          if (visible) {
+            finalText += visible;
+            callbacks.onDelta?.(visible);
+          }
         } else if (reasoning) {
           callbacks.onReasoning?.(reasoning);
         }
@@ -1240,7 +1248,13 @@ export class HermesApiRunner extends EventEmitter {
       flushClientToolEnd(pending);
     }
 
-    return finalText;
+    const tail = contentScrubber.flush();
+    if (tail) {
+      finalText += tail;
+      callbacks.onDelta?.(tail);
+    }
+
+    return scrubHermesAssistantContent(finalText);
   }
 
   private parseSseEvent(raw: string): { name: string; data: string } {

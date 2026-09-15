@@ -14,6 +14,12 @@ import { parseApprovalReply } from "../src/actionGuard/approvalReply.js";
 import { listOpenPending } from "../src/actionGuard/pending.js";
 import { handleSmsApprovalIngress } from "../src/actionGuard/smsIngress.js";
 import { SMS_MAX_CHARS, SMS_MAX_PARTS, smsGsmParts, smsGsmPlaintext } from "../src/twilioSmsSend.js";
+import {
+  HermesStreamContentScrubber,
+  looksLikeLeakedModelOutput,
+  scrubHermesAssistantContent,
+} from "../src/hermesStreamContentScrubber.js";
+import { smsModelReplyPlaintext } from "../src/smsModelReplyPlaintext.js";
 
 {
   assert.equal(parseApprovalReply("y"), "approved");
@@ -59,6 +65,36 @@ import { SMS_MAX_CHARS, SMS_MAX_PARTS, smsGsmParts, smsGsmPlaintext } from "../s
 {
   const one = smsGsmPlaintext("I've got your text — short.");
   assert.ok(one.length < SMS_MAX_CHARS);
+}
+
+{
+  const leaked =
+    "Owner said no. Closing the card. Let me reconcile the rest. I need to pass the arguments. " +
+    "<DSMLtool_calls> <DSMLinvoke name=\"tool_call\"> " +
+    "<DSMLparameter name=\"name\" string=\"true\">mcp__joshu_connectors__mail_list_track_tasks</DSMLparameter>";
+  assert.equal(scrubHermesAssistantContent(leaked).includes("DSML"), false);
+  assert.equal(looksLikeLeakedModelOutput(leaked), true);
+  assert.equal(smsModelReplyPlaintext(leaked), "");
+}
+
+{
+  const ok = smsModelReplyPlaintext("Got it — I'll close the ByteDance thread and leave you alone on that one.");
+  assert.match(ok, /close the ByteDance thread/);
+  assert.equal(looksLikeLeakedModelOutput(ok), false);
+}
+
+{
+  const scrubber = new HermesStreamContentScrubber();
+  const parts = [
+    "Sure — ",
+    "<DSMLtool_calls> <DSMLinvoke ",
+    'name="tool_call"> junk',
+  ];
+  let out = "";
+  for (const p of parts) out += scrubber.feed(p);
+  out += scrubber.flush();
+  assert.equal(out.includes("DSML"), false);
+  assert.match(out, /Sure/);
 }
 
 function pendingDirForRoot(root) {

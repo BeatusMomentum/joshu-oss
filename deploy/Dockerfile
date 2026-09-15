@@ -63,12 +63,14 @@ COPY scripts/hermes-langfuse-system-prompt.patch \
      scripts/patch-hermes-read-file-utf8.py \
      scripts/patch-hermes-ea-kanban-no-autodecompose.py \
      scripts/patch-hermes-kanban-worker-terminate-on-complete.py \
+     scripts/patch-hermes-dsml-stream-scrub.py \
      scripts/apply-hermes-langfuse-patches.sh \
      scripts/apply-hermes-kanban-ws-base-path-patch.sh \
      scripts/apply-hermes-content-filter-patch.sh \
      scripts/apply-hermes-read-file-utf8-patch.sh \
      scripts/apply-hermes-ea-kanban-no-autodecompose.sh \
      scripts/apply-hermes-kanban-worker-terminate-on-complete.sh \
+     scripts/apply-hermes-dsml-stream-scrub.sh \
      /tmp/joshu-hermes-patches/
 RUN HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-langfuse-patches.sh \
     && HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-kanban-ws-base-path-patch.sh \
@@ -76,6 +78,7 @@ RUN HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-langf
     && HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-read-file-utf8-patch.sh \
     && HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-ea-kanban-no-autodecompose.sh \
     && HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-kanban-worker-terminate-on-complete.sh \
+    && HERMES_DIR="${HERMES_DIR}" bash /tmp/joshu-hermes-patches/apply-hermes-dsml-stream-scrub.sh \
     && rm -rf "${HERMES_DIR}/.git" /root/.cache/pip /tmp/joshu-hermes-patches
 
 # Hindsight uses local PostgreSQL on VPS. Build pgvector with portable flags so

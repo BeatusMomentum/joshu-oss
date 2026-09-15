@@ -11,7 +11,7 @@ import twilio from "twilio";
 import { handleSmsApprovalIngress } from "./actionGuard/smsIngress.js";
 import type { HermesApiRunner, HermesChatMessage } from "./hermesApi.js";
 import { buildOwnerTimeSystemMessage } from "./ownerLocalTime.js";
-import { markdownSpeechPlaintext } from "./markdownSpeechPlaintext.js";
+import { smsModelReplyPlaintext } from "./smsModelReplyPlaintext.js";
 import { recordProactiveFeedback, parseFeedbackKeyword, parseTaskActionKeyword } from "./proactive/feedback.js";
 import { handleProactiveTaskAction } from "./proactive/replyRouter.js";
 import { composeProactiveMessage } from "./proactive/composeMessage.js";
@@ -252,7 +252,7 @@ export function registerTwilioSmsRoutes(
           },
           {},
         );
-        const reply = markdownSpeechPlaintext(finalText).trim();
+        const reply = smsModelReplyPlaintext(finalText);
         if (!reply) {
           await sendSms(from, "I didn't have a reply for that — try again or reply HELP.");
           return;

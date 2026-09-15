@@ -4,10 +4,10 @@
  */
 import type { HermesApiRunner, HermesChatMessage } from "../hermesApi.js";
 import { callKanbanBridge } from "../hermesKanbanBridge.js";
-import { markdownSpeechPlaintext } from "../markdownSpeechPlaintext.js";
+import { composeProactiveMessage, getProactiveHermesRunner } from "./composeMessage.js";
+import { smsModelReplyPlaintext } from "../smsModelReplyPlaintext.js";
 import { buildOwnerTimeSystemMessage } from "../ownerLocalTime.js";
 import { parseProactiveTaskRef } from "./blockReason.js";
-import { getProactiveHermesRunner } from "./composeMessage.js";
 import { wakeProactiveTaskAfterOwnerReply } from "./replyRouter.js";
 import { readProactiveState, writeProactiveState } from "./state.js";
 import type { ProactiveLastNudge } from "./types.js";
@@ -120,7 +120,8 @@ export function buildProactiveResolveSystemMessage(
   const lines = [
     "The owner is replying to a proactive Joshu nudge about a blocked Kanban task.",
     "This is a normal conversation turn — be yourself (SOUL.md), not a routing bot.",
-    "Interpret their reply, act on the task, and answer them naturally in SMS-friendly plain text.",
+    "Interpret their reply, act on the task, and answer them naturally in SMS-friendly plain text in English.",
+    "Your SMS reply must be ONLY the final message to the owner — no internal reasoning, no tool markup, no XML/DSML tags.",
     "",
     `Board: ${context.board}`,
     `Task id: ${context.taskId}`,
@@ -228,7 +229,14 @@ export async function resolveProactiveOwnerReply(opts: {
       {},
     );
 
-    const replyText = markdownSpeechPlaintext(finalText).trim();
+    let replyText = smsModelReplyPlaintext(finalText);
+    if (!replyText) {
+      replyText = await composeProactiveMessage({
+        kind: "reply_ack",
+        projectRoot: opts.projectRoot,
+        ownerReplySnippet: opts.body,
+      });
+    }
     if (!replyText) {
       throw new Error("empty_resolve_reply");
     }

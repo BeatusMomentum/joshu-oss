@@ -9,7 +9,7 @@ import {
   type HermesChatMessage,
 } from "../hermesApi.js";
 import { buildOwnerTimeSystemMessage } from "../ownerLocalTime.js";
-import { markdownSpeechPlaintext } from "../markdownSpeechPlaintext.js";
+import { smsModelReplyPlaintext } from "../smsModelReplyPlaintext.js";
 import { ownerSmsPhone, phonesMatch, sendSms } from "../twilioSmsSend.js";
 import { resolveOwnerSmsSessionKey } from "../twilioSmsSession.js";
 import { getHandoffRecord, markSmsContinuationDelivered, type BrowserHandoffRecord } from "./store.js";
@@ -110,7 +110,7 @@ export async function deliverSmsHandoffContinuation(
       },
       {},
     );
-    const reply = markdownSpeechPlaintext(finalText).trim();
+    const reply = smsModelReplyPlaintext(finalText);
     if (!reply) {
       return { delivered: false, error: "empty_assistant_reply" };
     }
