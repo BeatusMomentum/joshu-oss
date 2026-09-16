@@ -12,12 +12,17 @@ const RESIDUAL_XML_TAG_RE = /<[^>\n]{0,200}>/g;
 /** Hold back stream tail so a `<DSML…` tag split across deltas is not emitted early. */
 const STREAM_HOLD_BACK_CHARS = 32;
 
-/** Batch scrub — used at end of stream and for non-streaming callers. */
-export function stripLeakedModelMarkup(raw: string): string {
+/** Remove DSML / tool debris without normalizing whitespace (safe per stream delta). */
+export function stripLeakedModelMarkupInPlace(raw: string): string {
   let text = raw.replace(DSML_BLOCK_RE, " ").replace(DSML_TAG_RE, " ");
   text = text.replace(MCP_TOOL_NAME_RE, " ");
   text = text.replace(RESIDUAL_XML_TAG_RE, " ");
-  return text.replace(/\s+/g, " ").trim();
+  return text;
+}
+
+/** Batch scrub on a complete message — may collapse whitespace. */
+export function stripLeakedModelMarkup(raw: string): string {
+  return stripLeakedModelMarkupInPlace(raw).replace(/\s+/g, " ").trim();
 }
 
 /** True when model output is internal monologue / tool markup, not an owner reply. */
@@ -62,11 +67,11 @@ export class HermesStreamContentScrubber {
     }
     const safe = buf.slice(0, -STREAM_HOLD_BACK_CHARS);
     this.pending = buf.slice(-STREAM_HOLD_BACK_CHARS);
-    return stripLeakedModelMarkup(safe);
+    return stripLeakedModelMarkupInPlace(safe);
   }
 
   flush(): string {
-    const out = stripLeakedModelMarkup(this.pending);
+    const out = stripLeakedModelMarkupInPlace(this.pending);
     this.pending = "";
     return out;
   }

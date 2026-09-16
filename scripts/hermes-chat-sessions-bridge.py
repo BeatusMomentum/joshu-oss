@@ -99,6 +99,32 @@ def _action_list(body: Dict[str, Any]) -> None:
         db.close()
 
 
+def _action_last_assistant(body: Dict[str, Any]) -> None:
+    """Return the latest non-empty assistant message for any Hermes session id/key."""
+    session_id = str(body.get("sessionId") or body.get("session_id") or "").strip()
+    if not session_id:
+        _fail("sessionId is required")
+        return
+
+    db = _import_db()
+    try:
+        resolved = db.resolve_session_id(session_id)
+        if not resolved:
+            _fail("session not found", sessionId=session_id)
+            return
+        raw_messages = db.get_messages(resolved)
+        for msg in reversed(raw_messages):
+            if msg.get("role") != "assistant":
+                continue
+            text = _plain_text(msg.get("content")).strip()
+            if text:
+                _respond({"ok": True, "sessionId": resolved, "content": text})
+                return
+        _fail("no assistant message found", sessionId=resolved)
+    finally:
+        db.close()
+
+
 def _action_messages(body: Dict[str, Any]) -> None:
     session_id = str(body.get("sessionId") or body.get("session_id") or "").strip()
     if not session_id:
@@ -139,6 +165,8 @@ def main() -> None:
         _action_list(body)
     elif action == "messages":
         _action_messages(body)
+    elif action == "last_assistant":
+        _action_last_assistant(body)
     else:
         _fail(f"unknown action: {action or '(missing)'}")
 

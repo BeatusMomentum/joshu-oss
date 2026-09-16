@@ -1,4 +1,5 @@
 import { attachVncClipboard } from "./vnc-clipboard.js";
+import { wrapPasswordInput } from "./handoff-password-toggle.js";
 import { configureNovncRfb, loadNovncRfb } from "./vnc-client.js";
 import { attachVncLocalGestures } from "./vnc-gestures.js";
 import { attachVncScrollBridge } from "./vnc-scroll.js";
@@ -64,9 +65,9 @@ function wsUrl(path) {
   return u.toString();
 }
 
-function camofoxBrowserReady(camofox) {
+function camofoxHandoffOperational(camofox) {
   const h = camofox?.health;
-  return Boolean(h?.browserRunning || h?.browserConnected || (h?.activeTabs ?? 0) > 0);
+  return (h?.activeTabs ?? 0) > 0;
 }
 
 function nativeInputType(overlayType) {
@@ -142,7 +143,7 @@ function renderOverlayFields(formEl, scan) {
       if (field.inputType === "password") input.autocomplete = "off";
       if (field.prefill && field.inputType !== "password") input.value = field.prefill;
       input.dataset.initialValue = input.value;
-      wrap.appendChild(input);
+      wrap.appendChild(field.inputType === "password" ? wrapPasswordInput(input) : input);
     }
     formEl.appendChild(wrap);
   }
@@ -304,7 +305,8 @@ async function main() {
   }
 
   async function maybeWarm(data) {
-    if (camofoxBrowserReady(data?.camofox)) return false;
+    // OAuth can drop Playwright tab tracking while Firefox keeps running (activeTabs: 0).
+    if (camofoxHandoffOperational(data?.camofox)) return false;
     const now = Date.now();
     if (now - lastWarmAt < 15_000) return false;
     lastWarmAt = now;
@@ -418,6 +420,7 @@ async function main() {
     });
     const scrollDetach = attachVncScrollBridge(screenEl, { skipWheel: true });
     attachVncLocalGestures(screenEl, {
+      rfb,
       onScroll: (direction, amount) => {
         if (typeof scrollDetach.enqueueWheel === "function") {
           scrollDetach.enqueueWheel(direction, amount);

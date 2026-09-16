@@ -43,3 +43,20 @@ export async function loadJchatSessionMessagesViaBridge(sessionId: string): Prom
     messages: result.messages ?? [],
   };
 }
+
+type LastAssistantBridgeResult = BridgeResult & { content?: string };
+
+/** Latest non-empty assistant message from Hermes SessionDB (canonical owner reply). */
+export async function fetchHermesLastAssistantMessage(sessionKey: string): Promise<string | undefined> {
+  const key = sessionKey.trim();
+  if (!key) return undefined;
+  const result = (await callSessionsBridge({
+    action: "last_assistant",
+    sessionId: key,
+  })) as LastAssistantBridgeResult;
+  if (!result.ok) {
+    throw new Error(result.error || "Failed to load last assistant message");
+  }
+  const content = result.content?.trim();
+  return content || undefined;
+}

@@ -121,6 +121,7 @@ const popupHandlerV4 = ` page.on('popup', async (popup) => {
  }
  });`;
 
+// Kept for idempotent v5 → v6 upgrade on already-patched /app/server.js.
 const popupHandlerV5 = ` page.on('popup', async (popup) => {
  try {
  // __hitlPopupCoerceV5 — wait on the IdP, then put the app callback into the opener (classic OAuth)
@@ -173,10 +174,95 @@ const popupHandlerV5 = ` page.on('popup', async (popup) => {
  }
  });`;
 
+const popupHandlerV6 = ` page.on('popup', async (popup) => {
+ try {
+ // __hitlPopupCoerceV6 — wait on IdP (no early bail), then assign app callback to opener
+ const slackMagic = (u) => /\\/z-app-/.test(String(u || ''));
+ const oauthIdp = (u) => /accounts\\.google\\.com|accounts\\.youtube\\.com|login\\.microsoftonline\\.com|login\\.live\\.com|github\\.com\\/login|github\\.com\\/session|github\\.com\\/sessions|appleid\\.apple\\.com/.test(String(u || ''));
+ const oauthCallbackUrl = (u) => {
+ const s = String(u || '');
+ return Boolean(s) && s !== 'about:blank' && !oauthIdp(s);
+ };
+ const readPopupUrl = () => {
+ try { return popup.url(); } catch (_) { return ''; }
+ };
+ const waitOAuthCallback = async () => {
+ const deadline = Date.now() + 900000;
+ while (!popup.isClosed() && Date.now() < deadline) {
+ const cur = readPopupUrl();
+ if (oauthCallbackUrl(cur)) return cur;
+ await popup.waitForURL(oauthCallbackUrl, { timeout: 30000 }).catch(() => {});
+ }
+ if (popup.isClosed()) return null;
+ const cur = readPopupUrl();
+ if (oauthCallbackUrl(cur)) return cur;
+ log('info', 'hitl oauth popup still on IdP — listening for callback', { url: cur || readPopupUrl() });
+ return await new Promise((resolve) => {
+ let settled = false;
+ const finish = (value) => {
+ if (settled) return;
+ settled = true;
+ popup.off('framenavigated', onNav);
+ clearTimeout(timer);
+ resolve(value);
+ };
+ const onNav = () => {
+ if (popup.isClosed()) finish(null);
+ else {
+ const next = readPopupUrl();
+ if (oauthCallbackUrl(next)) finish(next);
+ }
+ };
+ popup.on('framenavigated', onNav);
+ popup.once('close', () => finish(null));
+ const timer = setTimeout(() => finish(null), Math.max(0, deadline - Date.now()));
+ onNav();
+ });
+ };
+ await popup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+ if (!readPopupUrl() || readPopupUrl() === 'about:blank') {
+ await popup.waitForURL((u) => u && u !== 'about:blank', { timeout: 60000 }).catch(() => {});
+ }
+ let url = readPopupUrl();
+ if (!url || url === 'about:blank') {
+ await popup.close().catch(() => {});
+ return;
+ }
+ if (oauthIdp(url)) {
+ log('info', 'hitl oauth popup waiting for callback', { url });
+ await popup.bringToFront().catch(() => {});
+ const callbackUrl = await waitOAuthCallback();
+ if (!callbackUrl) {
+ if (!popup.isClosed()) log('info', 'hitl oauth popup listener ended — leaving open', { url: readPopupUrl() });
+ return;
+ }
+ url = callbackUrl;
+ }
+ const magic = slackMagic(url);
+ const navTimeout = magic ? 90000 : 30000;
+ await popup.waitForLoadState('load', { timeout: magic ? 60000 : 15000 }).catch(() => {});
+ url = popup.url() || url;
+ try {
+ await page.evaluate((targetUrl) => { window.location.assign(String(targetUrl)); }, url);
+ await page.waitForLoadState('domcontentloaded', { timeout: navTimeout });
+ } catch (err) {
+ log('warn', 'popup assign navigation failed', { url, error: err.message });
+ await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch((err2) => {
+ log('warn', 'popup same-tab navigation failed', { url, error: err2.message });
+ });
+ }
+ await popup.close().catch(() => {});
+ log('info', 'popup coerced into opener tab', { url });
+ } catch (err) {
+ log('warn', 'popup coercion failed', { error: err.message });
+ await popup.close().catch(() => {});
+ }
+ });`;
+
 const popupPatch = `function createTabState(page) {
  if (process.env.HITL_FORCE_SINGLE_VISIBLE_PAGE !== 'false' && !page.__hitlSingleTabPopupPatch) {
  page.__hitlSingleTabPopupPatch = true;
-${popupHandlerV5}
+${popupHandlerV6}
  }
 `;
 
@@ -381,6 +467,16 @@ async function __hitlGotoWithColdWarm(page, url, reqId, label = 'open_url') {
   }
 }
 
+const localeHelperOnly = `
+// With PROXY_* + geoip, Camoufox picks locale from regional language distribution (US can skew Spanish).
+// locale in launchOptions overrides geoip-derived language for Intl + Accept-Language.
+function __hitlLocaleFromEnv() {
+  const raw = String(process.env.CAMOFOX_LOCALE ?? 'en-US').trim();
+  if (!raw || raw === '0' || raw.toLowerCase() === 'false' || raw.toLowerCase() === 'off') return undefined;
+  return raw;
+}
+`;
+
 const ffHelperOnly = `
 // Camoufox images ship Firefox 135; sites like Slack block it ("browser not supported").
 // Spoof a newer rv: in the fingerprint via launchOptions ff_version (not the binary).
@@ -390,13 +486,31 @@ function __hitlFfVersionFromEnv() {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 139;
 }
-
+${localeHelperOnly}
 function __hitlFfLaunchOverrides() {
   const ff = __hitlFfVersionFromEnv();
   if (!ff) return {};
   return { ff_version: ff, i_know_what_im_doing: true };
 }
 `;
+
+if (!source.includes("function __hitlLocaleFromEnv()")) {
+  if (source.includes("function __hitlFfVersionFromEnv()")) {
+    source = source.replace(
+      /function __hitlFfVersionFromEnv\(\) \{[\s\S]*?\n\}\n/,
+      (block) => block + localeHelperOnly,
+    );
+    console.log(`[joshu] inserted __hitlLocaleFromEnv in ${target}`);
+  } else if (source.includes("function __hitlStartUrlFromEnv()")) {
+    source = source.replace(
+      /function __hitlStartUrlFromEnv\(\) \{[\s\S]*?\n\}\n/,
+      (block) => block + localeHelperOnly,
+    );
+    console.log(`[joshu] inserted __hitlLocaleFromEnv in ${target}`);
+  } else {
+    console.warn(`[joshu] __hitlLocaleFromEnv insertion point not found in ${target}; skipping`);
+  }
+}
 
 if (!source.includes("function __hitlFfLaunchOverrides()")) {
   if (source.includes("function __hitlStartUrlFromEnv()")) {
@@ -639,6 +753,7 @@ const launchOptionsPatch = `      const __hitlVp = __hitlViewportFromEnv();
         enable_cache: true,
         proxy: launchProxy,
         geoip: !!launchProxy,
+        locale: __hitlLocaleFromEnv(),
         virtual_display: vdDisplay,
         window: [__hitlVp.width, __hitlVp.height],
         ...__hitlFfLaunchOverrides(),
@@ -704,6 +819,19 @@ while (source.includes("...__hitlFfLaunchOverrides(),\n        ...__hitlFfLaunch
     "...__hitlFfLaunchOverrides(),\n        ...__hitlFfLaunchOverrides(),",
     "...__hitlFfLaunchOverrides(),",
   );
+}
+
+// Force English when residential proxy + geoip skew locale (Decodo US exits can still pick es-*).
+if (!source.includes("locale: __hitlLocaleFromEnv()")) {
+  if (source.includes("geoip: !!launchProxy,")) {
+    source = source.replace(
+      "        geoip: !!launchProxy,\n",
+      "        geoip: !!launchProxy,\n        locale: __hitlLocaleFromEnv(),\n",
+    );
+    console.log(`[joshu] inserted launchOptions locale in ${target}`);
+  } else {
+    console.warn(`[joshu] launchOptions geoip patch point not found in ${target}; skipping locale`);
+  }
 }
 
 const tabCreateOpenNeedle = `      if (url) {
@@ -1358,6 +1486,7 @@ const popupV2Marker = "__hitlPopupCoerceV2";
 const popupV3Marker = "__hitlPopupCoerceV3";
 const popupV4Marker = "__hitlPopupCoerceV4";
 const popupV5Marker = "__hitlPopupCoerceV5";
+const popupV6Marker = "__hitlPopupCoerceV6";
 const legacyPopupBlock = ` page.on('popup', async (popup) => {
  try {
  await popup.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
@@ -1381,24 +1510,30 @@ if (
   !source.includes(popupV5Marker) &&
   source.includes(legacyPopupBlock)
 ) {
-  source = source.replace(legacyPopupBlock, popupHandlerV5);
-  console.log(`[joshu] upgraded popup coercion to v5 in ${target}`);
+  source = source.replace(legacyPopupBlock, popupHandlerV6);
+  console.log(`[joshu] upgraded popup coercion to v6 in ${target}`);
 }
-if (source.includes(popupV2Marker) && !source.includes(popupV5Marker) && source.includes(popupHandlerV2)) {
-  source = source.replace(popupHandlerV2, popupHandlerV5);
-  console.log(`[joshu] upgraded popup coercion v2 → v5 in ${target}`);
+if (source.includes(popupV2Marker) && !source.includes(popupV6Marker) && source.includes(popupHandlerV2)) {
+  source = source.replace(popupHandlerV2, popupHandlerV6);
+  console.log(`[joshu] upgraded popup coercion v2 → v6 in ${target}`);
 }
-if (source.includes(popupV3Marker) && !source.includes(popupV5Marker) && source.includes(popupHandlerV3)) {
-  source = source.replace(popupHandlerV3, popupHandlerV5);
-  console.log(`[joshu] upgraded popup coercion v3 → v5 in ${target}`);
+if (source.includes(popupV3Marker) && !source.includes(popupV6Marker) && source.includes(popupHandlerV3)) {
+  source = source.replace(popupHandlerV3, popupHandlerV6);
+  console.log(`[joshu] upgraded popup coercion v3 → v6 in ${target}`);
 }
-if (source.includes(popupV4Marker) && !source.includes(popupV5Marker)) {
+if (source.includes(popupV4Marker) && !source.includes(popupV6Marker)) {
   if (source.includes(popupHandlerV4)) {
-    source = source.replace(popupHandlerV4, popupHandlerV5);
-    console.log(`[joshu] upgraded popup coercion v4 → v5 in ${target}`);
+    source = source.replace(popupHandlerV4, popupHandlerV6);
+    console.log(`[joshu] upgraded popup coercion v4 → v6 in ${target}`);
   } else {
-    console.warn(`[joshu] popup v4 marker present but handler block not found in ${target}; skipping v5 upgrade`);
+    console.warn(`[joshu] popup v4 marker present but handler block not found in ${target}; skipping v6 upgrade`);
   }
+}
+if (source.includes(popupV5Marker) && !source.includes(popupV6Marker) && source.includes(popupHandlerV5)) {
+  source = source.replace(popupHandlerV5, popupHandlerV6);
+  console.log(`[joshu] upgraded popup coercion v5 → v6 in ${target}`);
+} else if (source.includes(popupV5Marker) && !source.includes(popupV6Marker)) {
+  console.warn(`[joshu] popup v5 marker present but handler block not found in ${target}; skipping v6 upgrade`);
 }
 
 // ---------------------------------------------------------------------------

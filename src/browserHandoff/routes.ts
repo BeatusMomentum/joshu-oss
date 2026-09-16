@@ -262,6 +262,16 @@ export function registerBrowserHandoffRoutes(
       return;
     }
     await touchCamofoxKeepalive(camofoxSession);
+    // OAuth popups can drop Playwright tab tracking while Firefox keeps running.
+    const tab = await camofoxSession.currentTab().catch(() => undefined);
+    if (!tab) {
+      const pinUrl = getPendingHandoffPinUrl(projectRoot);
+      if (pinUrl) {
+        await camofoxSession.ensureTab(pinUrl).catch((err) => {
+          console.warn("[browser-handoff] tab recovery failed:", err);
+        });
+      }
+    }
     res.json({ ok: true, handoff: publicHandoffView(record) });
   });
 

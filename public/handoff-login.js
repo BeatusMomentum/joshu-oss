@@ -1,3 +1,5 @@
+import { wrapPasswordInput } from "./handoff-password-toggle.js";
+
 function readConfig() {
   const el = document.getElementById("handoff-config");
   if (!el?.textContent) throw new Error("missing handoff config");
@@ -19,6 +21,9 @@ async function main() {
   const err = document.getElementById("handoff-login-error");
   const submit = document.getElementById("handoff-login-submit");
   if (cfg.suggestedUser && user && !user.value) user.value = cfg.suggestedUser;
+  if (pass?.type === "password" && pass.parentElement) {
+    pass.parentElement.replaceChild(wrapPasswordInput(pass), pass);
+  }
   user?.focus();
 
   form?.addEventListener("submit", async (event) => {

@@ -287,16 +287,16 @@ async function installCamofoxShimOnce() {
   await fetch("api/camofox/shim", { method: "POST", cache: "no-store" }).catch(() => undefined);
 }
 
-function camofoxBrowserReady(camofox) {
+function camofoxHandoffOperational(camofox) {
   const h = camofox?.health;
-  return Boolean(h?.browserRunning || h?.browserConnected || (h?.activeTabs ?? 0) > 0);
+  return (h?.activeTabs ?? 0) > 0;
 }
 
 /** After BROWSER_IDLE_TIMEOUT_MS shutdown, Camofox stays up but Firefox is gone.
  *  Status polls must not navigate live tabs — fit-viewport only creates when missing. */
 let lastCamofoxWarmAt = 0;
 async function maybeWarmCamofoxBrowser(data) {
-  if (camofoxBrowserReady(data?.camofox)) return false;
+  if (camofoxHandoffOperational(data?.camofox)) return false;
   const now = Date.now();
   if (now - lastCamofoxWarmAt < 15_000) {
     if (!state.rfb) setVncStatus("starting Camofox browser…", "warn");
@@ -392,6 +392,7 @@ async function connectVnc(novnc, { force = false } = {}) {
       state.vncScrollDetach = attachVncScrollBridge(els.vncScreen, { skipWheel: useGestures });
       if (useGestures) {
         state.vncGestureDetach = attachVncLocalGestures(els.vncScreen, {
+          rfb,
           onScroll: (direction, amount) => {
             if (typeof state.vncScrollDetach?.enqueueWheel === "function") {
               state.vncScrollDetach.enqueueWheel(direction, amount);

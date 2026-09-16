@@ -11,7 +11,7 @@ import twilio from "twilio";
 import { handleSmsApprovalIngress } from "./actionGuard/smsIngress.js";
 import type { HermesApiRunner, HermesChatMessage } from "./hermesApi.js";
 import { buildOwnerTimeSystemMessage } from "./ownerLocalTime.js";
-import { smsModelReplyPlaintext } from "./smsModelReplyPlaintext.js";
+import { ownerSmsTextFromHermesTurn, SMS_EMPTY_REPLY_FALLBACK } from "./smsHermesReply.js";
 import { recordProactiveFeedback, parseFeedbackKeyword, parseTaskActionKeyword } from "./proactive/feedback.js";
 import { handleProactiveTaskAction } from "./proactive/replyRouter.js";
 import { composeProactiveMessage } from "./proactive/composeMessage.js";
@@ -219,6 +219,10 @@ export function registerTwilioSmsRoutes(
             await sendSms(from, resolved.replyText);
             return;
           }
+          if (resolved.action === "error" && resolved.replyText) {
+            await sendSms(from, resolved.replyText);
+            return;
+          }
           if (resolved.action === "fallback_routed") {
             let ack = await composeProactiveMessage({
               kind: "reply_ack",
@@ -252,9 +256,9 @@ export function registerTwilioSmsRoutes(
           },
           {},
         );
-        const reply = smsModelReplyPlaintext(finalText);
+        const reply = await ownerSmsTextFromHermesTurn(sessionKey, finalText);
         if (!reply) {
-          await sendSms(from, "I didn't have a reply for that — try again or reply HELP.");
+          await sendSms(from, SMS_EMPTY_REPLY_FALLBACK);
           return;
         }
         await sendSms(from, reply);

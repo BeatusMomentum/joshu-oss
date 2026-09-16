@@ -8,7 +8,12 @@ export const NOVNC_LIBRARY_VERSION = "1.7.0";
 
 export function novncRfbModuleUrl(clientBaseUrl) {
   const base = String(clientBaseUrl || "").replace(/\/+$/, "");
-  return `${base}/core/rfb.js?v=${NOVNC_LIBRARY_VERSION}`;
+  const path = `${base}/core/rfb.js?v=${NOVNC_LIBRARY_VERSION}`;
+  // Absolute URL avoids base-tag edge cases; same-origin dynamic import needs the file on disk.
+  if (typeof location !== "undefined" && location.origin) {
+    return new URL(path.startsWith("/") ? path : `/${path}`, location.origin).href;
+  }
+  return path;
 }
 
 export async function loadNovncRfb(clientBaseUrl) {

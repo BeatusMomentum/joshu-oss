@@ -131,6 +131,51 @@ body {
   color: var(--color-ink);
 }
 
+.handoff-password-wrap {
+  position: relative;
+  display: block;
+}
+
+.handoff-password-wrap input {
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 2.4rem;
+}
+
+.handoff-password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-field);
+  background: transparent;
+  color: var(--color-ink-muted);
+  cursor: pointer;
+}
+
+.handoff-password-toggle:hover {
+  color: var(--color-ink);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.handoff-password-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.handoff-password-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  display: block;
+}
+
 .handoff-field input[type="checkbox"] {
   width: 1.1rem;
   height: 1.1rem;

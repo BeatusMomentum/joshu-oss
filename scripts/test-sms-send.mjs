@@ -74,13 +74,19 @@ import { smsModelReplyPlaintext } from "../src/smsModelReplyPlaintext.js";
     "<DSMLparameter name=\"name\" string=\"true\">mcp__joshu_connectors__mail_list_track_tasks</DSMLparameter>";
   assert.equal(scrubHermesAssistantContent(leaked).includes("DSML"), false);
   assert.equal(looksLikeLeakedModelOutput(leaked), true);
-  assert.equal(smsModelReplyPlaintext(leaked), "");
+  // SMS plaintext is markdown-only — DSML scrub is Hermes's job at source.
+  assert.match(smsModelReplyPlaintext(leaked), /Owner said no/);
 }
 
 {
   const ok = smsModelReplyPlaintext("Got it — I'll close the ByteDance thread and leave you alone on that one.");
   assert.match(ok, /close the ByteDance thread/);
-  assert.equal(looksLikeLeakedModelOutput(ok), false);
+}
+
+{
+  const handoff =
+    "Tap here to sign in: https://patrick.box.joshu.me/joshu/handoff/abc?t=token&exp=123";
+  assert.match(smsModelReplyPlaintext(handoff), /patrick\.box\.joshu\.me\/joshu\/handoff\/abc/);
 }
 
 {
@@ -95,6 +101,15 @@ import { smsModelReplyPlaintext } from "../src/smsModelReplyPlaintext.js";
   out += scrubber.flush();
   assert.equal(out.includes("DSML"), false);
   assert.match(out, /Sure/);
+}
+
+{
+  const scrubber = new HermesStreamContentScrubber();
+  const parts = ["there is a ", "thread in ", "your inbox"];
+  let out = "";
+  for (const p of parts) out += scrubber.feed(p);
+  out += scrubber.flush();
+  assert.equal(out, "there is a thread in your inbox");
 }
 
 function pendingDirForRoot(root) {

@@ -249,6 +249,7 @@
         scrollDetach = attachVncScrollBridge(screenEl, { skipWheel: useGestures });
         if (useGestures) {
           attachVncLocalGestures(screenEl, {
+            rfb,
             onScroll: (direction, amount) => {
               if (typeof scrollDetach?.enqueueWheel === "function") {
                 scrollDetach.enqueueWheel(direction, amount);

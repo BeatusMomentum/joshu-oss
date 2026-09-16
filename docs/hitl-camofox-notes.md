@@ -29,16 +29,24 @@ Faster VNC redraw helps humans. It does not speed up Hermes tool calls.
 | **noVNC client** | **1.7.0** in [`public/vendor/novnc/`](../public/vendor/novnc/) | JS RFB viewer (`core/rfb.js`); Joshu-served |
 | **websockify** | Debian bookworm `python3-websockify` (~0.10.0) | WebSocket → TCP `:5900` |
 | **x11vnc** | Debian bookworm `x11vnc` **0.9.16** | VNC server on Xvfb |
-| **Camofox** | `camofoxBase` digest in [`deploy/RELEASE.json`](../deploy/RELEASE.json) | Firefox + Playwright API + VNC plugin |
+| **Camofox** | **1.15.0** (`camofoxBase` digest in [`deploy/RELEASE.json`](../deploy/RELEASE.json)) | Firefox + Playwright API + VNC plugin |
 
 `api/status` `novnc.clientBaseUrl` is `/joshu/vendor/novnc`. `novnc.websocketPath`
 stays `/joshu/novnc/websockify` (proxied to Camofox `:6080`). Refresh the client
 with `node scripts/sync-novnc-public.mjs --fetch`.
 
+**Deploy note:** `public/vendor/novnc/` is vendored in git and baked into images
+**0.1.45+**. On **0.1.44** boxes, hotpatch must sync `public/` (including
+`vendor/novnc/`) — a restart without those files causes jWeb
+`Failed to fetch dynamically imported module …/rfb.js`. Compose bind-mounts
+`../public:/opt/joshu/public:ro` so host `git pull` + rsync survives recreate.
+
 **Mobile pinch-zoom / pan:** stock noVNC 1.7 maps pinch to Ctrl+Scroll on the
 remote. Joshu [`public/vnc-gestures.js`](../public/vnc-gestures.js) intercepts
 two-finger gestures: pinch scales the canvas locally (1×–5×); two-finger drag
-pans while zoomed and Playwright-scrolls at 1×. Enabled on handoff always, and
+pans while zoomed and Playwright-scrolls at 1×. One-finger taps while zoomed are
+inverse-mapped back into canvas layout coords before noVNC sends VNC pointer
+events (CSS transform alone would miss buttons). Enabled on handoff always, and
 on jWeb when `(pointer: coarse)`. Upstream `RFB.trackpadMode` is still an
 unmerged PR ([novnc/noVNC#2065](https://github.com/novnc/noVNC/pull/2065)).
 
@@ -96,7 +104,7 @@ confirm, etc.) in the shared Camofox tab, use **`browser_handoff_request`** (Her
 |------|-----|--------|
 | 1 | Agent | `browser_navigate` to the staged handoff page in shared tab |
 | 2 | Agent | `browser_handoff_request(instructions=…)` → returns `https://{slug}.box.joshu.me/joshu/handoff/{id}` |
-| 3 | Owner | Opens link on phone → **signs in with box username/password** (even if already on the desktop) → instructions + embedded noVNC |
+| 3 | Owner | Opens link on phone → **signs in with box username/password** (even if already on the desktop) → instructions + embedded noVNC. Password fields have a **show/hide** eye toggle ([`public/handoff-password-toggle.js`](../public/handoff-password-toggle.js)). |
 | 4 | Owner | Types in native fields (Fill stays disabled until something is typed), or **More Options** for Scan / paste; taps **I'm done** when finished |
 | 5 | Agent | Poll `browser_handoff_status` → `completed`, then `browser_snapshot` to verify |
 | 5b (SMS) | Joshu | After **I'm done**, `deliverSmsHandoffContinuation` waits 20s, runs a Hermes turn on the same `sms:` session, texts the owner the assistant reply (never `nylas_send_message`) |
@@ -285,12 +293,16 @@ identifier URL into the main tab drops the OAuth client, Playwright can lose the
 page (`activeTabs: 0` while Firefox is still running), and the handoff overlay
 spam-polls `page-key` as 502 — looks like the picture loaded and reloaded.
 
-**Fix (v5):** `__hitlPopupCoerceV5` leaves Google / GitHub / Microsoft / Apple
+**Fix (v6):** `__hitlPopupCoerceV6` leaves Google / GitHub / Microsoft / Apple
 popups on the IdP, then **assigns the app callback URL into the opener** (classic
-OAuth `redirect_uri`). Do **not** fullscreen-resize GIS windows. Camofox
-**`MAX_TABS_PER_SESSION` default 4** so the opener is not recycled. Slack `/z-app/`
-magic links still coerce after the redirect chain. Logs:
-`hitl oauth popup waiting for callback`.
+OAuth `redirect_uri`). v5 bailed after 5m on the IdP (`still on IdP — leaving open`)
+so late callbacks never coerced — v6 keeps polling + `framenavigated` listener up to
+15m. Do **not** fullscreen-resize GIS windows. Camofox **`MAX_TABS_PER_SESSION`
+default 4** so the opener is not recycled. Slack `/z-app/` magic links still coerce
+after the redirect chain. Logs: `hitl oauth popup waiting for callback`.
+
+**502 page-key loop:** when `activeTabs: 0` but `browserRunning: true`, handoff
+`maybeWarm` + heartbeat recreate the pinned tab via `fit-viewport` / `ensureTab`.
 
 ### Environment and scripts
 
@@ -303,7 +315,8 @@ magic links still coerce after the redirect chain. Logs:
 | `MAX_TABS_PER_SESSION` / `CAMOFOX_MAX_TABS` | Default **4** so Google/GitHub OAuth popups are extra tabs, not a recycled opener |
 | `BROWSER_IDLE_TIMEOUT_MS` | Firefox idle shutdown; default **`300000`** — jWeb warm-on-open relaunches |
 | `PROXY_*` / `PROXY_COUNTRY` | Residential egress for Camofox (Decodo). Self-host: set in `.env` / `instance.env`. Fleet boxes: `DEFAULT_PROXY_*` at provision; existing: control-plane `pnpm enable:camofox-proxy` |
-| `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, insert-text + selection, form overlay scan/fill, reaper/keepalive, **cold-launch warm** |
+| `CAMOFOX_LOCALE` | Browser locale + `Accept-Language` (default **`en-US`**). With proxy + `geoip`, Camoufox otherwise picks language from regional distribution (US exits can skew Spanish). Set `false`/`off` to use geoip-derived locale. Requires **browser relaunch** (idle shutdown or stack restart). |
+| `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, **OAuth popup v6**, **`CAMOFOX_LOCALE`**, insert-text + selection, form overlay scan/fill, reaper/keepalive, **cold-launch warm** |
 | `scripts/camofox-vnc-watcher.sh` | Reattach x11vnc after idle shutdown (same `:99`); `X11VNC_*` redraw knobs |
 | `public/vendor/novnc/` | Vendored noVNC **1.7.0** client (`core/rfb.js`) |
 | `public/vnc-gestures.js` | Mobile pinch-zoom + pan (local CSS; remote untouched) |
@@ -321,19 +334,23 @@ magic links still coerce after the redirect chain. Logs:
 ### Soft-restart caution
 
 Joshu listens on `:8788`; Docker healthchecks that endpoint. Killing only
-`node dist/server.js` without a fast relaunch can fail health → **stack recreate**,
-which drops in-container Camofox patches until `vps-start` / image rebuild
-re-applies them. Prefer image bake + `repair_camfox_server_js` over ad-hoc
-hotpatches.
+`node dist/server.js` or Camofox `node server.js` without a fast relaunch can
+fail health → **stack recreate** (~5–7 min boot), which drops in-container Camofox
+patches until `vps-start` / image rebuild re-applies them. Prefer image bake +
+`repair_camfox_server_js` over ad-hoc hotpatches. **`vps-start.sh` does not
+respawn** killed background node processes — wait for `healthy` or restart the
+container once.
 
 **Do not** start a second `node dist/server.js` while `vps-start.sh` is still
 booting — you get `EADDRINUSE :8788`, health fails, and the stack restart-loops
 (validated on patrick 2026-08-21). Wait for `healthy` or recreate once and let
 `vps-start` own the listen.
 
-**`public/` is image-baked** (not bind-mounted). Overlaying host `/opt/joshu/public/`
-is not enough — `docker cp` into the running container (or bake the next image).
-Recreate wipes those copies unless you re-apply.
+**`public/` on fleet:** [`deploy/docker-compose.yml`](../deploy/docker-compose.yml)
+bind-mounts `../public:/opt/joshu/public:ro` — `git pull` + rsync on the host
+updates handoff/noVNC assets without an image rebuild. In-container `docker cp`
+still works but is overwritten on recreate if the host tree is stale. Image bake
+remains the durable path for boxes without the bind mount.
 
 Wheel bridge (`vnc-scroll.js`) must stay **rate-limited** (coalesce + ≥180ms
 between Camofox scroll calls). An unbounded queue flooded Camofox, stalled

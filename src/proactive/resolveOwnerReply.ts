@@ -4,14 +4,14 @@
  */
 import type { HermesApiRunner, HermesChatMessage } from "../hermesApi.js";
 import { callKanbanBridge } from "../hermesKanbanBridge.js";
-import { composeProactiveMessage, getProactiveHermesRunner } from "./composeMessage.js";
-import { smsModelReplyPlaintext } from "../smsModelReplyPlaintext.js";
+import { getProactiveHermesRunner } from "./composeMessage.js";
+import { ownerSmsTextFromHermesTurn, SMS_EMPTY_REPLY_FALLBACK } from "../smsHermesReply.js";
 import { buildOwnerTimeSystemMessage } from "../ownerLocalTime.js";
 import { parseProactiveTaskRef } from "./blockReason.js";
 import { wakeProactiveTaskAfterOwnerReply } from "./replyRouter.js";
 import { readProactiveState, writeProactiveState } from "./state.js";
 import type { ProactiveLastNudge } from "./types.js";
-import { smsHermesAbortSignal } from "../twilioSmsConfig.js";
+import { defaultTwilioSmsSystemPrompt, smsHermesAbortSignal } from "../twilioSmsConfig.js";
 
 export type ProactiveResolveContext = {
   taskId: string;
@@ -211,9 +211,7 @@ export async function resolveProactiveOwnerReply(opts: {
       buildOwnerTimeSystemMessage(opts.projectRoot),
       {
         role: "system",
-        content:
-          opts.baseSystemPrompt?.trim() ||
-          "You are Joshu on SMS with the box owner. Reply in concise plain text — no markdown, tables, or long URLs.",
+        content: opts.baseSystemPrompt?.trim() || defaultTwilioSmsSystemPrompt(),
       },
       buildProactiveResolveSystemMessage(prepared.context, opts.body),
       { role: "user", content: opts.body.trim() },
@@ -229,16 +227,16 @@ export async function resolveProactiveOwnerReply(opts: {
       {},
     );
 
-    let replyText = smsModelReplyPlaintext(finalText);
+    const replyText = await ownerSmsTextFromHermesTurn(resolveSessionKey, finalText);
     if (!replyText) {
-      replyText = await composeProactiveMessage({
-        kind: "reply_ack",
-        projectRoot: opts.projectRoot,
-        ownerReplySnippet: opts.body,
-      });
-    }
-    if (!replyText) {
-      throw new Error("empty_resolve_reply");
+      return {
+        ok: false,
+        action: "error",
+        reason: "empty_resolve_reply",
+        replyText: SMS_EMPTY_REPLY_FALLBACK,
+        taskId: prepared.context.taskId,
+        board: prepared.context.board,
+      };
     }
 
     return {

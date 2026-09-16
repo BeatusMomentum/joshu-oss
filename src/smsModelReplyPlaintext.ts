@@ -1,21 +1,6 @@
 import { markdownSpeechPlaintext } from "./markdownSpeechPlaintext.js";
-import {
-  looksLikeLeakedModelOutput,
-  scrubHermesAssistantContent,
-} from "./hermesStreamContentScrubber.js";
 
-export {
-  looksLikeLeakedModelOutput,
-  looksLikeLeakedModelOutput as looksLikeSmsModelLeak,
-  stripLeakedModelMarkup,
-  HermesStreamContentScrubber,
-  scrubHermesAssistantContent,
-} from "./hermesStreamContentScrubber.js";
-
-/** Owner-facing SMS text from a Hermes completion — strips markdown + model leaks. */
+/** Owner-facing SMS text — markdown to plain only; DSML scrub happens in Hermes. */
 export function smsModelReplyPlaintext(raw: string): string {
-  const stripped = scrubHermesAssistantContent(raw);
-  const plain = markdownSpeechPlaintext(stripped).trim();
-  if (looksLikeLeakedModelOutput(plain)) return "";
-  return plain;
+  return markdownSpeechPlaintext(raw).trim();
 }

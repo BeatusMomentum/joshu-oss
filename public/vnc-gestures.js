@@ -9,13 +9,18 @@
  *   two-finger drag  → pan while zoomed; Playwright scroll at 1×
  *   one-finger       → left alone for noVNC absolute pointer mapping
  *
+ * When zoomed, pointer coords are inverse-mapped before noVNC sends VNC clicks.
+ *
  * iOS Safari ignores user-scalable=no; we cancel gesturestart/change on the
  * VNC host so the phone OS does not zoom the Joshu page.
  */
 
+import { clientToElement } from "./vendor/novnc/core/util/element.js";
+
 const MIN_SCALE = 1;
 const MAX_SCALE = 5;
 const SCROLL_PX_PER_TICK = 80;
+const ZOOM_EPS = 1.02;
 
 function clamp(n, lo, hi) {
   return Math.min(hi, Math.max(lo, n));
@@ -38,9 +43,128 @@ function layerFor(hostEl) {
   return hostEl.querySelector("canvas") || hostEl;
 }
 
+/** Map screen coords → noVNC canvas layout coords (undo local CSS zoom). */
+export function mapClientToCanvasLocal(clientX, clientY, canvas, scale) {
+  if (scale <= ZOOM_EPS) {
+    return clientToElement(clientX, clientY, canvas);
+  }
+  const t = canvas.getBoundingClientRect();
+  const w = canvas.offsetWidth;
+  const h = canvas.offsetHeight;
+  let x = (clientX - t.left) / scale;
+  let y = (clientY - t.top) / scale;
+  x = clamp(x, 0, Math.max(0, w - 1));
+  y = clamp(y, 0, Math.max(0, h - 1));
+  return { x, y };
+}
+
+/**
+ * noVNC calls clientToElement on the canvas; CSS transform breaks that when
+ * zoomed. Intercept gestures/clicks and remap before events reach RFB handlers.
+ */
+function attachRfbLocalZoomPointers(rfb, getScale) {
+  const canvas = rfb._canvas;
+  if (!canvas) return () => undefined;
+
+  const mapPos = (clientX, clientY) =>
+    mapClientToCanvasLocal(clientX, clientY, canvas, getScale());
+
+  const tapAt = (ev, bmask) => {
+    const pos = mapPos(ev.detail.clientX, ev.detail.clientY);
+    rfb._fakeMouseMove(ev, pos.x, pos.y);
+    rfb._handleMouseButton(pos.x, pos.y, bmask);
+    rfb._handleMouseButton(pos.x, pos.y, 0x0);
+  };
+
+  const onGesture = (ev) => {
+    if (getScale() <= ZOOM_EPS) return;
+    const kind = ev.detail?.type;
+    const pos = mapPos(ev.detail.clientX, ev.detail.clientY);
+
+    if (ev.type === "gesturestart") {
+      if (kind === "onetap" || kind === "twotap" || kind === "threetap") {
+        ev.stopImmediatePropagation();
+        const mask = kind === "twotap" ? 0x4 : kind === "threetap" ? 0x2 : 0x1;
+        tapAt(ev, mask);
+        return;
+      }
+      if ((kind === "drag" || kind === "longpress") && !rfb.dragViewport) {
+        ev.stopImmediatePropagation();
+        rfb._fakeMouseMove(ev, pos.x, pos.y);
+        if (kind === "longpress") rfb._handleMouseButton(pos.x, pos.y, 0x4);
+        else rfb._handleMouseButton(pos.x, pos.y, 0x1);
+      }
+      return;
+    }
+
+    if (ev.type === "gesturemove" && (kind === "drag" || kind === "longpress") && !rfb.dragViewport) {
+      ev.stopImmediatePropagation();
+      rfb._fakeMouseMove(ev, pos.x, pos.y);
+      return;
+    }
+
+    if (ev.type === "gestureend" && kind === "drag" && !rfb.dragViewport) {
+      ev.stopImmediatePropagation();
+      rfb._fakeMouseMove(ev, pos.x, pos.y);
+      rfb._handleMouseButton(pos.x, pos.y, 0x0);
+      return;
+    }
+
+    if (ev.type === "gestureend" && kind === "longpress" && !rfb.dragViewport) {
+      ev.stopImmediatePropagation();
+      rfb._fakeMouseMove(ev, pos.x, pos.y);
+      rfb._handleMouseButton(pos.x, pos.y, 0x0);
+    }
+  };
+
+  const origHandleMouse = rfb._handleMouse.bind(rfb);
+  rfb._handleMouse = function handleMouseWithLocalZoom(ev) {
+    if (getScale() <= ZOOM_EPS) {
+      return origHandleMouse(ev);
+    }
+    if (ev.type === "click") {
+      if (ev.target !== canvas) return;
+    }
+    ev.stopPropagation();
+    ev.preventDefault();
+    if (ev.type === "click" || ev.type === "contextmenu") return;
+
+    const pos = mapPos(ev.clientX, ev.clientY);
+    const bmask = rfb.constructor._convertButtonMask(ev.buttons);
+    const down = ev.type === "mousedown";
+
+    switch (ev.type) {
+      case "mousedown":
+      case "mouseup":
+        if (down) {
+          canvas.setPointerCapture?.(ev.pointerId);
+        }
+        rfb._handleMouseButton(pos.x, pos.y, bmask);
+        break;
+      case "mousemove":
+        rfb._handleMouseMove(pos.x, pos.y);
+        break;
+      default:
+        break;
+    }
+  };
+
+  const cap = { capture: true };
+  canvas.addEventListener("gesturestart", onGesture, cap);
+  canvas.addEventListener("gesturemove", onGesture, cap);
+  canvas.addEventListener("gestureend", onGesture, cap);
+
+  return () => {
+    canvas.removeEventListener("gesturestart", onGesture, true);
+    canvas.removeEventListener("gesturemove", onGesture, true);
+    canvas.removeEventListener("gestureend", onGesture, true);
+    rfb._handleMouse = origHandleMouse;
+  };
+}
+
 /**
  * @param {HTMLElement} hostEl
- * @param {{ onScroll?: (direction: "up" | "down", amount: number) => void }} [opts]
+ * @param {{ onScroll?: (direction: "up" | "down", amount: number) => void, rfb?: object }} [opts]
  * @returns {() => void}
  */
 export function attachVncLocalGestures(hostEl, opts = {}) {
@@ -50,6 +174,12 @@ export function attachVncLocalGestures(hostEl, opts = {}) {
   let tx = 0;
   let ty = 0;
   let gesture = null; // { dist, originX, originY, lastMidY, startScale }
+  const getScale = () => scale;
+
+  let rfbUnpatch = null;
+  if (opts.rfb) {
+    rfbUnpatch = attachRfbLocalZoomPointers(opts.rfb, getScale);
+  }
 
   const apply = () => {
     const layer = layerFor(hostEl);
@@ -58,7 +188,7 @@ export function attachVncLocalGestures(hostEl, opts = {}) {
   };
 
   const resetIfFit = () => {
-    if (scale <= 1.02) {
+    if (scale <= ZOOM_EPS) {
       scale = 1;
       tx = 0;
       ty = 0;
@@ -98,7 +228,7 @@ export function attachVncLocalGestures(hostEl, opts = {}) {
     const mx = pair.midX - rect.left;
     const my = pair.midY - rect.top;
 
-    if (nextScale > 1.02) {
+    if (nextScale > ZOOM_EPS) {
       scale = nextScale;
       tx = mx - gesture.originX * scale;
       ty = my - gesture.originY * scale;
@@ -147,6 +277,7 @@ export function attachVncLocalGestures(hostEl, opts = {}) {
     hostEl.removeEventListener("touchcancel", onTouchEnd, true);
     hostEl.removeEventListener("gesturestart", preventSafariPageZoom, true);
     hostEl.removeEventListener("gesturechange", preventSafariPageZoom, true);
+    if (rfbUnpatch) rfbUnpatch();
     const layer = layerFor(hostEl);
     layer.style.transform = "";
     layer.style.transformOrigin = "";
