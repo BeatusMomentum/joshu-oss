@@ -2,7 +2,7 @@
 # Hermes / Camofox pins: deploy/RELEASE.json — run `npm run vps:sync-hermes-pin` / `vps:sync-camofox-pin`.
 # Build: npm run vps:predeploy && npm run vps:build-image (or JOSHU_IMAGE_PUSH=1 JOSHU_IMAGE_TAG=0.1.4 …)
 
-ARG CAMOFOX_BASE=ghcr.io/jo-inc/camofox-browser@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae
+ARG CAMOFOX_BASE=ghcr.io/jo-inc/camofox-browser@sha256:3cc29763d3c784ae71a7d56853a12c43e100ff2f13da1e2eb88322b08e12d6a0
 
 FROM ${CAMOFOX_BASE} AS builder
 

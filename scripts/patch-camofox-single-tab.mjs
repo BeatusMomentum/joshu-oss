@@ -273,6 +273,22 @@ if (!alreadyHasPopupPatch) {
   source = source.replace("function createTabState(page) {\n", popupPatch);
 }
 
+// Camofox 1.16+ registers popups as managed tabs (JO-2456). HITL single-tab uses
+// createTabState popup coercion instead — skip attachPopupHandler to avoid OAuth races.
+const attachPopupSkipNeedle = "function attachPopupHandler(page, userId, sessionKey) {\n  page.on('popup', (popupPage) => {";
+const attachPopupSkipPatch = `function attachPopupHandler(page, userId, sessionKey) {
+  if (process.env.HITL_FORCE_SINGLE_VISIBLE_PAGE !== 'false') {
+    return;
+  }
+  page.on('popup', (popupPage) => {`;
+if (
+  source.includes(attachPopupSkipNeedle) &&
+  !source.includes("HITL single-tab uses createTabState popup coercion")
+) {
+  source = source.replace(attachPopupSkipNeedle, attachPopupSkipPatch);
+  console.log(`[joshu] patched attachPopupHandler for HITL single-tab in ${target}`);
+}
+
 const viewportHelper = `
 function __hitlViewportFromEnv() {
  const fromResolution = String(process.env.VNC_RESOLUTION || '').match(/^(\\d+)x(\\d+)/);
@@ -365,6 +381,11 @@ async function __hitlGotoWithColdWarm(page, url, reqId, label = 'open_url') {
   await withPageLoadDuration(label, () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }));
 }
 
+async function __hitlGotoWithColdWarmNavigate(page, url, reqId, label = 'open_url') {
+  await __hitlWarmBeforeHeavyNav(page, url, reqId);
+  return withPageLoadDuration(label, () => navigatePage(page, url));
+}
+
 // Camoufox images ship Firefox 135; sites like Slack block it ("browser not supported").
 // Spoof a newer rv: in the fingerprint via launchOptions ff_version (not the binary).
 function __hitlFfVersionFromEnv() {
@@ -387,7 +408,22 @@ if (!source.includes("function __hitlViewportFromEnv()")) {
     throw new Error(`Could not find viewport helper insertion point in ${target}`);
   }
   source = source.replace("// Virtual display for WebGL support and anti-detection.", `${viewportHelper}\n// Virtual display for WebGL support and anti-detection.`);
-} else if (!source.includes("async function __hitlGotoWithColdWarm(")) {
+} else if (!source.includes("async function __hitlGotoWithColdWarmNavigate(")) {
+  const navigateHelperOnly = `
+async function __hitlGotoWithColdWarmNavigate(page, url, reqId, label = 'open_url') {
+  await __hitlWarmBeforeHeavyNav(page, url, reqId);
+  return withPageLoadDuration(label, () => navigatePage(page, url));
+}
+`;
+  if (source.includes("async function __hitlGotoWithColdWarm(")) {
+    source = source.replace(
+      /async function __hitlGotoWithColdWarm\([\s\S]*?\n\}\n/,
+      (block) => block + navigateHelperOnly,
+    );
+    console.log(`[joshu] inserted __hitlGotoWithColdWarmNavigate in ${target}`);
+  }
+}
+if (!source.includes("async function __hitlGotoWithColdWarm(")) {
   const coldWarmOnly = `
 // HITL_COLD_LAUNCH_WARM — after idle shutdown, load CAMOFOX_START_URL before heavy SPA first paint.
 let __hitlBrowserColdLaunch = false;
@@ -822,8 +858,15 @@ while (source.includes("...__hitlFfLaunchOverrides(),\n        ...__hitlFfLaunch
 }
 
 // Force English when residential proxy + geoip skew locale (Decodo US exits can still pick es-*).
+const launchLocaleNeedle =
+  "locale: launchLocale({ hasProxy: !!proxyPool, directIdentity: CONFIG.directIdentity }),";
+const launchLocalePatch =
+  "locale: __hitlLocaleFromEnv() ?? launchLocale({ hasProxy: !!proxyPool, directIdentity: CONFIG.directIdentity }),";
 if (!source.includes("locale: __hitlLocaleFromEnv()")) {
-  if (source.includes("geoip: !!launchProxy,")) {
+  if (source.includes(launchLocaleNeedle)) {
+    source = source.replace(launchLocaleNeedle, launchLocalePatch);
+    console.log(`[joshu] patched launchLocale → __hitlLocaleFromEnv in ${target}`);
+  } else if (source.includes("geoip: !!launchProxy,")) {
     source = source.replace(
       "        geoip: !!launchProxy,\n",
       "        geoip: !!launchProxy,\n        locale: __hitlLocaleFromEnv(),\n",
@@ -833,6 +876,49 @@ if (!source.includes("locale: __hitlLocaleFromEnv()")) {
     console.warn(`[joshu] launchOptions geoip patch point not found in ${target}; skipping locale`);
   }
 }
+// Camofox 1.16+ — buildLaunchOptionsWithGeoipFallback (replaces direct launchOptions call).
+if (!source.includes("window: [__hitlVp.width, __hitlVp.height]")) {
+  const blStart = source.indexOf("const options = await buildLaunchOptionsWithGeoipFallback({");
+  if (blStart >= 0) {
+    const optLine = source.lastIndexOf("\n", blStart) + 1;
+    if (!source.slice(Math.max(0, optLine - 120), optLine).includes("__hitlVp = __hitlViewportFromEnv()")) {
+      source = source.slice(0, optLine) + "      const __hitlVp = __hitlViewportFromEnv();\n" + source.slice(optLine);
+    }
+    if (source.includes(launchLocaleNeedle)) {
+      source = source.replace(launchLocaleNeedle, launchLocalePatch);
+    }
+    const vdIdx = source.indexOf("virtual_display: vdDisplay,", source.indexOf("buildLaunchOptionsWithGeoipFallback({"));
+    const vdEnd = vdIdx > 0 ? source.indexOf("\n", vdIdx) : -1;
+    if (vdIdx > 0 && vdEnd > vdIdx) {
+      source =
+        source.slice(0, vdEnd) +
+        "\n        window: [__hitlVp.width, __hitlVp.height],\n        ...__hitlFfLaunchOverrides()," +
+        source.slice(vdEnd);
+      console.log(`[joshu] inserted buildLaunchOptions window size in ${target}`);
+    }
+  }
+}
+if (!source.includes("HITL — single-tab window.open prefs")) {
+  const prefsMergeNeedle = "      options.proxy = normalizePlaywrightProxy(options.proxy);\n";
+  const prefsMergePatch = `      options.proxy = normalizePlaywrightProxy(options.proxy);
+      // HITL — single-tab window.open prefs
+      options.firefox_user_prefs = {
+        ...(options.firefox_user_prefs || {}),
+        'browser.link.open_newwindow': 1,
+        'browser.link.open_newwindow.restriction': 0,
+        'browser.link.open_newwindow.override.external': 1,
+      };
+`;
+  if (source.includes(prefsMergeNeedle)) {
+    source = source.replace(prefsMergeNeedle, prefsMergePatch);
+    console.log(`[joshu] merged firefox_user_prefs after buildLaunchOptions in ${target}`);
+  }
+}
+// Remove duplicate locale key if an older patch inserted __hitlLocaleFromEnv before launchLocale.
+source = source.replace(
+  /geoip: !!launchProxy,\n\s+locale: __hitlLocaleFromEnv\(\),\n(\s+locale: launchLocale)/g,
+  "geoip: !!launchProxy,\n        locale: __hitlLocaleFromEnv() ?? launchLocale",
+);
 
 const tabCreateOpenNeedle = `      if (url) {
         const urlErr = validateUrl(url);
@@ -854,7 +940,25 @@ const tabCreateOpenPatch = `      const __hitlOpenUrl = url || __hitlStartUrlFro
 if (source.includes(tabCreateOpenNeedle)) {
   source = source.replace(tabCreateOpenNeedle, tabCreateOpenPatch);
 } else if (!source.includes("__hitlOpenUrl = url || __hitlStartUrlFromEnv()")) {
-  console.warn(`[joshu] tab create start URL patch point not found in ${target}; skipping`);
+  const tabCreateOpenNeedle16 = `      if (url) {
+        const urlErr = validateUrl(url);
+        if (urlErr) throw Object.assign(new Error(urlErr), { statusCode: 400 });
+        tabState.lastRequestedUrl = url;
+        try {
+          const navigationResponse = await withPageLoadDuration('open_url', () => navigatePage(page, url));`;
+  const tabCreateOpenPatch16 = `      const __hitlOpenUrl = url || __hitlStartUrlFromEnv();
+      if (__hitlOpenUrl) {
+        const urlErr = validateUrl(__hitlOpenUrl);
+        if (urlErr) throw Object.assign(new Error(urlErr), { statusCode: 400 });
+        tabState.lastRequestedUrl = __hitlOpenUrl;
+        try {
+          const navigationResponse = await withPageLoadDuration('open_url', () => __hitlGotoWithColdWarmNavigate(page, __hitlOpenUrl, req.reqId));`;
+  if (source.includes(tabCreateOpenNeedle16)) {
+    source = source.replace(tabCreateOpenNeedle16, tabCreateOpenPatch16);
+    console.log(`[joshu] patched tab create navigatePage start URL in ${target}`);
+  } else {
+    console.warn(`[joshu] tab create start URL patch point not found in ${target}; skipping`);
+  }
 }
 
 const tabCreateFitNeedle = `        tabState.visitedUrls.add(__hitlOpenUrl);
@@ -872,7 +976,24 @@ const tabCreateFitPatch = `        tabState.visitedUrls.add(__hitlOpenUrl);
 if (source.includes(tabCreateFitNeedle)) {
   source = source.replace(tabCreateFitNeedle, tabCreateFitPatch);
 } else if (!source.includes("await __hitlFitBrowserWindow(page);")) {
-  console.warn(`[joshu] tab create window-fit patch point not found in ${target}; skipping`);
+  const tabCreateFitNeedle16 = `        tabState.visitedUrls.add(url);
+      }
+      
+      pluginEvents.emit('tab:created', { userId, tabId, page, url: page.url() });
+      log('info', 'tab created', { reqId: req.reqId, tabId, userId, sessionKey: resolvedSessionKey, url: page.url() });`;
+  const tabCreateFitPatch16 = `        tabState.visitedUrls.add(__hitlOpenUrl);
+      }
+
+      await __hitlFitBrowserWindow(page);
+      
+      pluginEvents.emit('tab:created', { userId, tabId, page, url: page.url() });
+      log('info', 'tab created', { reqId: req.reqId, tabId, userId, sessionKey: resolvedSessionKey, url: page.url() });`;
+  if (source.includes(tabCreateFitNeedle16)) {
+    source = source.replace(tabCreateFitNeedle16, tabCreateFitPatch16);
+    console.log(`[joshu] patched tab create window-fit (navigatePage) in ${target}`);
+  } else {
+    console.warn(`[joshu] tab create window-fit patch point not found in ${target}; skipping`);
+  }
 }
 
 if (!source.includes("firefox_user_prefs")) {
@@ -1564,7 +1685,22 @@ if (!source.includes("__hitlMarkBrowserColdLaunch();")) {
   if (source.includes(coldLaunchMarkNeedle)) {
     source = source.replace(coldLaunchMarkNeedle, coldLaunchMarkPatch);
   } else {
-    console.warn(`[joshu] cold-launch mark insertion point not found in ${target}; skipping`);
+    const coldLaunchMarkNeedleV16 = `      log('info', 'camoufox launched', {
+        attempt,
+        maxAttempts,
+        virtualDisplay: useVirtualDisplay,
+        interactiveMode: CONFIG.interactiveMode,
+        proxyMode: proxyPool?.mode || null,
+        proxyServer: launchProxy?.server || null,
+        proxySession: launchProxy?.sessionId || null,
+      });
+      return browser;`;
+    if (source.includes(coldLaunchMarkNeedleV16)) {
+      source = source.replace(coldLaunchMarkNeedleV16, coldLaunchMarkPatch);
+      console.log(`[joshu] inserted cold-launch mark (Camofox 1.16 layout) in ${target}`);
+    } else {
+      console.warn(`[joshu] cold-launch mark insertion point not found in ${target}; skipping`);
+    }
   }
 
   const directGotoNeedle =
@@ -1590,7 +1726,16 @@ if (!source.includes("__hitlMarkBrowserColdLaunch();")) {
   if (source.includes(navigateGotoNeedle)) {
     source = source.replace(navigateGotoNeedle, navigateGotoPatch);
   } else {
-    console.warn(`[joshu] tabs/:tabId/navigate cold-warm insertion point not found in ${target}; skipping`);
+    const navigateGotoNeedle16 =
+      "const gotoP = withPageLoadDuration('navigate', () => navigatePage(tabState.page, targetUrl, { timeout: NAVIGATE_TIMEOUT_MS }));";
+    const navigateGotoPatch16 = `await __hitlWarmBeforeHeavyNav(tabState.page, targetUrl, req.reqId);
+          const gotoP = withPageLoadDuration('navigate', () => navigatePage(tabState.page, targetUrl, { timeout: NAVIGATE_TIMEOUT_MS }));`;
+    if (source.includes(navigateGotoNeedle16)) {
+      source = source.replace(navigateGotoNeedle16, navigateGotoPatch16);
+      console.log(`[joshu] patched tabs/:tabId/navigate cold-warm (navigatePage) in ${target}`);
+    } else {
+      console.warn(`[joshu] tabs/:tabId/navigate cold-warm insertion point not found in ${target}; skipping`);
+    }
   }
 } else if (!source.includes("async function __hitlGotoWithColdWarm(")) {
   console.warn(`[joshu] cold-launch mark without helpers in ${target}; re-run patch on clean server.js`);

@@ -29,7 +29,7 @@ Faster VNC redraw helps humans. It does not speed up Hermes tool calls.
 | **noVNC client** | **1.7.0** in [`public/vendor/novnc/`](../public/vendor/novnc/) | JS RFB viewer (`core/rfb.js`); Joshu-served |
 | **websockify** | Debian bookworm `python3-websockify` (~0.10.0) | WebSocket → TCP `:5900` |
 | **x11vnc** | Debian bookworm `x11vnc` **0.9.16** | VNC server on Xvfb |
-| **Camofox** | **1.15.0** (`camofoxBase` digest in [`deploy/RELEASE.json`](../deploy/RELEASE.json)) | Firefox + Playwright API + VNC plugin |
+| **Camofox** | **1.16.0** (`camofoxBase` digest in [`deploy/RELEASE.json`](../deploy/RELEASE.json)) | Firefox + Playwright API + VNC plugin; 1.16 uses `buildLaunchOptionsWithGeoipFallback` + `attachPopupHandler` (HITL patch skips managed popups) |
 
 `api/status` `novnc.clientBaseUrl` is `/joshu/vendor/novnc`. `novnc.websocketPath`
 stays `/joshu/novnc/websockify` (proxied to Camofox `:6080`). Refresh the client

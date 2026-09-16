@@ -1,11 +1,11 @@
 {
-  "version": "0.1.44",
+  "version": "0.1.45",
   "channel": "stable",
-  "imageRef": "ghcr.io/db-aeon/joshu-oss:0.1.44",
-  "voiceImageRef": "ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.44",
+  "imageRef": "ghcr.io/db-aeon/joshu-oss:0.1.45",
+  "voiceImageRef": "ghcr.io/db-aeon/joshu-oss-voice-realtime:0.1.45",
   "hermesRef": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
   "gbrainRef": "fa2c7a6990a7a57b251979ef6e1988ff09529021",
-  "camofoxBase": "ghcr.io/jo-inc/camofox-browser@sha256:e32beb2a6c958126bc2eb0882dedd97880bd822c0c15ea5b24cff558400664ae",
-  "builtAt": "2026-09-10T04:30:00.000Z",
-  "notes": "0.1.44 - image-owned boot scripts; box API localhost gate + Hermes dashboard auth; fleet SMS gateway + proactive Kanban nudges; ea-onboarding setup-debt; owner-reply routing; Kanban worker terminate-on-complete; Nylas attachments + owner auto-CC"
+  "camofoxBase": "ghcr.io/jo-inc/camofox-browser@sha256:3cc29763d3c784ae71a7d56853a12c43e100ff2f13da1e2eb88322b08e12d6a0",
+  "builtAt": "2026-09-16T15:20:00.000Z",
+  "notes": "0.1.45 - Camofox 1.16.0 base; HITL OAuth v6 + locale + tab recovery; noVNC 1.7 vendored; public/ bind-mount; handoff password toggle"
 }
