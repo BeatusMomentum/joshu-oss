@@ -279,7 +279,7 @@ This keeps SDK and MCP paths aligned without relying on Composio-hosted modifier
 | Hermes `terminal` → `nylas email send` | Terminal mail guard patch | Custom/obfuscated shell |
 | `execute_code` / `curl` → arbitrary external URL | Not gated by Joshu | Egress allowlist (out of scope v1) |
 | Hermes `mcp_servers` **stdio** (`command` / `args`) | Stripped on gateway sync (`hermesMcpAllowlist.ts`) | Extra **HTTP** MCPs still allowed |
-| Public Hermes Admin without basic auth | Caddy omits `hermes-admin` vhost; dashboard does not start | Rotate keys if a box was ever exposed |
+| Public Hermes Admin without basic auth | Caddy omits `hermes-admin` vhost; dashboard does not start | **Password in `instance.env` ≠ live lock** — unauth curl must be **401**. Stale host compose can still publish the vhost |
 | Composio Gmail send | Hard MCP policy | — |
 | Agent delete/trash | Hard MCP policy | — |
 | Hermes browser click/type/press | Browser gate + owner channel when `browserGateWrites` | navigate-only; evaluate/submit unhooked; Hermes fail-open if Joshu unreachable |
@@ -376,7 +376,8 @@ Fleet incident: **unauthenticated public Hermes Admin** let an attacker add a **
 
 | Vector | What happened | Mitigation (2026-09-07+) |
 |--------|---------------|---------------------------|
-| Public `hermes-admin.*` with **empty** `JOSHU_HERMES_DASHBOARD_PASSWORD` | Caddy published the vhost; `header_up Host 127.0.0.1:9119` bypasses Hermes DNS-rebind check | No vhost without bcrypt password; dashboard does not start on fleet boxes |
+| Public `hermes-admin.*` with **empty** `JOSHU_HERMES_DASHBOARD_PASSWORD` | Caddy published the vhost; `header_up Host 127.0.0.1:9119` bypasses Hermes DNS-rebind check | No vhost without bcrypt password; dashboard does not start |
+| **Password set, Caddyfile still unauth** (Clara 2026-09-16) | Host compose bind-mounted an **Aug 14** `Caddyfile` with **no `basicauth`**. Health `0.1.44` and `JOSHU_HERMES_DASHBOARD_PASSWORD` did not re-render the edge. Unauth stayed **200** | Current compose uses `caddy-entrypoint.sh` (render from `instance.env` on every start). Recreate Caddy only after the **caddy service** has that entrypoint. Source of truth: unauth **401** |
 | **`hermes mcp add --command python3`** (stdio) | RCE + persistence via crontab; miner under `/usr_*vt/…/dns-filter` | **`hermesMcpAllowlist.ts`** strips unknown stdio MCPs on every gateway sync; test: `npm run test:hermes-mcp-allowlist` |
 | Dashboard **MCP form** + in-memory registry | Cleaning `config.yaml` alone was insufficient — dashboard respawned the server | Remove MCP from config **and** restart gateway **and** dashboard |
 | Dashboard **`env/reveal`** | Leaked OpenRouter, Exa, `API_SERVER_KEY`, Slack tokens, Telegram allow-list | Rotate vendor keys; regenerate Slack at api.slack.com (not CP-mintable) |
@@ -385,19 +386,21 @@ Fleet incident: **unauthenticated public Hermes Admin** let an attacker add a **
 
 | Status | Boxes |
 |--------|--------|
-| **Confirmed malware** (miner or `lab-beacon` in logs) | **Patrick**, **Clara** |
+| **Confirmed malware** (miner or `lab-beacon` in logs) | **Patrick**, **Clara** (Clara **reinfected 2026-09-15** via `/etc/.dd` crontab after the Sep 7 config cleanup) |
 | **Exposed** (unauth admin HTTP 200, empty dashboard password; rotate keys as precaution) | Gideon, Tess, Finn, Mina, Joe, Kaelen, Joshua, Cleo, Alex, Debra |
+| **Fleet re-scan 2026-09-16** | All **11** live boxes unauth **401**, no live miner. Clara was the only **old Caddy bind-mount** — patched to `caddy-entrypoint` that night |
 | **Not this campaign** | Owner HTTP MCP **`known_quantity`** (legitimate) |
 
 Best marker on Patrick: dashboard logout **2026-09-06 09:52Z** from **`149.102.245.71`** (Datacamp VPN). Treat that IP as hostile unless confirmed otherwise.
 
 ### Post-incident checklist (existing fleet box)
 
-1. **Lock admin:** `bash deploy/scripts/ensure-instance-env-secrets.sh /etc/joshu/instance.env` → recreate **Caddy**; unauth curl must return **401**.
-2. **Contain MCP/miner:** strip stdio extras; kill miner; remove `/usr_bwvt`, `/usr_npvf`, `/etc/.dd`; restart gateway + dashboard. Keep `config.yaml.bak-malware-*` as evidence — do not restore.
-3. **Rotate secrets:** OpenRouter, Exa, `API_SERVER_KEY` / `HERMES_API_KEY` / `JOSHU_READ_API_KEY` via control-plane `scripts/rotate-exposed-vendor-keys.ts` (see troubleshooting doc). **Slack:** regenerate bot + app tokens in Slack app settings → Safety or `~/.hermes/.env`.
+1. **Lock admin:** password in `instance.env` is not enough. Unauth `https://hermes-admin.<slug>.<suffix>/` must return **401**. Caddy must use **`caddy-entrypoint.sh`** (not a static `./Caddyfile` bind). Recreate **Caddy** after that compose change.
+2. **Contain MCP/miner:** strip stdio extras; kill miner; remove `/usr_bwvt`, `/usr_npvf`, `/etc/.dd` **and** root crontab (`*/45 … cron-fetch`). **Reboot is not enough** — dropper files live in the container writable layer; **`--force-recreate joshu-stack`**. Restart **gateway and dashboard**. Keep `config.yaml.bak-malware-*` — do not restore. Do **not** `POST /joshu/api/hermes/reset` while a dropper is live (Clara: load 5 → 172).
+3. **Rotate secrets:** OpenRouter, Exa, `API_SERVER_KEY` / `HERMES_API_KEY` / `JOSHU_READ_API_KEY` via control-plane `scripts/rotate-exposed-vendor-keys.ts` **after** a full `sync-dist-from-image.sh`. **Slack:** regenerate bot + app tokens in Slack app settings → Safety or `~/.hermes/.env`.
 4. **Verify allowlist:** after gateway sync, `mcp_servers` in `config.yaml` must have **no** `command`/`args` stdio entries except Joshu-managed servers.
 5. **Dist integrity:** after `rotate_secrets` or `--force-recreate joshu-stack`, host **`/opt/joshu/dist/` must match the release image** — never hotpatch a single `dist/*.js` without syncing the full tree ([hotpatch-running-box.md](vps-sandbox/hotpatch-running-box.md#dist-atomicity-after-secret-rotation-or-recreate)).
+6. **Re-scan the fleet** after any Clara-class incident: unauth 401 on every `hermes-admin`, Caddy entrypoint contains `caddy-entrypoint`, no `/etc/.dd`, no stdio MCP. See [troubleshooting](vps-sandbox/troubleshooting-and-lessons.md#hermes-admin-unauthenticated-stdio-mcp-miner).
 
 ### Provision hardening (control plane)
 
