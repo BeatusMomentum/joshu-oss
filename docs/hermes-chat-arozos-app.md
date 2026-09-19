@@ -53,6 +53,13 @@ Hermes can keep calling tools for up to **90 iterations** on one user message (t
 
 Joshu sends SSE comment heartbeats every 15s on `/api/hermes-chat/stream` (and AG-UI), and Caddy `reverse_proxy /joshu/*` uses `flush_interval -1` plus 1h read/write timeouts. Recreate **caddy** after image/dist so the Caddyfile regenerates. If a drop still happens, jChat marks the bubble as an error instead of a successful empty reply — send **continue** to pick up Hermes session history.
 
+Clearly long owner work is now admitted through the
+[Realtime Goal Broker](realtime-goals.md) before the Hermes stream. jChat gets a
+plain acknowledgment immediately and remains usable for more requests. Kanban
+completion enters a durable per-session surface-event queue; the open client
+polls it into the visible transcript, and the next owner turn carries that
+assistant message back into Hermes context.
+
 ### System prompt layers
 
 Each turn, jChat POSTs `sessionId` + a **minimal** client system message (mail/tools hints in [`apps/hermes-chat/src/main.tsx`](../apps/hermes-chat/src/main.tsx)) and **only the latest user message** — not the full UI transcript. Hermes merges server-side session history and adds its own cached system prompt: companion `SOUL.md`, desktop `HERMES.md`, **`<available_skills>`** (truncated `description` per skill, ≤60 chars), then tool guidance. The model must call **`skill_view(name)`** to load a full `SKILL.md`; nothing in Joshu auto-selects EA skills when the conversation drifts. Details: [hermes-integration — Skill catalog](hermes-integration.md#skill-catalog-descriptions-and-skill_view), [ea-for-joshu — EA skills in jChat](hermes-integration.md#ea-skills-in-jchat-catalog--skill_view).

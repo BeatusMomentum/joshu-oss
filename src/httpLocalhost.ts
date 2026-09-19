@@ -53,6 +53,34 @@ export function isDesktopBrowserOrLocalRequest(req: Request): boolean {
 }
 
 /**
+ * Authoritative desktop-session gate for privileged browser APIs.
+ *
+ * Caddy terminates the public request before Joshu, so validate the presented
+ * cookie against ArozOS's own session store over loopback instead of trusting
+ * header shape alone.
+ */
+export async function verifyArozosDesktopSession(req: Request): Promise<boolean> {
+  if (isDirectLocalhostRequest(req)) return true;
+  if (!isDesktopBrowserOrLocalRequest(req)) return false;
+  const cookie = String(req.headers.cookie ?? "").trim();
+  const port = (process.env.PUBLIC_AROZ_PORT ?? "8787").trim() || "8787";
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${port}/system/auth/checkLogin`,
+      {
+        headers: { Cookie: cookie, Accept: "application/json" },
+        signal: AbortSignal.timeout(3_000),
+      },
+    );
+    if (!response.ok) return false;
+    const value = await response.json().catch(() => false);
+    return value === true || value === "true";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * ArozOS desktop session cookie on the box hostname.
  *
  * SMS / iMessage opens send Sec-Fetch-Site: none, so isDesktopBrowserOrLocalRequest

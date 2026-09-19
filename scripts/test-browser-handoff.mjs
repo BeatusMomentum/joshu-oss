@@ -28,6 +28,12 @@ import {
 } from "../src/browserHandoff/formCatalog.ts";
 import { buildHandoffScanPrompt } from "../src/browserHandoff/formScan.ts";
 import { isOauthPopupUrl } from "../src/camofoxSession.ts";
+import {
+  looksLikeOwnerHandoffComplete,
+  smsSessionKeysCompatible,
+  tryCompletePendingHandoffForOwnerSession,
+  tryCompletePendingHandoffFromOwnerConfirm,
+} from "../src/browserHandoff/ownerHandoffConfirm.ts";
 
 function tempProjectRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "joshu-handoff-test-"));
@@ -127,6 +133,55 @@ try {
   }
 } finally {
   rmRoot(root);
+}
+
+// --- owner confirm (SMS / chat "done") ---
+assert.equal(looksLikeOwnerHandoffComplete("Yeah I'm done with rapidapi"), true);
+assert.equal(looksLikeOwnerHandoffComplete("done with the login"), true);
+assert.equal(looksLikeOwnerHandoffComplete("Can you check Amazon?"), false);
+assert.equal(smsSessionKeysCompatible("sms:+13106004336:1", "sms:+13106004336:2"), true);
+assert.equal(smsSessionKeysCompatible("sms:+13106004336:1", "jchat:foo"), false);
+
+const rootConfirm = tempProjectRoot();
+try {
+  const pending = createHandoff(rootConfirm, {
+    pageUrl: "https://rapidapi.com/",
+    pageTitle: "API Hub",
+    instructions: "sign in",
+    hermesSessionKey: "sms:+13106004336:1000",
+  });
+  assert.equal(isBrowserHandoffLocked(rootConfirm).locked, true);
+  assert.equal(
+    tryCompletePendingHandoffForOwnerSession(rootConfirm, "sms:+13106004336:2000")?.id,
+    pending.id,
+  );
+  assert.equal(getHandoffRecord(rootConfirm, pending.id)?.status, "completed");
+  assert.equal(isBrowserHandoffLocked(rootConfirm).locked, false);
+} finally {
+  rmRoot(rootConfirm);
+}
+
+const rootAmazon = tempProjectRoot();
+try {
+  const pending = createHandoff(rootAmazon, {
+    pageUrl: "https://www.amazon.com/ap/signin",
+    pageTitle: "Sign in",
+    instructions: "log in",
+    hermesSessionKey: "sms:+13106004336:1000",
+  });
+  assert.equal(
+    tryCompletePendingHandoffForOwnerSession(rootAmazon, "sms:+13106004336:2000")?.id,
+    pending.id,
+  );
+  assert.equal(
+    tryCompletePendingHandoffFromOwnerConfirm(rootAmazon, {
+      body: "Can you check Amazon?",
+      hermesSessionKey: "sms:+13106004336:3000",
+    }),
+    null,
+  );
+} finally {
+  rmRoot(rootAmazon);
 }
 
 // --- Hermes patch script smoke ---

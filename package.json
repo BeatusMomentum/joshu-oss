@@ -71,6 +71,8 @@
     "test:onboarding-reconcile": "tsx scripts/test-onboarding-reconcile.mjs",
     "test:kanban-bridge-max-runtime": "tsx scripts/test-kanban-bridge-max-runtime.mjs",
     "test:kanban-orphan-reaper": "tsx scripts/test-kanban-orphan-reaper.mjs",
+    "test:realtime-goals": "tsx scripts/test-realtime-goals.mjs",
+    "test:realtime-goals-plugin": "python3 scripts/test-realtime-goals-plugin.py",
     "test:sms-send": "tsx scripts/test-sms-send.mjs",
     "test:hermes-skills-policy": "npm run build && node scripts/check-hermes-skills-policy.mjs",
     "test:hermes-mcp-allowlist": "tsx scripts/test-hermes-mcp-allowlist.mjs",

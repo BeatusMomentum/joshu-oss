@@ -58,6 +58,16 @@ if [[ "${HANDOFF_LOCK_OUT}" == *"applied Camofox browser-handoff lock patch"* ]]
   RESYNC_APPLIED=1
 fi
 
+BROWSER_RECOVER_SCRIPT="${ROOT}/scripts/patch-hermes-camofox-browser-recover.mjs"
+BROWSER_RECOVER_OUT="$(node "${BROWSER_RECOVER_SCRIPT}" tools/browser_camofox.py 2>&1)" || {
+  echo "${BROWSER_RECOVER_OUT}" >&2
+  exit 1
+}
+echo "${BROWSER_RECOVER_OUT}"
+if [[ "${BROWSER_RECOVER_OUT}" == *"applied Camofox browser-recover patch"* ]]; then
+  RESYNC_APPLIED=1
+fi
+
 TERMINAL_MAIL_GUARD_SCRIPT="${ROOT}/scripts/patch-hermes-terminal-mail-guard.mjs"
 TERMINAL_MAIL_GUARD_OUT="$(node "${TERMINAL_MAIL_GUARD_SCRIPT}" tools/terminal_tool.py 2>&1)" || {
   echo "${TERMINAL_MAIL_GUARD_OUT}" >&2

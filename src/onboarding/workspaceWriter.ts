@@ -263,7 +263,13 @@ export async function completeOnboarding(
     const { reconcileOnboardingBoard } = await import("./reconcileOnboardingBoard.js");
     const reconcileResult = await reconcileOnboardingBoard(projectRoot);
     if (!reconcileResult.ok) {
-      console.warn(`[onboarding] reconcile skipped: ${reconcileResult.error ?? "unknown"}`);
+      if (reconcileResult.completeFailed > 0) {
+        console.warn(
+          `[onboarding] reconcile complete failed count=${reconcileResult.completeFailed} (${reconcileResult.error ?? "unknown"})`,
+        );
+      } else {
+        console.warn(`[onboarding] reconcile skipped: ${reconcileResult.error ?? "unknown"}`);
+      }
     }
   } catch (err) {
     console.warn(`[onboarding] reconcile skipped: ${(err as Error).message}`);

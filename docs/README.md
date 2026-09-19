@@ -39,6 +39,7 @@ Shortcut format: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 | Chat with shared files | [`share-chat.md`](share-chat.md) |
 | **Runtime assets** (HTML/PNG the API reads — must land in `dist/`) | [`runtime-assets.md`](runtime-assets.md) |
 | Agent write safety | [`agent-safety.md`](agent-safety.md) |
+| **Deferred realtime goals** (SMS, jChat, voice, Slack, Telegram) | [`realtime-goals.md`](realtime-goals.md) |
 | Safety desktop app | [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md) |
 | Nylas agent inbox | [`nylas-agent-mailbox.md`](nylas-agent-mailbox.md) |
 | **Executive assistant (GTD)** | [`executive-assistant.md`](executive-assistant.md) |

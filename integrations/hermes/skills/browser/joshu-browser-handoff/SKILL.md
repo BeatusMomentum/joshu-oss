@@ -4,7 +4,7 @@ description: Live browser HITL — hand shared Camofox tab to owner on mobile fo
 metadata:
   hermes:
     category: browser
-    version: "1.4.1"
+    version: "1.5.0"
 ---
 
 # Joshu browser handoff (live HITL)
@@ -13,9 +13,11 @@ Use when the **owner must take over the shared Camofox tab** (`hitl-camofox` / `
 
 This is **sustained live HITL**: the owner gets a signed link, embedded noVNC, your brief, and time to finish. It is **not** a single-click SMS approval (see action guard below).
 
-**Tools:** `browser_handoff_request`, `browser_handoff_status` (Hermes plugin `joshu-browser-handoff`).
+**Tools:** `browser_handoff_request`, `browser_handoff_status`, `browser_handoff_complete` (Hermes plugin `joshu-browser-handoff`).
 
 **Hard lock:** while handoff is `pending`, agent `browser_navigate` / click / type / press / back are blocked. Owner uses the handoff URL + noVNC. **`browser_snapshot` still works** for verification after completion.
+
+**Owner SMS:** any inbound owner text auto-completes a pending handoff for that SMS session before your turn (browser already unlocked). **jChat/voice:** call **`browser_handoff_complete`** when the owner says they are finished — no need to tap **I'm done** on the link.
 
 ---
 
@@ -65,7 +67,7 @@ When the channel is **SMS**, still **`browser_handoff_request`** and **include t
    - *"Confirm the subscription cancellation on this page — only proceed if the refund amount matches $49."*
 5. Include the returned **`url`** in your outbound message (email, jChat, or SMS). On SMS, always send the link — splitting is automatic.
 6. **`kanban_block("awaiting owner browser handoff")`** (or equivalent wait state).
-7. Poll **`browser_handoff_status(handoff_id=…)`** until `status` is `completed` (or handle `expired` / `cancelled`).
+7. Poll **`browser_handoff_status(handoff_id=…)`** until `status` is `completed`, or call **`browser_handoff_complete`** as soon as the owner says they are done (SMS/jChat/voice). Do not ask them to tap **I'm done** on the link unless they prefer the mobile UI.
 8. **`browser_snapshot`** — verify the outcome (confirmation page, logged-in state, success message).
 9. **Deliver results on the same channel** — SMS → assistant reply text only; email/jChat → normal outbound for that channel. **Not** `nylas_send_message` after SMS handoff.
 10. **`kanban_complete`** or continue the task.

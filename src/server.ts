@@ -80,6 +80,11 @@ import { registerVoiceWebRoutes } from "./voiceWebApi.js";
 import { createTwilioUpgradeHandler, registerTwilioVoiceRoutes } from "./twilioPhoneGateway.js";
 import { registerTwilioSmsRoutes } from "./twilioSmsGateway.js";
 import { registerAgUiRoutes } from "./agUiApi.js";
+import { verifyArozosDesktopSession } from "./httpLocalhost.js";
+import { RealtimeGoalBroker } from "./realtimeGoals/broker.js";
+import { createRealtimeGoalDeliveryHandler } from "./realtimeGoals/delivery.js";
+import { registerRealtimeGoalRoutes } from "./realtimeGoals/routes.js";
+import { registerRealtimeGoalVoiceRoutes } from "./realtimeGoals/voiceCallback.js";
 import { registerAppInvokeRoutes } from "./appInvokeApi.js";
 import { getPendingHandoffPinUrl, registerBrowserHandoffRoutes } from "./browserHandoff/index.js";
 import { registerHindsightRecallRoute } from "./hindsightRecallApi.js";
@@ -233,6 +238,11 @@ const runner = new HermesApiRunner({
   hitlCamofoxUserId: HITL_CAMOFOX_USER_ID,
   hitlCamofoxSessionKey: HITL_CAMOFOX_SESSION_KEY,
 });
+const realtimeGoalBroker = new RealtimeGoalBroker(
+  PROJECT_ROOT,
+  createRealtimeGoalDeliveryHandler(PROJECT_ROOT),
+);
+realtimeGoalBroker.start();
 
 const camofoxSession = new CamofoxSessionCoordinator({
   camofoxUrl: CAMOFOX_URL,
@@ -385,7 +395,8 @@ function buildAppRouter(): {
   router.use(morgan("dev"));
 
   registerTwilioVoiceRoutes(router, runner, PUBLIC_BASE_PATH);
-  registerTwilioSmsRoutes(router, runner, PUBLIC_BASE_PATH);
+  registerRealtimeGoalVoiceRoutes(router, realtimeGoalBroker, PUBLIC_BASE_PATH);
+  registerTwilioSmsRoutes(router, runner, PUBLIC_BASE_PATH, realtimeGoalBroker);
   setProactiveHermesRunner(runner);
 
   registerBrainRoutes(router);
@@ -506,6 +517,7 @@ function buildAppRouter(): {
   registerBoxSecretsRoutes(router, { projectRoot: PROJECT_ROOT, runner });
   registerAuthRecoveryRoutes(router);
   registerDay0Routes(router, { projectRoot: PROJECT_ROOT });
+  registerRealtimeGoalRoutes(router, realtimeGoalBroker);
 
   registerHermesCronRoutes(router);
   registerLast30DaysRoutes(router, { projectRoot: PROJECT_ROOT });
@@ -524,7 +536,7 @@ function buildAppRouter(): {
 
   const joshuApiBase = `http://127.0.0.1:${PORT}${withPublicBase("/api")}`;
   registerAppInvokeRoutes(router, PROJECT_ROOT, joshuApiBase);
-  registerAgUiRoutes(router, runner, PROJECT_ROOT);
+  registerAgUiRoutes(router, runner, PROJECT_ROOT, realtimeGoalBroker);
 
   registerMovieEditorRoutes(router);
 
@@ -936,11 +948,15 @@ function buildAppRouter(): {
   });
 
   router.post("/api/hermes-chat/stream", async (req: Request, res: Response) => {
+    if (!(await verifyArozosDesktopSession(req))) {
+      return res.status(403).json({ error: "authenticated desktop session required" });
+    }
     const body = (req.body ?? {}) as {
       sessionId?: unknown;
       model?: unknown;
       messages?: unknown;
       browserSync?: unknown;
+      sourceMessageId?: unknown;
     };
     const sessionId = readString(body.sessionId);
     const model = readString(body.model);
@@ -961,6 +977,26 @@ function buildAppRouter(): {
 
     try {
       sseSend(res, "status", { status: "running" });
+      const ownerText = extractLastUserMessageText(messages);
+      const brokerResult = ownerText
+        ? await realtimeGoalBroker.route({
+            origin: {
+              channel: "jchat",
+              sessionKey: `joshu-hermes-chat:${sessionId}`,
+              sessionId,
+              messageId: readString(body.sourceMessageId) || undefined,
+            },
+            text: ownerText,
+          })
+        : { action: "pass" as const };
+      if (brokerResult.action === "reply") {
+        sseSend(res, "delta", { text: brokerResult.text });
+        sseSend(res, "done", {
+          finalText: brokerResult.text,
+          realtimeGoalId: brokerResult.goalId,
+        });
+        return;
+      }
       if (isComposioEnabled()) {
         await syncComposioHermesMcp(PROJECT_ROOT).catch(() => undefined);
       }

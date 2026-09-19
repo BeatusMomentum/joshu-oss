@@ -6,6 +6,7 @@ import {
   HERMES_PROGRESS_INTERVAL_MS,
   HERMES_PROGRESS_MAX_TICKS,
   HERMES_PROGRESS_POST_SPEECH_MS,
+  HERMES_API_KEY,
   PHONE_SYSTEM_PROMPT,
   PHONE_VAD_EAGERNESS,
   PHONE_VAD_MODE,
@@ -46,6 +47,9 @@ const MAX_TRANSCRIPT_TURNS = 12;
 const MAX_PASSPHRASE_ATTEMPTS = 3;
 /** 20 ms of μ-law 8 kHz — the frame size Twilio Media Streams expects. */
 const MULAW_FRAME_BYTES = 160;
+const JOSHU_API_BASE = (
+  process.env.JOSHU_API_BASE_URL ?? "http://127.0.0.1:8788/joshu"
+).replace(/\/+$/, "");
 
 /** Realtime sometimes apologizes for lacking access, then calls think in the same response. */
 const LIMITATION_DENIAL_RE =
@@ -92,6 +96,8 @@ type ActiveJoshuJob = {
 type StartMetadata = {
   caller?: string;
   ownerCaller?: string;
+  realtimeGoalId?: string;
+  realtimeGoalToken?: string;
 };
 
 /**
@@ -126,6 +132,9 @@ export class TwilioRealtimeSession {
   /** No warn/hangup timers after successful passphrase unlock. */
   private sessionTimerDisabled = false;
   private startMetadata: StartMetadata | undefined;
+  private realtimeGoalAwaitingReply = false;
+  private realtimeGoalAckPending = false;
+  private realtimeGoalResponseDone = false;
   private greetingSent = false;
   private turn = 0;
   private responseNum = 0;
@@ -168,6 +177,7 @@ export class TwilioRealtimeSession {
     this.passphraseFailures = 0;
     this.hangingUpForAuth = false;
     this.startMetadata = metadata;
+    this.realtimeGoalAwaitingReply = false;
     this.greetingSent = false;
     this.sessionTimerDisabled = false;
     this.suppressAssistantAudio = this.geminiPhone;
@@ -311,6 +321,16 @@ export class TwilioRealtimeSession {
           this.geminiUserTurnNeedsReply = false;
         }
         this.handleResponseDone(info);
+        if (
+          this.realtimeGoalAckPending &&
+          this.currentResponseReason === "hermes_inject" &&
+          this.responseHadSpeech
+        ) {
+          this.realtimeGoalResponseDone = true;
+          // A trailing mark is acknowledged only after Twilio drains all
+          // callback-result audio queued before it.
+          this.sendMark();
+        }
       },
       onFunctionCall: (call) => void this.handleFunctionCall(call),
       onError: (msg) => voiceWarn(this.callSid, provider, msg),
@@ -331,6 +351,15 @@ export class TwilioRealtimeSession {
 
   handleMark(): void {
     if (this.markQueue.length) this.markQueue.shift();
+    if (
+      this.realtimeGoalAckPending &&
+      this.realtimeGoalResponseDone &&
+      this.markQueue.length === 0
+    ) {
+      this.realtimeGoalAckPending = false;
+      this.realtimeGoalResponseDone = false;
+      void this.ackRealtimeGoalPlayback();
+    }
   }
 
   close(): void {
@@ -538,10 +567,19 @@ export class TwilioRealtimeSession {
 
       const justUnlocked = this.updateThinkAuthorization(text, "transcript");
       if (justUnlocked) {
-        // Always wait for a new request. Same-turn "passphrase + task" is too
-        // unreliable under STT, and leftover passphrase audio must not become a think.
-        this.requiresRestatedIntentAfterUnlock = true;
-        this.speakLockLine("unlocked");
+        const isGoalCallback = Boolean(
+          this.startMetadata?.realtimeGoalId && this.startMetadata?.realtimeGoalToken,
+        );
+        // Normal calls wait for a fresh request. Authenticated goal callbacks
+        // disclose the queued result immediately after the unlock line.
+        this.requiresRestatedIntentAfterUnlock = !isGoalCallback;
+        const unlockMs = this.speakLockLine("unlocked");
+        if (isGoalCallback) {
+          setTimeout(
+            () => void this.deliverRealtimeGoalCallback(),
+            Math.max(750, unlockMs + 250),
+          );
+        }
         return;
       }
 
@@ -589,6 +627,12 @@ export class TwilioRealtimeSession {
     });
     const safeText = this.sanitizeTextForThinkContext(text);
     if (safeText) this.pushTranscript("user", safeText);
+    if (safeText && this.realtimeGoalAwaitingReply) {
+      this.realtimeGoalAwaitingReply = false;
+      s2s.cancelActiveResponse();
+      void this.submitRealtimeGoalReply(safeText);
+      return;
+    }
     if (safeText && this.dictation?.active) {
       this.onDictationUserTranscript(safeText);
       // Stay silent while buffering — OpenAI path must not request organic chat.
@@ -630,6 +674,107 @@ export class TwilioRealtimeSession {
       return true;
     }
     return false;
+  }
+
+  private async deliverRealtimeGoalCallback(): Promise<void> {
+    const goalId = this.startMetadata?.realtimeGoalId?.trim();
+    const token = this.startMetadata?.realtimeGoalToken?.trim();
+    if (!goalId || !token || !this.thinkAuthorized || !this.s2s) return;
+    try {
+      const response = await fetch(
+        `${JOSHU_API_BASE}/api/realtime-goals/voice/result/${encodeURIComponent(goalId)}?token=${encodeURIComponent(token)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${HERMES_API_KEY}`,
+            "X-Joshu-Voice-Call-Sid": this.callSid,
+          },
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (!response.ok) throw new Error(`result HTTP ${response.status}`);
+      const payload = (await response.json()) as {
+        text?: string;
+        kind?: "blocked" | "completed";
+      };
+      const result = payload.text?.trim();
+      if (!result) throw new Error("empty callback result");
+      this.realtimeGoalAwaitingReply = payload.kind === "blocked";
+      this.realtimeGoalAckPending = true;
+      this.realtimeGoalResponseDone = false;
+      this.s2s.injectAssistantMessage(
+        payload.kind === "blocked"
+          ? result
+          : `${result}\n\nIs there anything else you'd like me to handle?`,
+      );
+    } catch (error) {
+      voiceWarn(this.callSid, "goal-callback", "result delivery failed", {
+        error: (error as Error).message,
+      });
+      this.s2s.injectAssistantMessage(
+        "I couldn't load that completed task just now. I'll keep it queued for another callback. Is there anything else?",
+      );
+    }
+  }
+
+  private async ackRealtimeGoalPlayback(): Promise<void> {
+    const goalId = this.startMetadata?.realtimeGoalId?.trim();
+    const token = this.startMetadata?.realtimeGoalToken?.trim();
+    if (!goalId || !token) return;
+    await fetch(
+      `${JOSHU_API_BASE}/api/realtime-goals/voice/result/${encodeURIComponent(goalId)}/ack?token=${encodeURIComponent(token)}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${HERMES_API_KEY}`,
+          "Content-Type": "application/json",
+          "X-Joshu-Voice-Call-Sid": this.callSid,
+        },
+        body: "{}",
+        signal: AbortSignal.timeout(5_000),
+      },
+    ).catch((error) => {
+      voiceWarn(this.callSid, "goal-callback", "playback ack failed", {
+        error: (error as Error).message,
+      });
+    });
+  }
+
+  private async submitRealtimeGoalReply(text: string): Promise<void> {
+    const goalId = this.startMetadata?.realtimeGoalId?.trim();
+    const token = this.startMetadata?.realtimeGoalToken?.trim();
+    if (!goalId || !token || !this.s2s) return;
+    try {
+      const response = await fetch(
+        `${JOSHU_API_BASE}/api/realtime-goals/voice/result/${encodeURIComponent(goalId)}/reply?token=${encodeURIComponent(token)}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${HERMES_API_KEY}`,
+            "Content-Type": "application/json",
+            "X-Joshu-Voice-Call-Sid": this.callSid,
+          },
+          body: JSON.stringify({
+            text,
+            sourceId: `${this.callSid}:${this.turn}`,
+          }),
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (!response.ok) throw new Error(`reply HTTP ${response.status}`);
+      const payload = (await response.json()) as { reply?: string };
+      this.s2s.injectAssistantMessage(
+        payload.reply?.trim() ||
+          "Got it. I added that detail and restarted the work. Is there anything else?",
+      );
+    } catch (error) {
+      voiceWarn(this.callSid, "goal-callback", "owner reply handoff failed", {
+        error: (error as Error).message,
+      });
+      this.s2s.injectAssistantMessage(
+        "I couldn't attach that answer just now. Please try again, or tell me something else you'd like handled.",
+      );
+      this.realtimeGoalAwaitingReply = true;
+    }
   }
 
   /** Control secret is used only for unlock checks; never forward it to Hermes context. */

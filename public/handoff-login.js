@@ -21,8 +21,10 @@ async function main() {
   const err = document.getElementById("handoff-login-error");
   const submit = document.getElementById("handoff-login-submit");
   if (cfg.suggestedUser && user && !user.value) user.value = cfg.suggestedUser;
+  // wrapPasswordInput reparents the input — capture the label first.
   if (pass?.type === "password" && pass.parentElement) {
-    pass.parentElement.replaceChild(wrapPasswordInput(pass), pass);
+    const label = pass.parentElement;
+    label.appendChild(wrapPasswordInput(pass));
   }
   user?.focus();
 

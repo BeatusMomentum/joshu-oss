@@ -91,7 +91,7 @@ import {
 const DEFAULT_JOSHU_HERMES_MODEL = JOSHU_OPENROUTER_DEFAULT_MODEL;
 const DEFAULT_JOSHU_HERMES_PROVIDER = "openrouter";
 const DEFAULT_JOSHU_HERMES_TOOLSETS =
-  '["mcp-gbrain", "mcp-joshu-connectors", "kanban", "hermes-cli", "browser", "joshu-desktop", "joshu-app-gui", "joshu-browser-handoff"]';
+  '["mcp-gbrain", "mcp-joshu-connectors", "kanban", "hermes-cli", "browser", "joshu-desktop", "joshu-app-gui", "joshu-browser-handoff", "joshu-realtime-goals"]';
 /** Cap concurrent Hermes cron agent runs (env > config.yaml > unbounded in upstream Hermes). */
 const DEFAULT_JOSHU_HERMES_CRON_MAX_PARALLEL = 2;
 
@@ -332,7 +332,13 @@ const INTERACTIVE_HERMES_PLATFORMS = ["api_server"] as const;
 function syncInteractivePlatformKanbanToolsets(config: ConfigRecord): boolean {
   const platformToolsets = asRecord(config.platform_toolsets);
   let changed = false;
-  const required = ["kanban", "joshu-desktop", "joshu-app-gui", "joshu-browser-handoff"] as const;
+  const required = [
+    "kanban",
+    "joshu-desktop",
+    "joshu-app-gui",
+    "joshu-browser-handoff",
+    "joshu-realtime-goals",
+  ] as const;
   for (const platform of INTERACTIVE_HERMES_PLATFORMS) {
     const existing = asStringArray(platformToolsets[platform]);
     const desired = existing.length > 0 ? [...existing] : ["hermes-api-server"];
@@ -1853,6 +1859,21 @@ export class HermesApiRunner extends EventEmitter {
     }
     if (!toolsets.includes("joshu-last30days")) {
       toolsets.push("joshu-last30days");
+      changed = true;
+    }
+    {
+      const plugins = asRecord(config.plugins);
+      const enabled = asStringArray(plugins.enabled);
+      if (!enabled.includes("joshu-realtime-goals")) {
+        enabled.push("joshu-realtime-goals");
+        changed = true;
+        pluginsChanged = true;
+      }
+      plugins.enabled = enabled;
+      config.plugins = plugins;
+    }
+    if (!toolsets.includes("joshu-realtime-goals")) {
+      toolsets.push("joshu-realtime-goals");
       changed = true;
     }
 

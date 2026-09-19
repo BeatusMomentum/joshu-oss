@@ -20,7 +20,10 @@ import {
 import type { AppGuiAction } from "./appGuiActionTypes.js";
 import { drainDesktopActionsForChat, desktopActionFromHermesToolRaw } from "./desktopActionApi.js";
 import { isComposioEnabled, syncComposioHermesMcp } from "./composioApi.js";
-import { isDesktopBrowserOrLocalRequest } from "./httpLocalhost.js";
+import {
+  isDesktopBrowserOrLocalRequest,
+  verifyArozosDesktopSession,
+} from "./httpLocalhost.js";
 import {
   buildAppAgentSessionId,
   buildAppAgentSystemMessages,
@@ -33,6 +36,7 @@ import {
   requiresExcalidrawBoardMutation,
   resolveAppIdFromRequest,
 } from "./agUiAppContext.js";
+import type { RealtimeGoalBroker } from "./realtimeGoals/broker.js";
 import {
   buildClientToolNameSet,
   parseAgUiClientTools,
@@ -217,6 +221,7 @@ export function registerAgUiRoutes(
   router: Router,
   runner: HermesApiRunner,
   projectRoot: string,
+  realtimeGoals?: RealtimeGoalBroker,
 ): void {
   router.use("/api/ag-ui", (req: Request, res: Response, next: NextFunction) => {
     setAgUiCors(req, res);
@@ -254,7 +259,7 @@ export function registerAgUiRoutes(
   });
 
   router.post("/api/ag-ui/run", async (req: Request, res: Response) => {
-    if (!isDesktopBrowserOrLocalRequest(req)) {
+    if (!(await verifyArozosDesktopSession(req))) {
       res.status(403).json({ error: "ag-ui is desktop-session-only" });
       return;
     }
@@ -262,6 +267,12 @@ export function registerAgUiRoutes(
     const input = (req.body ?? {}) as RunAgentInput;
     const threadId = readString(input.threadId) || readString(input.runId) || `agui-${Date.now()}`;
     const runId = readString(input.runId) || threadId;
+    const rawInputMessages = Array.isArray(input.messages) ? input.messages : [];
+    const lastInputMessage = rawInputMessages.at(-1) as
+      | { id?: unknown; messageId?: unknown }
+      | undefined;
+    const sourceMessageId =
+      readString(lastInputMessage?.id) || readString(lastInputMessage?.messageId) || runId;
     const messages = toHermesMessages(input);
     const clientTools = parseAgUiClientTools(input.tools);
     const clientToolNames = buildClientToolNameSet(clientTools);
@@ -307,6 +318,29 @@ export function registerAgUiRoutes(
     };
 
     try {
+      const ownerText = latestUserText(groundedMessages);
+      if (realtimeGoals && ownerText) {
+        const brokerResult = await realtimeGoals.route({
+          origin: {
+            channel: "agui",
+            sessionKey: sessionKey ?? `joshu-hermes-chat:${threadId}`,
+            sessionId: threadId,
+            messageId: sourceMessageId,
+            appId: appId || undefined,
+          },
+          text: ownerText,
+        });
+        if (brokerResult.action === "reply") {
+          agUiSseSend(res, {
+            type: EVENT.TEXT_MESSAGE_CONTENT,
+            messageId,
+            delta: brokerResult.text,
+          });
+          agUiSseSend(res, { type: EVENT.TEXT_MESSAGE_END, messageId });
+          agUiSseSend(res, { type: EVENT.RUN_FINISHED, threadId, runId });
+          return;
+        }
+      }
       if (isComposioEnabled()) {
         await syncComposioHermesMcp(projectRoot).catch(() => undefined);
       }

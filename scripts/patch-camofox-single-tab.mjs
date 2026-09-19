@@ -1759,7 +1759,157 @@ if (source.includes(coldWarmLegacyNeedle)) {
   source = source.replace(coldWarmLegacyNeedle, coldWarmLegacyPatch);
 }
 
+// --- HITL_PROXY_TUNNEL_DETECT: rotate Decodo/CDN proxy tunnel failures (522 HTML pages) ---
+const PROXY_TUNNEL_MARKER = "HITL_PROXY_TUNNEL_DETECT";
+if (!source.includes(PROXY_TUNNEL_MARKER)) {
+  const proxyTunnelHelpers = `
+// ${PROXY_TUNNEL_MARKER} — generic proxy/CDN tunnel failure pages (522, connection refused HTML).
+const __HITL_PROXY_TUNNEL_RE = /proxy server is refusing connections|Error code:\\s*522|502 Bad Gateway or Proxy Error|Camoufox can't establish a connection|Unable to connect to the proxy server|NS_ERROR_PROXY_CONNECTION_REFUSED/i;
+
+async function __hitlIsProxyTunnelErrorPage(page) {
+  if (!page || page.isClosed()) return false;
+  const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 900) || '').catch(() => '');
+  return __HITL_PROXY_TUNNEL_RE.test(bodyText);
+}
+
+async function __hitlRotateContextOnProxyTunnel(userId, sessionKey, tabId, previousTabState, reason, reqId) {
+  if (!previousTabState?.lastRequestedUrl) return null;
+  if ((previousTabState.proxyRetryCount || 0) >= 2) return null;
+
+  browserRestartsTotal.labels(reason).inc();
+  const key = normalizeUserId(userId);
+  const oldSession = sessions.get(key);
+  if (oldSession) {
+    await closeSession(key, oldSession, { reason: 'proxy_tunnel_rotate', clearDownloads: true, clearLocks: true });
+  }
+  const session = await getSession(userId);
+  const group = getTabGroup(session, sessionKey);
+  const page = await session.context.newPage();
+  const tabState = createTabState(page);
+  tabState.proxyRetryCount = (previousTabState.proxyRetryCount || 0) + 1;
+  tabState.lastRequestedUrl = previousTabState.lastRequestedUrl;
+  attachDownloadListener(tabState, tabId, log, pluginEvents, userId);
+  group.set(tabId, tabState);
+  attachPopupHandler(page, userId, sessionKey);
+  refreshActiveTabsGauge();
+
+  log('warn', 'replaying navigation on fresh proxy context', {
+    reqId,
+    tabId,
+    retryCount: tabState.proxyRetryCount,
+    url: tabState.lastRequestedUrl,
+    proxySession: session.proxySessionId || null,
+  });
+
+  await __hitlWarmBeforeHeavyNav(page, tabState.lastRequestedUrl, reqId);
+  await withPageLoadDuration('navigate', () => page.goto(tabState.lastRequestedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }));
+  tabState.visitedUrls.add(tabState.lastRequestedUrl);
+  return { session, tabState };
+}
+
+`;
+
+  const googleUnavailableAnchor = "async function isGoogleUnavailable(page) {";
+  if (source.includes(googleUnavailableAnchor)) {
+    source = source.replace(googleUnavailableAnchor, `${proxyTunnelHelpers}${googleUnavailableAnchor}`);
+  } else {
+    console.warn(`[joshu] ${PROXY_TUNNEL_MARKER}: isGoogleUnavailable anchor not found; skipping helpers`);
+  }
+
+  const isProxyErrorNeedle = `function isProxyError(err) {
+  if (!err) return false;
+  const msg = err.message || '';
+  return msg.includes('NS_ERROR_PROXY') || msg.includes('proxy connection') || msg.includes('Proxy connection');
+}`;
+  const isProxyErrorPatch = `function isProxyError(err) {
+  if (!err) return false;
+  const msg = err.message || '';
+  return msg.includes('NS_ERROR_PROXY') || msg.includes('proxy connection') || msg.includes('Proxy connection')
+    || msg.includes('Proxy tunnel error') || /\\b522\\b/.test(msg);
+}`;
+  if (source.includes(isProxyErrorNeedle)) {
+    source = source.replace(isProxyErrorNeedle, isProxyErrorPatch);
+  }
+
+  const navigateProxyTunnelNeedle = `        if (isGoogleSearch && proxyPool?.canRotateSessions && await isGoogleSearchBlocked(tabState.page)) {
+          log('warn', 'google search blocked, rotating browser proxy session', {
+            reqId: req.reqId,
+            tabId,
+            url: tabState.page.url(),
+            proxySession: browserLaunchProxy?.sessionId || null,
+          });
+          await recreateTabOnFreshContext();
+          await prewarmGoogleHome();
+          await navigateCurrentPage();
+        }
+        
+        // For Google SERP: skip eager ref building during navigate.`;
+
+  const navigateProxyTunnelPatch = `        if (isGoogleSearch && proxyPool?.canRotateSessions && await isGoogleSearchBlocked(tabState.page)) {
+          log('warn', 'google search blocked, rotating browser proxy session', {
+            reqId: req.reqId,
+            tabId,
+            url: tabState.page.url(),
+            proxySession: browserLaunchProxy?.sessionId || null,
+          });
+          await recreateTabOnFreshContext();
+          await prewarmGoogleHome();
+          await navigateCurrentPage();
+        }
+
+        // ${PROXY_TUNNEL_MARKER}: 522 / proxy-refused pages often load without throwing goto.
+        if (proxyPool?.canRotateSessions && await __hitlIsProxyTunnelErrorPage(tabState.page)) {
+          const rotated = await __hitlRotateContextOnProxyTunnel(
+            userId,
+            currentSessionKey,
+            tabId,
+            tabState,
+            'proxy_tunnel_navigate',
+            req.reqId,
+          );
+          if (rotated) {
+            tabState = rotated.tabState;
+          }
+        }
+        
+        // For Google SERP: skip eager ref building during navigate.`;
+
+  if (source.includes(navigateProxyTunnelNeedle)) {
+    source = source.replace(navigateProxyTunnelNeedle, navigateProxyTunnelPatch);
+  } else {
+    console.warn(`[joshu] ${PROXY_TUNNEL_MARKER}: navigate insertion point not found; skipping`);
+  }
+
+  const snapshotProxyTunnelNeedle = `    const result = await withUserLimit(userId, () => withTimeout((async () => {
+      if (proxyPool?.canRotateSessions && isGoogleSearchUrl(tabState.lastRequestedUrl || '')) {`;
+
+  const snapshotProxyTunnelPatch = `    const result = await withUserLimit(userId, () => withTimeout((async () => {
+      // ${PROXY_TUNNEL_MARKER}: rotate on proxy tunnel HTML before site-specific checks.
+      if (proxyPool?.canRotateSessions && await __hitlIsProxyTunnelErrorPage(tabState.page)) {
+        const rotated = await __hitlRotateContextOnProxyTunnel(
+          userId,
+          found.listItemId,
+          req.params.tabId,
+          tabState,
+          'proxy_tunnel_snapshot',
+          req.reqId,
+        );
+        if (rotated) {
+          tabState = rotated.tabState;
+          found.tabState = tabState;
+        }
+      }
+
+      if (proxyPool?.canRotateSessions && isGoogleSearchUrl(tabState.lastRequestedUrl || '')) {`;
+
+  if (source.includes(snapshotProxyTunnelNeedle)) {
+    source = source.replace(snapshotProxyTunnelNeedle, snapshotProxyTunnelPatch);
+  } else {
+    console.warn(`[joshu] ${PROXY_TUNNEL_MARKER}: snapshot insertion point not found; skipping`);
+  }
+}
+
 writeFileSync(target, source);
 console.log(
-  `[joshu] patched ${target} for single-tab HITL, viewport, selection clipboard route, tab-reaper keepalive, and cold-launch warm`,
+  `[joshu] patched ${target} for single-tab HITL, viewport, selection clipboard route, tab-reaper keepalive, cold-launch warm, and proxy-tunnel recovery`,
 );

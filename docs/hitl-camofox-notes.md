@@ -41,14 +41,27 @@ with `node scripts/sync-novnc-public.mjs --fetch`.
 `Failed to fetch dynamically imported module …/rfb.js`. Compose bind-mounts
 `../public:/opt/joshu/public:ro` so host `git pull` + rsync survives recreate.
 
-**Mobile pinch-zoom / pan:** stock noVNC 1.7 maps pinch to Ctrl+Scroll on the
-remote. Joshu [`public/vnc-gestures.js`](../public/vnc-gestures.js) intercepts
-two-finger gestures: pinch scales the canvas locally (1×–5×); two-finger drag
-pans while zoomed and Playwright-scrolls at 1×. One-finger taps while zoomed are
-inverse-mapped back into canvas layout coords before noVNC sends VNC pointer
-events (CSS transform alone would miss buttons). Enabled on handoff always, and
-on jWeb when `(pointer: coarse)`. Upstream `RFB.trackpadMode` is still an
-unmerged PR ([novnc/noVNC#2065](https://github.com/novnc/noVNC/pull/2065)).
+**Mobile pinch-zoom / pan / scroll:** stock noVNC 1.7 maps pinch to Ctrl+Scroll on
+the remote. Joshu [`public/vnc-gestures.js`](../public/vnc-gestures.js) intercepts
+two-finger gestures on coarse pointers:
+
+| Gesture | At 1× | While zoomed |
+| --- | --- | --- |
+| Pinch (finger separation dominates) | Local zoom 1×–5× | Adjust zoom |
+| Two-finger drag (midpoint travel dominates) | Remote scroll via [`vnc-scroll.js`](../public/vnc-scroll.js) → Playwright | Local pan |
+
+Each two-finger touch **locks one mode** for that gesture (midpoint vs
+separation dominance). A fixed 2% pinch threshold alone misclassified vertical
+scroll drags as zoom — avoid reintroducing threshold-only classifiers.
+
+One-finger taps while zoomed are inverse-mapped back into canvas layout coords
+before noVNC sends VNC pointer events (CSS transform alone would miss buttons).
+Handoff always attaches gestures; jWeb when `(pointer: coarse)`.
+Upstream `RFB.trackpadMode` is still an unmerged PR
+([novnc/noVNC#2065](https://github.com/novnc/noVNC/pull/2065)).
+On fleet boxes, rsync host `public/` after image bake (bind-mount is `:ro`, so
+`docker cp` into the container is not required). Self-host: rebuild or rsync
+`public/` into the running stack's mounted public directory.
 
 **x11vnc redraw knobs** (env → [`scripts/camofox-vnc-watcher.sh`](../scripts/camofox-vnc-watcher.sh)):
 
@@ -113,6 +126,10 @@ confirm, etc.) in the shared Camofox tab, use **`browser_handoff_request`** (Her
 while pending, and the handoff page sends **heartbeat** every 20s (Camofox tab keepalive +
 extends expiry on owner activity). Do not navigate away or restart Camofox during pending handoff.
 
+**Owner SMS:** any inbound owner text auto-completes a pending handoff for that SMS session before
+the agent's turn (`ownerHandoffConfirm.ts`). **jChat/voice:** Hermes calls **`browser_handoff_complete`**.
+The owner does not have to tap **I'm done** on the mobile link.
+
 **SMS continuation:** [`src/browserHandoff/smsContinue.ts`](../src/browserHandoff/smsContinue.ts) must use the **Joshu process singleton** `HermesApiRunner` from [`src/server.ts`](../src/server.ts) (passed through [`registerBrowserHandoffRoutes`](../src/browserHandoff/routes.ts)). Do **not** construct a second `HermesApiRunner` in the handoff path — an orphan runner sees a healthy `:8642` but does not own `this.gateway`, so `ensureApiServer()` logs `replacing existing Hermes gateway with current process env`, SIGTERMs the live gateway, and the in-flight chat stream aborts with **`terminated`**.
 
 Skill: [`integrations/hermes/skills/browser/joshu-browser-handoff/SKILL.md`](../integrations/hermes/skills/browser/joshu-browser-handoff/SKILL.md).
@@ -130,8 +147,9 @@ through ArozOS auth, so Joshu must enforce this itself.
 
 noVNC is a canvas, so the phone OS will not open a keyboard on remote inputs. The handoff page
 puts **VNC in the remaining viewport** (header is a compact logo + brief) and a **native field
-panel below**. Pinch on the VNC pane zooms/pans the picture locally (`vnc-gestures.js`);
-type in the native fields, not the remote Firefox inputs.
+panel below**. Two fingers on the VNC pane: scroll the remote page at 1×, or
+pinch/pan the picture when zoomed (`vnc-gestures.js`). Type in the native
+fields, not the remote Firefox inputs.
 
 1. Joshu scans Camofox with Playwright (`POST /tabs/:id/form-fields`) — frames + shadow DOM.
 2. A Joshu-side JSON LLM call **labels fields and picks Continue / Sign in** from a **sanitized
@@ -244,6 +262,24 @@ call `POST /joshu/api/camofox/warm` (alias of fit-viewport bootstrap without
 resize). EA scheduling skill documents a **2-navigate retry budget** then email
 fallback — do not loop Calendly submits.
 
+### Browser recover + proxy tunnel (heavy SPAs, residential proxy)
+
+**Problem:** Heavy OTAs and similar SPAs can wedge a Camofox tab (`navigate` HTTP
+**404/500/502/503/504**) or load a **proxy/CDN tunnel failure page** (Cloudflare
+**522**, “proxy server is refusing connections”) without throwing on `goto`. Agents
+that keep hammering the same tab make it worse.
+
+**Fix (generic, below the skill layer):**
+
+| Layer | Script | Behavior |
+|-------|--------|----------|
+| **Hermes** | [`patch-hermes-camofox-browser-recover.mjs`](../scripts/patch-hermes-camofox-browser-recover.mjs) (via `apply-hermes-hitl-patch.sh`) | On recoverable navigate HTTP errors: `POST /joshu/api/camofox/warm`, drop stale `tab_id`, retry navigate once. On proxy-failure snapshot text: same warm + retry + refreshed snapshot (`proxy_recovered: true`). |
+| **Camofox** | [`patch-camofox-single-tab.mjs`](../scripts/patch-camofox-single-tab.mjs) | After navigate/snapshot: detect 522-class HTML → rotate to a **fresh proxy context** and replay the last URL (max **2** retries via `proxyRetryCount`). Extends `isProxyError()` for thrown tunnel errors. |
+
+Restart **Hermes gateway** after Hermes patch changes; restart **Camofox** (or
+recreate stack) after Camofox patch changes. Marker strings: `hitl_browser_recover`,
+`HITL_PROXY_TUNNEL_DETECT`.
+
 ## `CAMOFOX_START_URL` / `about:blank`
 
 - VPS default is **`https://joshu.me/`**.
@@ -316,10 +352,11 @@ after the redirect chain. Logs: `hitl oauth popup waiting for callback`.
 | `BROWSER_IDLE_TIMEOUT_MS` | Firefox idle shutdown; default **`300000`** — jWeb warm-on-open relaunches |
 | `PROXY_*` / `PROXY_COUNTRY` | Residential egress for Camofox (Decodo). Self-host: set in `.env` / `instance.env`. Fleet boxes: `DEFAULT_PROXY_*` at provision; existing: control-plane `pnpm enable:camofox-proxy` |
 | `CAMOFOX_LOCALE` | Browser locale + `Accept-Language` (default **`en-US`**). With proxy + `geoip`, Camoufox otherwise picks language from regional distribution (US exits can skew Spanish). Set `false`/`off` to use geoip-derived locale. Requires **browser relaunch** (idle shutdown or stack restart). |
-| `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, **OAuth popup v6**, **`CAMOFOX_LOCALE`**, insert-text + selection, form overlay scan/fill, reaper/keepalive, **cold-launch warm** |
+| `scripts/patch-camofox-single-tab.mjs` | Single tab, viewport, **OAuth popup v6**, **`CAMOFOX_LOCALE`**, insert-text + selection, form overlay scan/fill, reaper/keepalive, **cold-launch warm**, **proxy-tunnel rotate (522 HTML)** |
+| `scripts/patch-hermes-camofox-browser-recover.mjs` | Hermes warm + tab recover on navigate 404/5xx and proxy-failure snapshots |
 | `scripts/camofox-vnc-watcher.sh` | Reattach x11vnc after idle shutdown (same `:99`); `X11VNC_*` redraw knobs |
 | `public/vendor/novnc/` | Vendored noVNC **1.7.0** client (`core/rfb.js`) |
-| `public/vnc-gestures.js` | Mobile pinch-zoom + pan (local CSS; remote untouched) |
+| `public/vnc-gestures.js` | Mobile pinch / pan / scroll (dominance classifier; scroll at 1× via Playwright) |
 | `scripts/ensure-camofox-container.sh` | Create/start container + wait for `/health` |
 | `POST /joshu/api/camofox/fit-viewport` | Bootstrap tab → Camofox viewport route |
 | `POST /joshu/api/camofox/warm` | Same bootstrap as fit-viewport **without** viewport resize (agent / EA) |

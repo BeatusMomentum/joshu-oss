@@ -42,7 +42,7 @@ Welcome is the **front door**; incomplete setup after **Finish setup** surfaces 
 | Connect work Gmail + calendar | Composio Gmail connected (Connectors) |
 | `owner-mobile-sms` | `resolveOwnerCaller` — Telephone settings, Welcome, or `TWILIO_OWNER_CALLER` |
 
-Welcome can finish without a mobile. **Reconcile** ([`reconcileOnboardingBoard`](../src/onboarding/reconcileOnboardingBoard.ts)) runs on Finish setup, connector changes, and daily cron; cards auto-close when predicates pass. If `owner-mobile-sms` is still open, the hourly proactive tick nudges the owner — **by email** when no number is on file ([`delivery.ts`](../src/proactive/delivery.ts) SMS → email fallback), asking them to add it in **Telephone** or Welcome.
+Welcome can finish without a mobile. **Reconcile** ([`reconcileOnboardingBoard`](../src/onboarding/reconcileOnboardingBoard.ts)) runs on Finish setup, connector changes, and daily cron; cards auto-close when predicates pass. If any required registry prompt is still open (including `owner-mobile-sms` or prompts added in a later release), the hourly proactive tick keeps **ranking `ea-onboarding` above mail tracks** until complete — **by email** when no SMS number is on file ([`delivery.ts`](../src/proactive/delivery.ts) SMS → email fallback), asking them to add mobile in **Telephone** or Welcome. Setup-debt priority does **not** expire after Welcome.
 
 Setup status for desktop UI: `GET /joshu/api/onboarding/setup-status` (same-origin browser session or localhost only).
 

@@ -10,11 +10,17 @@ import {
   createHandoff,
   extendHandoffExpiry,
   getHandoffRecord,
+  getPendingHandoff,
   getPendingHandoffPinUrl,
   handoffUrlForRecord,
   isBrowserHandoffLocked,
   setHandoffLastScan,
+  type BrowserHandoffRecord,
 } from "./store.js";
+import {
+  tryCompletePendingHandoffForOwnerSession,
+  tryCompletePendingHandoffFromOwnerConfirm,
+} from "./ownerHandoffConfirm.js";
 import { verifyHandoffToken } from "./token.js";
 import { scanCatalogWithLlm } from "./formScan.js";
 import { deliverSmsHandoffContinuation } from "./smsContinue.js";
@@ -243,6 +249,65 @@ export function registerBrowserHandoffRoutes(
       return;
     }
     res.json({ ok: true, handoff: record });
+  });
+
+  /**
+   * Owner confirmed completion via SMS/chat (not the handoff-page button).
+   * Localhost-only — Hermes calls this when the owner says they are done.
+   */
+  router.post("/api/browser-handoff/:id/complete-confirmed", async (req: Request, res: Response) => {
+    if (!isDirectLocalhostRequest(req)) {
+      res.status(403).json({ error: "browser-handoff complete-confirmed is localhost-only" });
+      return;
+    }
+    const id = readString(req.params.id);
+    const existing = getHandoffRecord(projectRoot, id);
+    if (!existing) {
+      res.status(404).json({ error: "handoff_not_found" });
+      return;
+    }
+    if (existing.status !== "pending") {
+      res.status(409).json({ error: "handoff_not_pending", status: existing.status });
+      return;
+    }
+    const record = completeHandoff(projectRoot, id);
+    if (!record) {
+      res.status(404).json({ error: "handoff_not_found" });
+      return;
+    }
+    await touchCamofoxKeepalive(camofoxSession);
+    res.json({ ok: true, handoff: publicHandoffView(record) });
+  });
+
+  /** Complete pending handoff for owner session (SMS preflight / agent helper). */
+  router.post("/api/browser-handoff/complete-pending-confirmed", async (req: Request, res: Response) => {
+    if (!isDirectLocalhostRequest(req)) {
+      res.status(403).json({ error: "browser-handoff complete-pending-confirmed is localhost-only" });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const hermesSessionKey =
+      readString(body.hermesSessionKey) || readString(body.hermes_session_key) || undefined;
+    const confirmBody = readString(body.body) || readString(body.owner_message);
+
+    let record: BrowserHandoffRecord | null = null;
+    if (hermesSessionKey) {
+      record = tryCompletePendingHandoffForOwnerSession(projectRoot, hermesSessionKey);
+    } else if (confirmBody) {
+      record = tryCompletePendingHandoffFromOwnerConfirm(projectRoot, {
+        body: confirmBody,
+        hermesSessionKey,
+      });
+    } else {
+      res.status(400).json({ error: "hermesSessionKey or owner_message is required" });
+      return;
+    }
+    if (!record) {
+      res.status(409).json({ error: "no_matching_pending_handoff" });
+      return;
+    }
+    await touchCamofoxKeepalive(camofoxSession);
+    res.json({ ok: true, handoff: publicHandoffView(record) });
   });
 
   router.post("/api/browser-handoff/:id/heartbeat", async (req: Request, res: Response) => {

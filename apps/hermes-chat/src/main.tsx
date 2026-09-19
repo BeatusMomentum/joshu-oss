@@ -243,6 +243,113 @@ function App() {
     };
   }, [sessionId, refreshTranscriptFromServer]);
 
+  /** Durable async goal results are separate from Hermes' server transcript. */
+  useEffect(() => {
+    const apiRoot = API_BASE.replace(/\/hermes-chat\/?$/, "");
+    const sessionKey = `joshu-hermes-chat:${sessionId}`;
+    const storageKey = `joshu:realtime-goals:${sessionKey}`;
+    let stopped = false;
+    let polling = false;
+
+    try {
+      const cached = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as Array<{
+        id?: string;
+        text?: string;
+      }>;
+      const durable = cached.filter(
+        (event): event is { id: string; text: string } =>
+          Boolean(event.id && event.text),
+      );
+      if (durable.length > 0) {
+        setMessages((current) => {
+          const known = new Set(current.map((message) => message.id));
+          return [
+            ...current,
+            ...durable
+              .filter((event) => !known.has(event.id))
+              .map((event) => ({
+                id: event.id,
+                role: "assistant" as const,
+                content: event.text,
+                status: "done" as const,
+              })),
+          ];
+        });
+      }
+    } catch {
+      /* ignore corrupt browser cache */
+    }
+
+    const poll = async () => {
+      if (stopped || polling || busyRef.current) return;
+      polling = true;
+      try {
+        const response = await fetch(
+          `${apiRoot}/realtime-goals/surface-events?sessionKey=${encodeURIComponent(sessionKey)}`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) return;
+        const payload = (await response.json()) as {
+          events?: Array<{ id?: string; text?: string }>;
+        };
+        for (const event of payload.events ?? []) {
+          if (!event.id || !event.text || stopped) continue;
+          const eventId = event.id;
+          const eventText = event.text;
+          let browserPersisted = false;
+          try {
+            const cached = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as Array<{
+              id?: string;
+              text?: string;
+            }>;
+            const next = [
+              ...cached.filter((item) => item.id !== eventId),
+              { id: eventId, text: eventText },
+            ].slice(-50);
+            localStorage.setItem(storageKey, JSON.stringify(next));
+            browserPersisted = true;
+          } catch {
+            // Do not ACK unless the event is at least present in React state.
+          }
+          setMessages((current) =>
+            current.some((message) => message.id === eventId)
+              ? current
+              : [
+                  ...current,
+                  {
+                    id: eventId,
+                    role: "assistant",
+                    content: eventText,
+                    status: "done",
+                  },
+                ],
+          );
+          if (browserPersisted) {
+            await fetch(
+              `${apiRoot}/realtime-goals/surface-events/${encodeURIComponent(eventId)}/consume`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sessionKey }),
+              },
+            );
+          }
+        }
+      } catch {
+        /* box warming — retry on the next poll */
+      } finally {
+        polling = false;
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), 5_000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [sessionId]);
+
   useEffect(() => {
     if (busy || !pendingTranscriptRefreshRef.current) return;
     pendingTranscriptRefreshRef.current = false;
@@ -337,7 +444,11 @@ function App() {
         const response = await fetch(`${API_BASE}/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId: sessionIdRef.current, messages: payloadMessages }),
+          body: JSON.stringify({
+            sessionId: sessionIdRef.current,
+            sourceMessageId: userMessage.id,
+            messages: payloadMessages,
+          }),
         });
 
         if (!response.ok) throw new Error(await response.text());

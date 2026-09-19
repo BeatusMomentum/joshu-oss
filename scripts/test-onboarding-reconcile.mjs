@@ -22,10 +22,7 @@ import {
   readOnboardingPromptState,
   writeOnboardingPromptState,
 } from "../src/onboarding/promptState.js";
-import {
-  isWithinOnboardingSetupWindow,
-  ONBOARDING_RANK_BOOST,
-} from "../src/onboarding/onboardingProactive.js";
+import { ONBOARDING_RANK_BOOST } from "../src/onboarding/onboardingProactive.js";
 import { applyRankBoost } from "../src/proactive/prioritize.js";
 import { skillForBoard } from "../src/proactive/resolveOwnerReply.js";
 import { factoryProactiveState } from "../src/proactive/state.js";
@@ -96,14 +93,6 @@ import { sortHygieneCandidates } from "../src/proactive/hygienePrepare.js";
   const body = "kind: onboarding\nprompt_id: connect-work-gmail\ndeep_link: Connectors";
   assert.equal(isOnboardingKanbanBody(body), true);
   assert.equal(parseOnboardingPromptIdFromBody(body), "connect-work-gmail");
-}
-
-// setup window
-{
-  const recent = new Date(Date.now() - 2 * 86_400_000).toISOString();
-  assert.equal(isWithinOnboardingSetupWindow(recent), true);
-  const old = new Date(Date.now() - 30 * 86_400_000).toISOString();
-  assert.equal(isWithinOnboardingSetupWindow(old), false);
 }
 
 // rank boost

@@ -101,10 +101,22 @@ Mail is **phase 1**. SMS / Slack / voice adapters will use the same registry ([`
 
 Tests: `npm run test:coordination-scope` · `npm run test:owner-reply`.
 
+## Deferred realtime goals
+
+Owner-authenticated SMS, jChat/AG-UI, browser/PSTN voice, Slack, and Telegram
+share Joshu's Realtime Goal Broker. Clearly long work is clarified if necessary,
+acknowledged immediately, held in a durable commit window, and executed as one
+managed Kanban task. Results and blocked questions return to the originating
+surface while that conversation remains available for additional requests.
+
+See [`realtime-goals.md`](realtime-goals.md) for state, idempotency,
+cancellation, callbacks, and verification.
+
 ## Related docs
 
 - [`hermes-integration.md`](hermes-integration.md) — skills, plugins, Slack/Telegram depth, Langfuse, patches
 - [`hermes-chat-arozos-app.md`](hermes-chat-arozos-app.md) — jChat request path and voice
 - [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md) — Safety UI for messaging tokens
 - [`connectors.md`](connectors.md) — Composio, mail mirrors, action guard
+- [`realtime-goals.md`](realtime-goals.md) — durable long work from realtime channels
 - [`agent-safety.md`](agent-safety.md) — write policy overview

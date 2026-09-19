@@ -8,7 +8,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .schemas import BROWSER_HANDOFF_REQUEST_SCHEMA, BROWSER_HANDOFF_STATUS_SCHEMA
+from .schemas import (
+    BROWSER_HANDOFF_COMPLETE_SCHEMA,
+    BROWSER_HANDOFF_REQUEST_SCHEMA,
+    BROWSER_HANDOFF_STATUS_SCHEMA,
+)
 
 JOSHU_API_BASE = os.environ.get("JOSHU_API_BASE_URL", "http://127.0.0.1:8788/joshu").rstrip("/")
 
@@ -84,6 +88,33 @@ def browser_handoff_status(args: dict, **kwargs) -> str:
     return json.dumps({"ok": True, **data})
 
 
+def browser_handoff_complete(args: dict, **kwargs) -> str:
+    handoff_id = str(args.get("handoff_id") or "").strip()
+    owner_message = str(args.get("owner_message") or "").strip()
+    session_key = _hermes_session_key(kwargs)
+
+    if not handoff_id:
+        body: dict = {}
+        if session_key:
+            body["hermesSessionKey"] = session_key
+        if owner_message:
+            body["owner_message"] = owner_message
+        if not body:
+            return json.dumps({"ok": False, "error": "handoff_id or hermes session is required"})
+        status, data = _post_json("/api/browser-handoff/complete-pending-confirmed", body)
+        if status >= 400:
+            return json.dumps({"ok": False, **data})
+        return json.dumps({"ok": True, **data})
+
+    status, data = _post_json(
+        f"/api/browser-handoff/{urllib.parse.quote(handoff_id, safe='')}/complete-confirmed",
+        {},
+    )
+    if status >= 400:
+        return json.dumps({"ok": False, **data})
+    return json.dumps({"ok": True, **data})
+
+
 def register(ctx) -> None:
     ctx.register_tool(
         name="browser_handoff_request",
@@ -98,4 +129,11 @@ def register(ctx) -> None:
         schema=BROWSER_HANDOFF_STATUS_SCHEMA,
         handler=browser_handoff_status,
         emoji="📱",
+    )
+    ctx.register_tool(
+        name="browser_handoff_complete",
+        toolset="joshu-browser-handoff",
+        schema=BROWSER_HANDOFF_COMPLETE_SCHEMA,
+        handler=browser_handoff_complete,
+        emoji="✅",
     )

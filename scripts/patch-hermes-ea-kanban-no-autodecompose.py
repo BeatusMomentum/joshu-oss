@@ -30,7 +30,11 @@ WATCHERS = HERMES_DIR / "gateway/kanban_watchers.py"
 KANBAN_DB = HERMES_DIR / "hermes_cli/kanban_db.py"
 
 EA_BOARDS_LITERAL = (
-    '{"ea-scheduling", "ea-mail-ingress", "ea-sched-ingress", "ea-owner-reply"}  # ' + MARKER
+    '{"ea-scheduling", "ea-mail-ingress", "ea-sched-ingress", "ea-owner-reply", '
+    '"ea-onboarding", "realtime-goals"}  # ' + MARKER
+)
+LEGACY_EA_BOARDS_LITERAL = (
+    '{"ea-scheduling", "ea-mail-ingress", "ea-sched-ingress", "ea-owner-reply"}'
 )
 
 
@@ -41,6 +45,10 @@ def _die(msg: str) -> None:
 
 def _patch_watchers(text: str) -> str:
     if MARKER in text and "EA_NO_AUTODECOMPOSE" in text:
+        if '"realtime-goals"' not in text:
+            text = text.replace(LEGACY_EA_BOARDS_LITERAL, EA_BOARDS_LITERAL)
+            print("[hermes-ea-kanban-no-autodecompose] watchers: expanded managed boards")
+            return text
         print("[hermes-ea-kanban-no-autodecompose] watchers: already applied")
         return text
 
@@ -69,6 +77,10 @@ def _patch_watchers(text: str) -> str:
 
 def _patch_kanban_db(text: str) -> str:
     if MARKER in text and "joshu_ea_keep_blocked" in text:
+        if '"realtime-goals"' not in text:
+            text = text.replace(LEGACY_EA_BOARDS_LITERAL, EA_BOARDS_LITERAL)
+            print("[hermes-ea-kanban-no-autodecompose] kanban_db: expanded managed boards")
+            return text
         print("[hermes-ea-kanban-no-autodecompose] kanban_db: already applied")
         return text
 

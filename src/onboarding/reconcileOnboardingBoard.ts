@@ -16,17 +16,26 @@ import { readOnboardingPromptState, shouldSuppressPrompt } from "./promptState.j
 
 export const EA_ONBOARDING_SKILL = "ea-onboarding";
 
+export type OnboardingReconcilePromptStatus =
+  | "completed"
+  | "open"
+  | "skipped"
+  | "complete_failed";
+
 export type OnboardingReconcileSummary = {
   ok: boolean;
   error?: string;
   created: number;
   completed: number;
+  /** Predicate satisfied but Kanban complete did not stick (bridge/DB failure). */
+  completeFailed: number;
   skipped: number;
   open: number;
   prompts: Array<{
     id: string;
-    status: "completed" | "open" | "skipped";
+    status: OnboardingReconcilePromptStatus;
     taskId?: string;
+    error?: string;
   }>;
 };
 
@@ -54,15 +63,28 @@ async function findTaskByIdempotency(
   return { taskId: result.task.task_id, status: result.task.status };
 }
 
-async function completeOnboardingTask(taskId: string, promptId: string): Promise<boolean> {
-  const result = await callKanbanBridge({
-    action: "complete",
-    board: EA_ONBOARDING_KANBAN_BOARD,
-    task_id: taskId,
-    comment: `Auto-completed by onboarding reconcile — predicate satisfied for ${promptId}.`,
-    author: "joshu",
-  });
-  return result.success === true;
+type CompleteOnboardingTaskResult = { ok: true } | { ok: false; error: string };
+
+async function completeOnboardingTask(
+  taskId: string,
+  promptId: string,
+): Promise<CompleteOnboardingTaskResult> {
+  try {
+    const result = await callKanbanBridge({
+      action: "complete",
+      board: EA_ONBOARDING_KANBAN_BOARD,
+      task_id: taskId,
+      comment: `Auto-completed by onboarding reconcile — predicate satisfied for ${promptId}.`,
+      author: "joshu",
+    });
+    if (result.success === true) return { ok: true };
+    return {
+      ok: false,
+      error: result.error?.trim() || "kanban complete returned success=false",
+    };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message || "kanban complete threw" };
+  }
 }
 
 async function upsertBlockedOnboardingTask(
@@ -127,6 +149,7 @@ export async function reconcileOnboardingBoard(
       error: "files_root_unavailable",
       created: 0,
       completed: 0,
+      completeFailed: 0,
       skipped: 0,
       open: 0,
       prompts: [],
@@ -140,6 +163,7 @@ export async function reconcileOnboardingBoard(
       error: bootstrap.error,
       created: 0,
       completed: 0,
+      completeFailed: 0,
       skipped: 0,
       open: 0,
       prompts: [],
@@ -150,6 +174,7 @@ export async function reconcileOnboardingBoard(
   const prompts = await listActiveOnboardingPrompts(projectRoot);
   let created = 0;
   let completed = 0;
+  let completeFailed = 0;
   let skipped = 0;
   let open = 0;
   const details: OnboardingReconcileSummary["prompts"] = [];
@@ -166,9 +191,22 @@ export async function reconcileOnboardingBoard(
 
     if (isComplete) {
       if (existing && existing.status !== "done") {
-        await completeOnboardingTask(existing.taskId, prompt.id);
-        completed += 1;
-        details.push({ id: prompt.id, status: "completed", taskId: existing.taskId });
+        const closed = await completeOnboardingTask(existing.taskId, prompt.id);
+        if (closed.ok) {
+          completed += 1;
+          details.push({ id: prompt.id, status: "completed", taskId: existing.taskId });
+        } else {
+          completeFailed += 1;
+          console.warn(
+            `[onboarding] reconcile complete failed prompt=${prompt.id} task=${existing.taskId}: ${closed.error}`,
+          );
+          details.push({
+            id: prompt.id,
+            status: "complete_failed",
+            taskId: existing.taskId,
+            error: closed.error,
+          });
+        }
       } else {
         skipped += 1;
         details.push({ id: prompt.id, status: "skipped", taskId: existing?.taskId });
@@ -195,10 +233,19 @@ export async function reconcileOnboardingBoard(
   }
 
   console.info(
-    `[onboarding] reconcile created=${created} completed=${completed} open=${open} skipped=${skipped}`,
+    `[onboarding] reconcile created=${created} completed=${completed} completeFailed=${completeFailed} open=${open} skipped=${skipped}`,
   );
 
-  return { ok: true, created, completed, skipped, open, prompts: details };
+  return {
+    ok: completeFailed === 0,
+    error: completeFailed > 0 ? "onboarding_complete_failed" : undefined,
+    created,
+    completed,
+    completeFailed,
+    skipped,
+    open,
+    prompts: details,
+  };
 }
 
 /** Setup status for API — open required prompts with predicate snapshot. */

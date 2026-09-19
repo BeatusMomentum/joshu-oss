@@ -118,6 +118,8 @@ export function JoshuAgentChatPanel({
             userName={userName}
             promptRequest={promptRequest}
             promptRequestScope={config.threadId}
+            realtimeGoalSessionKey={`joshu-app:${config.appId}:${config.threadId}`}
+            apiBase={apiBase}
           />
         </JChatShell>
       </JChatBubbleDock>

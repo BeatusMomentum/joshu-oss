@@ -64,7 +64,10 @@ function voiceInboundWebhookUrl(): string | undefined {
   return u || undefined;
 }
 
-function mediaStreamWssUrl(secret: string, publicBasePath = envTrim("PUBLIC_BASE_PATH")): string | undefined {
+export function twilioMediaStreamWssUrl(
+  secret: string,
+  publicBasePath = envTrim("PUBLIC_BASE_PATH"),
+): string | undefined {
   const explicit = envTrim("TWILIO_MEDIA_STREAM_WSS_URL");
   if (explicit) {
     try {
@@ -152,7 +155,7 @@ function signatureValidationUrls(req: Request, publicBasePath: string): string[]
   return [...out];
 }
 
-function validateTwilioVoiceSignature(
+export function validateTwilioVoiceSignature(
   authToken: string,
   signature: string,
   req: Request,
@@ -512,7 +515,7 @@ export function registerTwilioVoiceRoutes(
   const authToken = envTrim("TWILIO_AUTH_TOKEN");
   const webhookFullUrl = voiceInboundWebhookUrl()!;
   const secret = envTrim("TWILIO_MEDIA_STREAM_SECRET");
-  const wssUrl = mediaStreamWssUrl(secret, publicBasePath);
+  const wssUrl = twilioMediaStreamWssUrl(secret, publicBasePath);
   if (!wssUrl) {
     console.warn("[twilio-phone] could not build media stream WSS URL");
     return;

@@ -238,8 +238,21 @@ server.on("upgrade", (req, socket, head) => {
               typeof custom?.ownerCaller === "string" && custom.ownerCaller.trim()
                 ? custom.ownerCaller.trim()
                 : undefined;
+            const realtimeGoalId =
+              typeof custom?.realtimeGoalId === "string" && custom.realtimeGoalId.trim()
+                ? custom.realtimeGoalId.trim()
+                : undefined;
+            const realtimeGoalToken =
+              typeof custom?.realtimeGoalToken === "string" && custom.realtimeGoalToken.trim()
+                ? custom.realtimeGoalToken.trim()
+                : undefined;
             twilioSession = new TwilioRealtimeSession(ws);
-            twilioSession.handleStart(callSid, streamSid, { caller, ownerCaller });
+            twilioSession.handleStart(callSid, streamSid, {
+              caller,
+              ownerCaller,
+              realtimeGoalId,
+              realtimeGoalToken,
+            });
             return;
           }
 

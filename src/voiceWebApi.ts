@@ -6,6 +6,7 @@ import type { Request, Response, Router } from "express";
 import { provisionEnvTrim } from "./provisionInstanceEnv.js";
 import { resolveBoxSecret } from "./boxSecrets/resolve.js";
 import { setLocalhostCors } from "./localCors.js";
+import { verifyArozosDesktopSession } from "./httpLocalhost.js";
 
 function envTrim(name: string, fallback = ""): string {
   return process.env[name]?.trim() ?? fallback;
@@ -189,6 +190,10 @@ export function registerVoiceWebRoutes(router: Router): void {
   });
 
   router.get("/api/voice/session", async (req: Request, res: Response) => {
+    if (!(await verifyArozosDesktopSession(req))) {
+      res.status(403).json({ available: false, reason: "authenticated desktop session required" });
+      return;
+    }
     const configured = webVoiceConfigured();
     if (!configured) {
       res.status(503).json({ available: false, reason: "web voice not configured" });

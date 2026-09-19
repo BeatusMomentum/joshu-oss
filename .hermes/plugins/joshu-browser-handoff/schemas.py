@@ -44,3 +44,32 @@ BROWSER_HANDOFF_STATUS_SCHEMA = {
         "required": ["handoff_id"],
     },
 }
+
+BROWSER_HANDOFF_COMPLETE_SCHEMA = {
+    "name": "browser_handoff_complete",
+    "description": (
+        "Mark an owner mobile browser handoff complete when the owner confirms done in SMS, jChat, "
+        "or voice — they do not need to tap I'm done on the handoff link. Unlocks agent browser "
+        "navigate/click. Call as soon as the owner clearly says they finished the handoff step."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "handoff_id": {
+                "type": "string",
+                "description": (
+                    "Handoff id from browser_handoff_request. Omit when only one handoff is pending "
+                    "and the owner just confirmed completion."
+                ),
+            },
+            "owner_message": {
+                "type": "string",
+                "description": (
+                    "Optional verbatim owner text (e.g. I'm done with RapidAPI). Used to complete "
+                    "the pending handoff when handoff_id is omitted."
+                ),
+            },
+        },
+        "required": [],
+    },
+}

@@ -11,7 +11,8 @@ export type KanbanBridgeAction =
   | "list"
   | "show"
   | "comment"
-  | "append_body";
+  | "append_body"
+  | "cancel";
 
 export type KanbanBridgePayload = Record<string, unknown> & { action: KanbanBridgeAction };
 
@@ -29,6 +30,15 @@ export type KanbanTaskSummary = {
     body?: string;
     created_at?: string;
   }>;
+  completion_summary?: string;
+  latest_run?: {
+    run_id?: string;
+    outcome?: string;
+    summary?: string;
+    error?: string;
+    metadata?: Record<string, unknown>;
+    worker_pid?: number;
+  };
 };
 
 export type KanbanBridgeResult = {
@@ -78,6 +88,9 @@ export const EA_OWNER_REPLY_KANBAN_BOARD = "ea-owner-reply";
 /** Setup-debt prompts (Connectors, mobile, …) — toast-like registry → blocked cards. */
 export const EA_ONBOARDING_KANBAN_BOARD = "ea-onboarding";
 
+/** Owner realtime goals: one directly assigned worker per accepted request. */
+export const REALTIME_GOALS_KANBAN_BOARD = "realtime-goals";
+
 /** Boards where create must use assignee → ready (no triage / auto-decompose). */
 export const EA_KANBAN_BOARDS = [
   EA_SCHEDULING_KANBAN_BOARD,
@@ -85,6 +98,7 @@ export const EA_KANBAN_BOARDS = [
   EA_MAIL_INGRESS_KANBAN_BOARD,
   EA_OWNER_REPLY_KANBAN_BOARD,
   EA_ONBOARDING_KANBAN_BOARD,
+  REALTIME_GOALS_KANBAN_BOARD,
 ] as const;
 
 export type KanbanCreatePayload = KanbanBridgePayload & {
@@ -182,6 +196,17 @@ export async function ensureEaOnboardingBoard(filesRoot: string): Promise<Kanban
     slug: EA_ONBOARDING_KANBAN_BOARD,
     name: "EA Onboarding",
     description: "Joshu setup checklist — Connectors, owner mobile, and augmentable release prompts",
+    default_workdir: filesRoot,
+  });
+}
+
+/** Idempotent board setup for deferred owner requests from realtime channels. */
+export async function ensureRealtimeGoalsBoard(filesRoot: string): Promise<KanbanBridgeResult> {
+  return callKanbanBridge({
+    action: "ensure_board",
+    slug: REALTIME_GOALS_KANBAN_BOARD,
+    name: "Realtime Goals",
+    description: "Deferred owner requests from SMS, jChat, voice, Slack, and Telegram",
     default_workdir: filesRoot,
   });
 }

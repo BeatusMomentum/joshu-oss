@@ -20,6 +20,7 @@ import { readProactiveState } from "./proactive/state.js";
 import { resolveJoshuFilesPaths } from "./joshuFilesPaths.js";
 import {
   envTrim,
+  normalizePhone,
   ownerSmsPhone,
   phonesMatch,
   sendSms,
@@ -27,7 +28,10 @@ import {
 } from "./twilioSmsSend.js";
 import { resolveOwnerSmsSessionKey } from "./twilioSmsSession.js";
 import { shouldRouteOwnerReplyToProactiveResolve } from "./proactive/ownerReplyRouting.js";
+import { tryCompletePendingHandoffForOwnerSession } from "./browserHandoff/ownerHandoffConfirm.js";
 import { defaultTwilioSmsSystemPrompt, smsHermesAbortSignal } from "./twilioSmsConfig.js";
+import { withOwnerSmsMutex } from "./twilioSmsOwnerMutex.js";
+import type { RealtimeGoalBroker } from "./realtimeGoals/broker.js";
 
 export { twilioSmsGatewayEnabled } from "./twilioSmsSend.js";
 
@@ -95,6 +99,7 @@ export function registerTwilioSmsRoutes(
   router: Router,
   runner: HermesApiRunner,
   publicBasePath = envTrim("PUBLIC_BASE_PATH"),
+  realtimeGoals?: RealtimeGoalBroker,
 ): void {
   if (!twilioSmsAccountReady()) {
     console.info(
@@ -107,7 +112,7 @@ export function registerTwilioSmsRoutes(
   const webhookUrl = smsInboundWebhookUrl()!;
   const systemPrompt = envTrim("TWILIO_SMS_SYSTEM_PROMPT") || defaultTwilioSmsSystemPrompt();
 
-  router.post("/api/twilio/sms/inbound", express.urlencoded({ extended: false }), (req, res) => {
+  router.post("/api/twilio/sms/inbound", express.urlencoded({ extended: false }), async (req, res) => {
     const sig = req.headers["x-twilio-signature"];
     if (typeof sig !== "string") {
       res.status(403).send("missing signature");
@@ -124,12 +129,41 @@ export function registerTwilioSmsRoutes(
     const messageSid = typeof req.body?.MessageSid === "string" ? req.body.MessageSid : "";
     console.info(`[twilio-sms] inbound from=${from} sid=${messageSid} body=${body.slice(0, 120)}`);
 
+    const configuredOwnerCaller = ownerSmsPhone();
+    let durableInboundId: string | undefined;
+    if (
+      realtimeGoals &&
+      messageSid &&
+      body.trim() &&
+      configuredOwnerCaller &&
+      phonesMatch(from, configuredOwnerCaller)
+    ) {
+      try {
+        durableInboundId = await realtimeGoals.reserveInbound({
+          origin: {
+            channel: "sms",
+            sessionKey: `sms:${normalizePhone(from)}`,
+            messageId: messageSid,
+            replyAddress: from,
+          },
+          text: body.trim(),
+        });
+      } catch (error) {
+        // Do not ACK an owner message that could not be durably reserved;
+        // Twilio will retry the signed webhook.
+        console.warn("[twilio-sms] durable inbound reservation failed:", error);
+        res.status(503).send("temporary intake failure");
+        return;
+      }
+    }
+
     // Ack immediately; reply via REST (long Hermes turn or approval handling).
     res.type("text/xml").send("<Response></Response>");
 
     void (async () => {
+      let intakeHandled = true;
       try {
-        const ownerCaller = ownerSmsPhone();
+        const ownerCaller = configuredOwnerCaller;
         if (!ownerCaller) {
           console.warn(
             "[twilio-sms] inbound ignored — set owner mobile in Telephone (or TWILIO_OWNER_CALLER)",
@@ -168,6 +202,13 @@ export function registerTwilioSmsRoutes(
         if (!body.trim()) return;
 
         const projectRoot = process.cwd();
+        const sessionKey = resolveOwnerSmsSessionKey(from, projectRoot);
+        const handoffCompleted = tryCompletePendingHandoffForOwnerSession(projectRoot, sessionKey);
+        if (handoffCompleted) {
+          console.info(
+            `[browser-handoff] owner SMS auto-completed pending handoff=${handoffCompleted.id.slice(0, 8)}`,
+          );
+        }
         const taskAction = parseTaskActionKeyword(body);
         if (taskAction) {
           const paths = resolveJoshuFilesPaths(projectRoot);
@@ -199,75 +240,105 @@ export function registerTwilioSmsRoutes(
           return;
         }
 
-        const paths = resolveJoshuFilesPaths(projectRoot);
-        const state = readProactiveState(projectRoot);
-        const hasProactiveRef = shouldRouteOwnerReplyToProactiveResolve(state, body);
-        // SMS rides api_server (no Hermes platform idle-reset — that would hit jChat).
-        // Rotate the session key after the same idle window as Slack/Telegram.
-        const sessionKey = resolveOwnerSmsSessionKey(from, projectRoot);
-
-        if (hasProactiveRef && paths?.filesRoot) {
-          const resolved = await resolveProactiveOwnerReply({
-            body: body.trim(),
-            filesRoot: paths.filesRoot,
-            projectRoot,
-            sessionKey,
-            baseSystemPrompt: systemPrompt,
-            runner,
+        if (realtimeGoals) {
+          const brokerResult = await realtimeGoals.route({
+            origin: {
+              channel: "sms",
+              // Broker identity stays stable across Hermes' 30-minute SMS
+              // transcript rotation so status/cancel still find active goals.
+              sessionKey: `sms:${normalizePhone(from)}`,
+              sessionId: sessionKey,
+              messageId: messageSid || undefined,
+              replyAddress: from,
+            },
+            text: body.trim(),
           });
-          if (resolved.action === "resolved" && resolved.replyText) {
-            await sendSms(from, resolved.replyText);
+          if (brokerResult.action === "reply") {
+            await sendSms(from, brokerResult.text);
             return;
           }
-          if (resolved.action === "error" && resolved.replyText) {
-            await sendSms(from, resolved.replyText);
-            return;
-          }
-          if (resolved.action === "fallback_routed") {
-            let ack = await composeProactiveMessage({
-              kind: "reply_ack",
-              projectRoot,
-              ownerReplySnippet: body.trim(),
-            });
-            if (resolved.schedulingWokenTaskIds?.length) {
-              ack = `${ack} I'm also picking up the scheduling follow-up now.`;
-            }
-            await sendSms(from, ack);
-            return;
-          }
-          if (resolved.action === "error") {
-            console.warn("[twilio-sms] proactive resolve failed:", resolved.reason);
-          }
-          // ignored → fall through to normal SMS chat
         }
 
-        await runner.ensureGatewayReady();
-        const messages: HermesChatMessage[] = [
-          buildOwnerTimeSystemMessage(process.cwd()),
-          { role: "system", content: systemPrompt },
-          { role: "user", content: body.trim() },
-        ];
-        const { finalText } = await runner.streamHermesChat(
-          {
-            sessionId: sessionKey,
-            sessionKey,
-            messages,
-            signal: smsHermesAbortSignal(),
-          },
-          {},
-        );
-        const reply = await ownerSmsTextFromHermesTurn(sessionKey, finalText);
-        if (!reply) {
-          await sendSms(from, SMS_EMPTY_REPLY_FALLBACK);
-          return;
-        }
-        await sendSms(from, reply);
+        // One Hermes turn at a time per owner — avoids mid-turn history injection
+        // when the owner texts again before the prior streamHermesChat finishes.
+        await withOwnerSmsMutex(from, async () => {
+          const paths = resolveJoshuFilesPaths(projectRoot);
+          const state = readProactiveState(projectRoot);
+          const hasProactiveRef = shouldRouteOwnerReplyToProactiveResolve(state, body);
+          // SMS rides api_server (no Hermes platform idle-reset — that would hit jChat).
+          // sessionKey resolved above (handoff confirm + Hermes turn).
+
+          if (hasProactiveRef && paths?.filesRoot) {
+            const resolved = await resolveProactiveOwnerReply({
+              body: body.trim(),
+              filesRoot: paths.filesRoot,
+              projectRoot,
+              sessionKey,
+              baseSystemPrompt: systemPrompt,
+              runner,
+            });
+            if (resolved.action === "resolved" && resolved.replyText) {
+              await sendSms(from, resolved.replyText);
+              return;
+            }
+            if (resolved.action === "error" && resolved.replyText) {
+              await sendSms(from, resolved.replyText);
+              return;
+            }
+            if (resolved.action === "fallback_routed") {
+              let ack = await composeProactiveMessage({
+                kind: "reply_ack",
+                projectRoot,
+                ownerReplySnippet: body.trim(),
+              });
+              if (resolved.schedulingWokenTaskIds?.length) {
+                ack = `${ack} I'm also picking up the scheduling follow-up now.`;
+              }
+              await sendSms(from, ack);
+              return;
+            }
+            if (resolved.action === "error") {
+              console.warn("[twilio-sms] proactive resolve failed:", resolved.reason);
+            }
+            // ignored → fall through to normal SMS chat
+          }
+
+          await runner.ensureGatewayReady();
+          const messages: HermesChatMessage[] = [
+            buildOwnerTimeSystemMessage(process.cwd()),
+            { role: "system", content: systemPrompt },
+            { role: "user", content: body.trim() },
+          ];
+          const { finalText } = await runner.streamHermesChat(
+            {
+              sessionId: sessionKey,
+              sessionKey,
+              messages,
+              signal: smsHermesAbortSignal(),
+            },
+            {},
+          );
+          const reply = await ownerSmsTextFromHermesTurn(sessionKey, finalText);
+          if (!reply) {
+            await sendSms(from, SMS_EMPTY_REPLY_FALLBACK);
+            return;
+          }
+          await sendSms(from, reply);
+        });
       } catch (err) {
+        intakeHandled = false;
         console.warn("[twilio-sms] inbound handler error:", err);
         try {
           await sendSms(from, "Joshu hit an error processing that text. Please try again shortly.");
+          intakeHandled = true;
         } catch {
           /* ignore secondary failure */
+        }
+      } finally {
+        if (durableInboundId && intakeHandled) {
+          await realtimeGoals?.completeInbound(durableInboundId).catch((error) => {
+            console.warn("[twilio-sms] durable inbound completion failed:", error);
+          });
         }
       }
     })();

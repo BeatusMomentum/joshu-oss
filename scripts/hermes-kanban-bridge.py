@@ -73,16 +73,20 @@ def _task_activity(conn: Any, task_id: str, *, max_comments: int = 5) -> Dict[st
     events = kanban_db.list_events(conn, task_id)
     recent = comments[-max_comments:] if comments else []
     block_reason: Optional[str] = None
+    completion_summary: Optional[str] = None
     for ev in reversed(events):
-        if ev.kind != "blocked":
-            continue
         payload = ev.payload if isinstance(ev.payload, dict) else {}
-        reason = payload.get("reason")
-        if isinstance(reason, str) and reason.strip():
-            block_reason = reason.strip()
-            break
+        if block_reason is None and ev.kind == "blocked":
+            reason = payload.get("reason")
+            if isinstance(reason, str) and reason.strip():
+                block_reason = reason.strip()
+        if completion_summary is None and ev.kind == "completed":
+            summary = payload.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                completion_summary = summary.strip()
     return {
         "block_reason": block_reason,
+        "completion_summary": completion_summary,
         "recent_comments": [
             {
                 "author": c.author,
@@ -91,6 +95,24 @@ def _task_activity(conn: Any, task_id: str, *, max_comments: int = 5) -> Dict[st
             }
             for c in recent
         ],
+    }
+
+
+def _latest_run_summary(conn: Any, task_id: str) -> Optional[Dict[str, Any]]:
+    """Full latest run handoff; task events carry only a one-line preview."""
+    from hermes_cli import kanban_db
+
+    runs = kanban_db.list_runs(conn, task_id)
+    if not runs:
+        return None
+    run = runs[-1]
+    return {
+        "run_id": run.id,
+        "outcome": run.outcome,
+        "summary": run.summary,
+        "error": run.error,
+        "metadata": run.metadata,
+        "worker_pid": run.worker_pid,
     }
 
 
@@ -121,7 +143,14 @@ def _create_task(conn: Any, board: str, **kwargs: Any) -> str:
 
 
 # EA scheduling + mail ingress boards: tasks must be created with assignee → ready (never triage).
-EA_KANBAN_BOARDS = frozenset({"ea-scheduling", "ea-sched-ingress", "ea-mail-ingress", "ea-owner-reply", "ea-onboarding"})
+EA_KANBAN_BOARDS = frozenset({
+    "ea-scheduling",
+    "ea-sched-ingress",
+    "ea-mail-ingress",
+    "ea-owner-reply",
+    "ea-onboarding",
+    "realtime-goals",
+})
 
 
 def _parse_parents(raw: Any) -> Optional[List[str]]:
@@ -157,12 +186,18 @@ def _optional_create_kwargs(sig_params: Any, payload: Dict[str, Any]) -> Dict[st
     return out
 
 
-def _find_by_idempotency(conn: Any, key: str) -> Optional[Any]:
+def _find_by_idempotency(
+    conn: Any,
+    key: str,
+    *,
+    include_archived: bool = False,
+) -> Optional[Any]:
     from hermes_cli import kanban_db
 
+    archived_filter = "" if include_archived else " AND status != 'archived'"
     row = conn.execute(
-        "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
-        "ORDER BY created_at DESC LIMIT 1",
+        "SELECT id FROM tasks WHERE idempotency_key = ?" + archived_filter +
+        " ORDER BY created_at DESC LIMIT 1",
         (key,),
     ).fetchone()
     if not row:
@@ -204,7 +239,11 @@ def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
         key = str(payload.get("idempotency_key") or "").strip()
         if not key:
             return {"success": False, "error": "idempotency_key is required"}
-        task = _find_by_idempotency(conn, key)
+        task = _find_by_idempotency(
+            conn,
+            key,
+            include_archived=bool(payload.get("include_archived")),
+        )
         if not task:
             return {"success": True, "found": False}
         return {"success": True, "found": True, "task": _task_summary(task)}
@@ -216,6 +255,7 @@ def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
         body = payload.get("body")
         assignee = payload.get("assignee")
         idempotency_key = payload.get("idempotency_key")
+        strict_idempotency = bool(payload.get("strict_idempotency"))
         skills = _parse_skills(payload.get("skills"))
         workspace_path = payload.get("workspace_path") or payload.get("workspace")
         workspace_kind = str(payload.get("workspace_kind") or "dir").strip()
@@ -237,9 +277,31 @@ def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
                 }
 
         if idempotency_key:
-            existing = _find_by_idempotency(conn, str(idempotency_key))
+            if strict_idempotency:
+                # Hermes's general idempotency index is intentionally non-unique.
+                # Realtime goals need an atomic uniqueness boundary because a
+                # duplicate can repeat external work after a crash.
+                with kanban_db.write_txn(conn):
+                    conn.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS "
+                        "idx_joshu_realtime_goal_idempotency "
+                        "ON tasks(idempotency_key) "
+                        "WHERE idempotency_key LIKE 'realtime-goal:v1:%'"
+                    )
+            existing = _find_by_idempotency(
+                conn,
+                str(idempotency_key),
+                include_archived=strict_idempotency,
+            )
             if existing:
                 status = existing.status
+                if strict_idempotency:
+                    return {
+                        "success": True,
+                        "task_id": existing.id,
+                        "action_taken": "existing",
+                        "task": _task_summary(existing),
+                    }
                 if status == "blocked":
                     kanban_db.unblock_task(conn, existing.id)
                     refreshed = kanban_db.get_task(conn, existing.id)
@@ -379,6 +441,8 @@ def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
         summary = _task_summary(task, include_body=True)
         if bool(payload.get("include_activity")):
             summary = _enrich_task_summary(conn, summary, include_activity=True)
+        if bool(payload.get("include_run")):
+            summary["latest_run"] = _latest_run_summary(conn, task_id)
         return {"success": True, "task": summary}
 
     if action == "comment":
@@ -503,6 +567,105 @@ def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
             "task_id": task_id,
             "action_taken": "completed",
             "comment_id": comment_id,
+            "task": _task_summary(refreshed) if refreshed else {"task_id": task_id},
+        }
+
+    if action == "cancel":
+        # Archive prevents future dispatch. If a worker is active, terminate the
+        # worker first; archive alone closes its DB run but does not stop it.
+        import signal
+        import time
+
+        task_id = str(payload.get("task_id") or "").strip()
+        reason = str(payload.get("reason") or "Owner cancelled").strip()
+        if not task_id:
+            return {"success": False, "error": "task_id is required"}
+        task = kanban_db.get_task(conn, task_id)
+        if not task:
+            return {"success": False, "error": f"task {task_id} not found"}
+        if str(task.status or "") == "archived":
+            return {
+                "success": True,
+                "task_id": task_id,
+                "action_taken": "already_cancelled",
+                "task": _task_summary(task),
+            }
+
+        worker_pid = getattr(task, "worker_pid", None)
+        terminated = False
+        if worker_pid and int(worker_pid) > 0:
+            pid = int(worker_pid)
+            pid_alive = getattr(kanban_db, "_pid_alive", None)
+            alive = bool(pid_alive(pid)) if callable(pid_alive) else True
+            if alive and sys.platform == "linux":
+                try:
+                    environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+                    expected = f"HERMES_KANBAN_TASK={task_id}".encode("utf-8")
+                    if expected not in environ:
+                        return {
+                            "success": False,
+                            "error": f"worker pid {pid} does not belong to task {task_id}",
+                        }
+                except FileNotFoundError:
+                    alive = False
+                except (PermissionError, OSError) as exc:
+                    return {
+                        "success": False,
+                        "error": f"cannot verify worker pid {pid}: {exc}",
+                    }
+
+            if alive:
+                try:
+                    # Dispatcher starts workers in their own session. Kill the
+                    # process group so browser/tool children cannot outlive cancel.
+                    os.killpg(pid, signal.SIGTERM)
+                    terminated = True
+                except ProcessLookupError:
+                    alive = False
+                except (PermissionError, OSError) as exc:
+                    return {
+                        "success": False,
+                        "error": f"could not terminate worker pid {pid}: {exc}",
+                    }
+                for _ in range(20):
+                    alive = bool(pid_alive(pid)) if callable(pid_alive) else False
+                    if not alive:
+                        break
+                    time.sleep(0.1)
+                if alive:
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        alive = False
+                    except (PermissionError, OSError) as exc:
+                        return {
+                            "success": False,
+                            "error": f"could not kill worker pid {pid}: {exc}",
+                        }
+                    for _ in range(10):
+                        alive = bool(pid_alive(pid)) if callable(pid_alive) else False
+                        if not alive:
+                            break
+                        time.sleep(0.1)
+                if alive:
+                    return {
+                        "success": False,
+                        "error": f"worker pid {pid} remained alive after SIGKILL",
+                    }
+
+        kanban_db.add_comment(
+            conn,
+            task_id,
+            author="joshu-realtime-goals",
+            body=f"Cancelled by owner: {reason[:500]}",
+        )
+        archived = kanban_db.archive_task(conn, task_id)
+        refreshed = kanban_db.get_task(conn, task_id)
+        return {
+            "success": bool(archived),
+            "task_id": task_id,
+            "action_taken": "cancelled" if archived else "cancel_failed",
+            "worker_terminated": terminated,
             "task": _task_summary(refreshed) if refreshed else {"task_id": task_id},
         }
 

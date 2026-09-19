@@ -94,6 +94,55 @@ export async function runJoshuThink(params: ThinkParams): Promise<string> {
     : `joshu-hermes-chat:${params.callSid}`;
   const voiceThinkKey = `voice-think:${params.callSid}:${params.jobId}`;
   const forScreen = params.presentation === "screen";
+  const ownerText =
+    resolveThinkUserQuote(params.userQuote) ||
+    [params.intent, params.summary].filter(Boolean).join("\n");
+  // Same structured payload Hermes sees — Realtime paraphrases alone look vague to
+  // the goal classifier (Patrick PSTN flight booking passed at 0.62 vs SMS queue 0.90).
+  const brokerText = buildThinkUserMessage({
+    intent: params.intent,
+    summary: params.summary,
+    userQuote: params.userQuote,
+  });
+
+  if (brokerText.trim()) {
+    try {
+      const admission = await fetch(`${JOSHU_API_BASE}/api/realtime-goals/route`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${HERMES_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          origin: {
+            channel: forScreen ? "browser_voice" : "pstn_voice",
+            // One passphrase-authenticated PSTN owner per box. Keep broker
+            // identity stable across CallSids so later calls can status/cancel.
+            sessionKey: forScreen ? sessionKey : "pstn:owner",
+            sessionId: hermesSessionId,
+            messageId: params.jobId,
+            appId: appCtx?.appId,
+          },
+          text: brokerText,
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (admission.ok) {
+        const result = (await admission.json()) as {
+          action?: string;
+          text?: string;
+        };
+        if (result.action === "reply" && result.text) {
+          if (forScreen) params.onDelta?.(result.text);
+          return result.text;
+        }
+      }
+    } catch (error) {
+      console.warn(
+        `[voice-think] realtime goal admission failed open: ${(error as Error).message}`,
+      );
+    }
+  }
 
   const messages: ChatMessage[] = [
     {

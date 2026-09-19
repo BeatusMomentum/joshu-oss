@@ -6,8 +6,12 @@
  * an unmerged upstream PR, so Joshu owns this layer:
  *
  *   pinch            → CSS scale 1×–5× around the finger midpoint (remote untouched)
- *   two-finger drag  → pan while zoomed; Playwright scroll at 1×
+ *   two-finger drag  → pan while zoomed; Playwright scroll at 1× (dominance classifier)
  *   one-finger       → left alone for noVNC absolute pointer mapping
+ *
+ * Two-finger moves lock one mode per gesture: scroll vs pinch at 1×, pan vs pinch
+ * when zoomed. Midpoint travel vs finger-separation change decides; a 2% pinch
+ * threshold alone misclassified vertical scroll drags as zoom.
  *
  * When zoomed, pointer coords are inverse-mapped before noVNC sends VNC clicks.
  *
@@ -21,6 +25,10 @@ const MIN_SCALE = 1;
 const MAX_SCALE = 5;
 const SCROLL_PX_PER_TICK = 80;
 const ZOOM_EPS = 1.02;
+const MODE_LOCK_MIN_PX = 10;
+const SCROLL_STEP_PX = 8;
+/** Midpoint must dominate finger separation by this factor to lock scroll/pan. */
+const DOMINANCE = 1.35;
 
 function clamp(n, lo, hi) {
   return Math.min(hi, Math.max(lo, n));
@@ -41,6 +49,42 @@ function touchPair(touches) {
 
 function layerFor(hostEl) {
   return hostEl.querySelector("canvas") || hostEl;
+}
+
+/**
+ * Lock scroll vs pinch (1×) or pan vs pinch (zoomed) for one two-finger gesture.
+ * @returns {"scroll" | "pinch" | "pan" | null}
+ */
+export function classifyTwoFingerMode(pair, gesture, currentScale) {
+  if (gesture.mode) return gesture.mode;
+
+  const distDelta = Math.abs(pair.dist - gesture.startDist);
+  const midDx = pair.midX - gesture.startMidX;
+  const midDy = pair.midY - gesture.startMidY;
+  const midMove = Math.hypot(midDx, midDy);
+  const midYMove = Math.abs(midDy);
+  const distRatio = pair.dist / gesture.startDist;
+
+  if (midMove < MODE_LOCK_MIN_PX && distDelta < 6) return null;
+
+  const zoomed = currentScale > ZOOM_EPS || gesture.startScale > ZOOM_EPS;
+  if (zoomed) {
+    if (distDelta > DOMINANCE * midMove) return "pinch";
+    if (midMove >= MODE_LOCK_MIN_PX) return "pan";
+    return null;
+  }
+
+  if (midYMove >= MODE_LOCK_MIN_PX && midYMove > DOMINANCE * distDelta && midYMove > midMove * 0.55) {
+    return "scroll";
+  }
+  if (
+    (distRatio > ZOOM_EPS || distRatio < 1 / ZOOM_EPS) &&
+    distDelta > DOMINANCE * Math.max(midYMove, 4)
+  ) {
+    return "pinch";
+  }
+  if (midYMove >= MODE_LOCK_MIN_PX && midYMove >= midMove * 0.65) return "scroll";
+  return null;
 }
 
 /** Map screen coords → noVNC canvas layout coords (undo local CSS zoom). */
@@ -173,7 +217,7 @@ export function attachVncLocalGestures(hostEl, opts = {}) {
   let scale = 1;
   let tx = 0;
   let ty = 0;
-  let gesture = null; // { dist, originX, originY, lastMidY, startScale }
+  let gesture = null;
   const getScale = () => scale;
 
   let rfbUnpatch = null;
@@ -208,9 +252,13 @@ export function attachVncLocalGestures(hostEl, opts = {}) {
     const mx = pair.midX - rect.left;
     const my = pair.midY - rect.top;
     gesture = {
-      dist: pair.dist,
+      mode: null,
+      startDist: pair.dist,
+      startMidX: pair.midX,
+      startMidY: pair.midY,
       originX: (mx - tx) / scale,
       originY: (my - ty) / scale,
+      lastMidX: pair.midX,
       lastMidY: pair.midY,
       startScale: scale,
     };
@@ -223,30 +271,44 @@ export function attachVncLocalGestures(hostEl, opts = {}) {
     event.stopPropagation();
     if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
 
-    const nextScale = clamp(gesture.startScale * (pair.dist / gesture.dist), MIN_SCALE, MAX_SCALE);
+    const mode = classifyTwoFingerMode(pair, gesture, scale);
+    if (mode) gesture.mode = mode;
+    if (!gesture.mode) return;
+
     const rect = hostEl.getBoundingClientRect();
     const mx = pair.midX - rect.left;
     const my = pair.midY - rect.top;
 
-    if (nextScale > ZOOM_EPS) {
-      scale = nextScale;
-      tx = mx - gesture.originX * scale;
-      ty = my - gesture.originY * scale;
+    if (gesture.mode === "scroll") {
+      scale = 1;
+      tx = 0;
+      ty = 0;
+      apply();
+      const dy = pair.midY - gesture.lastMidY;
+      gesture.lastMidY = pair.midY;
+      if (typeof opts.onScroll === "function" && Math.abs(dy) >= SCROLL_STEP_PX) {
+        opts.onScroll(
+          dy > 0 ? "up" : "down",
+          Math.min(1600, Math.abs(Math.round(dy * 4)) || SCROLL_PX_PER_TICK),
+        );
+      }
+      return;
+    }
+
+    if (gesture.mode === "pan") {
+      tx += pair.midX - gesture.lastMidX;
+      ty += pair.midY - gesture.lastMidY;
+      gesture.lastMidX = pair.midX;
+      gesture.lastMidY = pair.midY;
       apply();
       return;
     }
 
-    // At fit: two-finger drag scrolls the remote via Playwright (VNC wheel drops).
-    scale = 1;
-    tx = 0;
-    ty = 0;
+    const nextScale = clamp(gesture.startScale * (pair.dist / gesture.startDist), MIN_SCALE, MAX_SCALE);
+    scale = nextScale;
+    tx = mx - gesture.originX * scale;
+    ty = my - gesture.originY * scale;
     apply();
-    const dy = pair.midY - gesture.lastMidY;
-    gesture.lastMidY = pair.midY;
-    if (typeof opts.onScroll === "function" && Math.abs(dy) >= 8) {
-      opts.onScroll(dy > 0 ? "up" : "down", Math.min(1600, Math.abs(Math.round(dy * 4)) || SCROLL_PX_PER_TICK));
-      gesture.lastMidY = pair.midY;
-    }
   };
 
   const onTouchEnd = (event) => {

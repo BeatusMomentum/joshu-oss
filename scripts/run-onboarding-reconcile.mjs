@@ -24,7 +24,16 @@ if (!result.ok) {
   process.exit(1);
 }
 
+if (result.completeFailed > 0) {
+  const failed = result.prompts.filter((p) => p.status === "complete_failed");
+  for (const row of failed) {
+    console.error(
+      `[onboarding] reconcile complete failed prompt=${row.id} task=${row.taskId ?? "?"}: ${row.error ?? "unknown"}`,
+    );
+  }
+}
+
 console.info(
-  `[onboarding] reconcile ok created=${result.created} completed=${result.completed} open=${result.open}`,
+  `[onboarding] reconcile ${result.ok ? "ok" : "partial"} created=${result.created} completed=${result.completed} completeFailed=${result.completeFailed} open=${result.open}`,
 );
-process.exit(0);
+process.exit(result.ok ? 0 : 1);

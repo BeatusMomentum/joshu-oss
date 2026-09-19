@@ -44,6 +44,63 @@ assert.match(clientJs, /NOVNC_LIBRARY_VERSION = "1\.7\.0"/);
 const gesturesJs = fs.readFileSync(path.join(root, "public", "vnc-gestures.js"), "utf8");
 assert.match(gesturesJs, /MAX_SCALE = 5/);
 assert.match(gesturesJs, /gesturestart/);
+assert.match(gesturesJs, /classifyTwoFingerMode/);
+assert.match(gesturesJs, /DOMINANCE/);
+
+const { classifyTwoFingerMode } = await import(
+  new URL("../public/vnc-gestures.js", import.meta.url).href
+);
+
+function gestureFixture(overrides = {}) {
+  return {
+    mode: null,
+    startDist: 100,
+    startMidX: 200,
+    startMidY: 300,
+    startScale: 1,
+    ...overrides,
+  };
+}
+
+// Vertical two-finger drag at 1× → scroll (not pinch from tiny finger spread).
+assert.equal(
+  classifyTwoFingerMode(
+    { dist: 102, midX: 200, midY: 330 },
+    gestureFixture(),
+    1,
+  ),
+  "scroll",
+);
+
+// Clear pinch at 1× → zoom mode.
+assert.equal(
+  classifyTwoFingerMode(
+    { dist: 130, midX: 200, midY: 302 },
+    gestureFixture(),
+    1,
+  ),
+  "pinch",
+);
+
+// Zoomed: midpoint drag → pan.
+assert.equal(
+  classifyTwoFingerMode(
+    { dist: 100, midX: 230, midY: 300 },
+    gestureFixture({ startScale: 2 }),
+    2,
+  ),
+  "pan",
+);
+
+// Mode stays locked once set.
+assert.equal(
+  classifyTwoFingerMode(
+    { dist: 140, midX: 200, midY: 340 },
+    gestureFixture({ mode: "scroll" }),
+    1,
+  ),
+  "scroll",
+);
 
 const watcher = fs.readFileSync(path.join(root, "scripts", "camofox-vnc-watcher.sh"), "utf8");
 assert.match(watcher, /HITL_VNC_REATTACH/);

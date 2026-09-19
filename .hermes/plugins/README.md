@@ -24,3 +24,10 @@ Fleet default observability path: posts turn/tool events to the control plane
 auth. **No Langfuse pk/sk on the box.** Requires `JOSHU_INSTANCE_ID` +
 `INSTANCE_AGENT_TOKEN`. Enable via `JOSHU_HERMES_PLUGIN_NAMES=joshu-langfuse-relay`
 (and leave stock `observability/langfuse` disabled).
+
+## joshu-realtime-goals
+
+Conservative Slack/Telegram admission hook plus `realtime_goal_defer` fallback
+tool. Joshu auto-enables this plugin and its toolset during gateway config sync.
+The durable broker and channel behavior are documented in
+[`docs/realtime-goals.md`](../../docs/realtime-goals.md).

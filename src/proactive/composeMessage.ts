@@ -9,6 +9,7 @@ import { buildOwnerTimeSystemMessage } from "../ownerLocalTime.js";
 import { smsModelReplyPlaintext } from "../smsModelReplyPlaintext.js";
 import { isOnboardingKanbanBody, parseOnboardingPromptIdFromBody } from "../onboarding/promptState.js";
 import { ownerSmsPhone } from "../twilioSmsSend.js";
+import { smsHermesAbortSignal } from "../twilioSmsConfig.js";
 import type { FeedbackKeyword } from "./feedback.js";
 import type { ProactiveCandidate } from "./types.js";
 
@@ -229,7 +230,7 @@ async function composeViaHermes(runner: HermesApiRunner, input: ProactiveCompose
       sessionId: sessionKey,
       sessionKey,
       messages,
-      signal: AbortSignal.timeout(120_000),
+      signal: smsHermesAbortSignal(),
     },
     {},
   );
