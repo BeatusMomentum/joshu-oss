@@ -140,6 +140,20 @@ export class RealtimeGoalStore {
       );
   }
 
+  /** Recent done/blocked goals that may reopen when the active pointer is stale. */
+  async listContinuableForSession(
+    originKey: string,
+    ttlMs: number,
+  ): Promise<RealtimeGoalRecord[]> {
+    const cutoff = Date.now() - ttlMs;
+    const state = await this.read();
+    return state.goals
+      .filter((goal) => realtimeGoalSessionKey(goal.origin) === originKey)
+      .filter((goal) => goal.status === "done" || goal.status === "blocked")
+      .filter((goal) => Date.parse(goal.updatedAt) >= cutoff)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
   async listOutstanding(): Promise<RealtimeGoalRecord[]> {
     const state = await this.read();
     return state.goals.filter(

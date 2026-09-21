@@ -14,7 +14,17 @@ import {
   ownerUpdateKanbanAppend,
   shouldSuppressRepeatBlockedPrompt,
 } from "./blockedAnswer.js";
-import { classifyRealtimeGoalMessage } from "./classifier.js";
+import { isContinuableGoal } from "./branchBinding.js";
+import { buildHermesBrokerContextMessage } from "./brokerContext.js";
+import { isDeferCapableChannel, isQueueCapableChannel, usesSessionThread } from "./channelPolicy.js";
+import {
+  isExplicitCancelPhrase,
+  routeRealtimeGoalMessage,
+  type RouteRealtimeGoalMessageInput,
+  type RouteRealtimeGoalMessageOptions,
+  type RealtimeGoalRouteDecision,
+} from "./router.js";
+import { SessionThreadStore } from "./sessionThread.js";
 import { RealtimeGoalStore } from "./store.js";
 import {
   realtimeGoalSessionKey,
@@ -81,7 +91,7 @@ function markSourceHandled(
   goal: RealtimeGoalRecord,
   sourceId: string,
   reply: string,
-  outcome: "clarify" | "queued" | "updated" | "cancelled" | "status",
+  outcome: "clarify" | "queued" | "updated" | "cancelled" | "status" | "ack",
 ): void {
   goal.handledSourceIds ??= [goal.sourceMessageId];
   if (!goal.handledSourceIds.includes(sourceId)) {
@@ -124,6 +134,7 @@ function taskBody(goal: RealtimeGoalRecord): string {
 
 export class RealtimeGoalBroker {
   readonly store: RealtimeGoalStore;
+  readonly threads: SessionThreadStore;
   private timer: ReturnType<typeof setInterval> | undefined;
   private tickRunning = false;
   private boardReady = false;
@@ -131,8 +142,46 @@ export class RealtimeGoalBroker {
   constructor(
     private readonly projectRoot: string,
     private readonly deliver: RealtimeGoalDeliveryHandler,
+    private readonly routeMessage: (
+      input: RouteRealtimeGoalMessageInput,
+      options?: RouteRealtimeGoalMessageOptions,
+    ) => Promise<RealtimeGoalRouteDecision> = routeRealtimeGoalMessage,
   ) {
     this.store = new RealtimeGoalStore(projectRoot);
+    this.threads = new SessionThreadStore(projectRoot);
+  }
+
+  private threadKey(origin: RealtimeGoalOrigin): string {
+    return origin.sessionKey.trim();
+  }
+
+  async recordOwnerTurn(origin: RealtimeGoalOrigin, text: string): Promise<void> {
+    if (!usesSessionThread(origin.channel)) return;
+    await this.threads.recordOwnerTurn(
+      this.threadKey(origin),
+      text,
+      origin.messageId,
+    );
+  }
+
+  async recordBoxTurn(
+    origin: RealtimeGoalOrigin,
+    text: string,
+    source: "broker" | "delivery" | "hermes",
+    goalId?: string,
+  ): Promise<void> {
+    if (!usesSessionThread(origin.channel)) return;
+    await this.threads.recordBoxTurn(this.threadKey(origin), text, source, goalId);
+  }
+
+  /** Compact broker snapshot for Hermes pass turns on queue-capable channels. */
+  async buildHermesContextSnapshot(origin: RealtimeGoalOrigin): Promise<string | undefined> {
+    if (!isQueueCapableChannel(origin.channel)) return undefined;
+    const session = realtimeGoalSessionKey(origin);
+    const active = await this.store.listActiveForSession(session);
+    const threadTurns = await this.threads.getTurns(this.threadKey(origin));
+    const activeBranch = await this.resolveActiveGoal(session, this.threadKey(origin));
+    return buildHermesBrokerContextMessage(active, threadTurns, activeBranch);
   }
 
   start(): void {
@@ -152,14 +201,25 @@ export class RealtimeGoalBroker {
   async route(input: RealtimeGoalRouteInput): Promise<RealtimeGoalRouteResult> {
     const text = input.text.trim();
     if (!text) return { action: "pass" };
+
+    if (!isQueueCapableChannel(input.origin.channel)) {
+      await this.recordOwnerTurn(input.origin, text);
+      return { action: "pass" };
+    }
+
     const session = realtimeGoalSessionKey(input.origin);
     const src = sourceMessageId(input.origin);
+    await this.recordOwnerTurn(input.origin, text);
+    const threadTurns = await this.threads.getTurns(this.threadKey(input.origin));
+
     const duplicate = await this.store.findBySource(session, src);
     if (duplicate) {
       const receipt = duplicate.sourceReceipts?.find((item) => item.sourceId === src);
+      const replyText = receipt?.reply ?? duplicate.intakeReply;
+      await this.recordBoxTurn(input.origin, replyText, "broker", duplicate.id);
       return {
         action: "reply",
-        text: receipt?.reply ?? duplicate.intakeReply,
+        text: replyText,
         goalId: duplicate.id,
         outcome:
           receipt?.outcome ??
@@ -172,27 +232,78 @@ export class RealtimeGoalBroker {
     }
 
     const active = await this.store.listActiveForSession(session);
-    const controlText = text.toLowerCase().replace(/\s+/g, " ").trim();
-    if (
-      active.length > 1 &&
-      /^(never mind|nevermind|cancel that|stop that|forget it)[.! ]*$/.test(controlText)
-    ) {
+    if (active.length > 1 && isExplicitCancelPhrase(text)) {
       const choices = active
         .slice(0, 4)
         .map((goal, index) => `${index + 1}) ${goal.title}`)
         .join("; ");
+      const replyText = `Which queued job should I cancel? ${choices}. Say “cancel” and the title.`;
+      await this.recordBoxTurn(input.origin, replyText, "broker");
       return {
         action: "reply",
-        text: `Which queued job should I cancel? ${choices}. Say “cancel” and the title.`,
+        text: replyText,
         outcome: "status",
       };
     }
-    const admission = await classifyRealtimeGoalMessage(text, active);
+
+    const threadKey = this.threadKey(input.origin);
+    const activeBranch = await this.resolveActiveGoal(session, threadKey);
+    const queueCapable = isQueueCapableChannel(input.origin.channel);
+
+    const admission = activeBranch
+      ? await this.routeMessage({
+          text,
+          activeGoals: active,
+          threadTurns,
+          queueCapable,
+          activeBranch,
+        })
+      : await this.routeMessage({
+          text,
+          activeGoals: active,
+          threadTurns,
+          queueCapable,
+        });
     console.info(
-      `[realtime-goals] decision=${admission.decision} confidence=${admission.confidence.toFixed(2)} channel=${input.origin.channel} reason=${admission.reason}`,
+      `[realtime-goals] decision=${admission.decision} confidence=${admission.confidence.toFixed(2)} channel=${input.origin.channel} bound=${Boolean(activeBranch)} reason=${admission.reason}`,
     );
 
+    if (activeBranch && admission.decision === "update") {
+      const continuation = await this.handleBranchContinuation(
+        activeBranch,
+        text,
+        src,
+        input.origin,
+      );
+      if (continuation) {
+        await this.setActiveGoalPointer(input.origin, activeBranch.id);
+        return continuation;
+      }
+    }
+
+    if (activeBranch && admission.decision === "queue") {
+      await this.clearActiveGoalPointer(input.origin);
+    }
+
     if (admission.decision === "pass") return { action: "pass" };
+
+    if (admission.decision === "ack" && admission.reply) {
+      const anchor = admission.goalId
+        ? active.find((goal) => goal.id === admission.goalId)
+        : active[0];
+      if (anchor) {
+        await this.store.update(anchor.id, (goal) =>
+          markSourceHandled(goal, src, admission.reply!, "ack"),
+        );
+      }
+      await this.recordBoxTurn(input.origin, admission.reply, "broker", anchor?.id);
+      return {
+        action: "reply",
+        text: admission.reply,
+        goalId: anchor?.id,
+        outcome: "ack",
+      };
+    }
 
     if (admission.decision === "cancel" && admission.goalId) {
       const cancelled = await this.cancel(admission.goalId, text);
@@ -204,6 +315,7 @@ export class RealtimeGoalBroker {
       await this.store.update(cancelled.id, (goal) =>
         markSourceHandled(goal, src, reply, "cancelled"),
       );
+      await this.recordBoxTurn(input.origin, reply, "broker", cancelled.id);
       return {
         action: "reply",
         text: reply,
@@ -221,6 +333,7 @@ export class RealtimeGoalBroker {
       await this.store.update(target.id, (goal) =>
         markSourceHandled(goal, src, reply, "status"),
       );
+      await this.recordBoxTurn(input.origin, reply, "broker", target.id);
       return {
         action: "reply",
         text: reply,
@@ -234,6 +347,7 @@ export class RealtimeGoalBroker {
         target.status === "blocked"
           ? (await this.answerBlockedGoal(target.id, text, src)) ?? target
           : await this.appendOwnerUpdate(target, text, src);
+      await this.recordBoxTurn(input.origin, updated.intakeReply, "broker", updated.id);
       return {
         action: "reply",
         text: updated.intakeReply,
@@ -253,6 +367,7 @@ export class RealtimeGoalBroker {
         markSourceHandled(goal, src, queuedReply(), "queued");
       });
       if (queued) {
+        await this.recordBoxTurn(input.origin, queued.intakeReply, "broker", queued.id);
         return {
           action: "reply",
           text: queued.intakeReply,
@@ -274,6 +389,7 @@ export class RealtimeGoalBroker {
           markSourceHandled(goal, src, reply, "clarify");
         });
         if (updated) {
+          await this.recordBoxTurn(input.origin, reply, "broker", updated.id);
           return {
             action: "reply",
             text: reply,
@@ -290,6 +406,7 @@ export class RealtimeGoalBroker {
         intakeReply: reply,
         clarificationQuestion: reply,
       });
+      await this.recordBoxTurn(input.origin, reply, "broker", goal.id);
       return { action: "reply", text: reply, goalId: goal.id, outcome: "clarify" };
     }
 
@@ -301,6 +418,7 @@ export class RealtimeGoalBroker {
         status: "queued",
         intakeReply: queuedReply(),
       });
+      await this.recordBoxTurn(input.origin, goal.intakeReply, "broker", goal.id);
       return {
         action: "reply",
         text: goal.intakeReply,
@@ -332,17 +450,23 @@ export class RealtimeGoalBroker {
 
   /** Agent-callable fallback when a normal Hermes turn discovers the work is long. */
   async defer(input: RealtimeGoalRouteInput, title?: string): Promise<RealtimeGoalRecord> {
+    if (!isDeferCapableChannel(input.origin.channel)) {
+      throw new Error(`realtime_goal_defer is unavailable on channel ${input.origin.channel}`);
+    }
     const src = sourceMessageId(input.origin);
     const session = realtimeGoalSessionKey(input.origin);
     const duplicate = await this.store.findBySource(session, src);
     if (duplicate) return duplicate;
-    return this.createGoal({
+    await this.recordOwnerTurn(input.origin, input.text);
+    const goal = await this.createGoal({
       origin: { ...input.origin, messageId: src },
       text: input.text,
       title,
       status: "queued",
       intakeReply: queuedReply(),
     });
+    await this.recordBoxTurn(input.origin, goal.intakeReply, "broker", goal.id);
+    return goal;
   }
 
   async cancel(goalId: string, reason = "Owner cancelled"): Promise<RealtimeGoalRecord | undefined> {
@@ -355,8 +479,17 @@ export class RealtimeGoalBroker {
         ? `I'm stopping “${item.title}.”`
         : `Cancelled “${item.title}.”`;
     });
-    if (!goal?.kanbanTaskId) return goal;
-    return this.retryCancellation(goal.id);
+    if (!goal?.kanbanTaskId) {
+      if (goal?.status === "cancelled") {
+        await this.clearActiveGoalPointer(goal.origin);
+      }
+      return goal;
+    }
+    const cancelled = await this.retryCancellation(goal.id);
+    if (cancelled?.status === "cancelled") {
+      await this.clearActiveGoalPointer(cancelled.origin);
+    }
+    return cancelled;
   }
 
   private async retryCancellation(goalId: string): Promise<RealtimeGoalRecord | undefined> {
@@ -462,6 +595,145 @@ export class RealtimeGoalBroker {
     return true;
   }
 
+  private async setActiveGoalPointer(
+    origin: RealtimeGoalOrigin,
+    goalId: string,
+  ): Promise<void> {
+    if (!usesSessionThread(origin.channel)) return;
+    await this.threads.setActiveGoal(this.threadKey(origin), goalId);
+  }
+
+  private async clearActiveGoalPointer(origin: RealtimeGoalOrigin): Promise<void> {
+    if (!usesSessionThread(origin.channel)) return;
+    await this.threads.clearActiveGoal(this.threadKey(origin));
+  }
+
+  /** Resolve the open branch on this trunk via activeGoalId only (no silent re-bind). */
+  private async resolveActiveGoal(
+    session: string,
+    threadKey: string,
+  ): Promise<RealtimeGoalRecord | undefined> {
+    const pointer = await this.threads.getActiveGoal(threadKey);
+    if (!pointer) return undefined;
+
+    const goal = await this.store.get(pointer.goalId);
+    if (goal && realtimeGoalSessionKey(goal.origin) === session) {
+      if (isContinuableGoal(goal, pointer.setAt)) {
+        return goal;
+      }
+    }
+    await this.threads.clearActiveGoal(threadKey);
+    return undefined;
+  }
+
+  private async handleBranchContinuation(
+    goal: RealtimeGoalRecord,
+    text: string,
+    sourceId: string,
+    origin: RealtimeGoalOrigin,
+  ): Promise<RealtimeGoalRouteResult | undefined> {
+    if (goal.status === "cancelled" || goal.status === "failed") {
+      await this.clearActiveGoalPointer(origin);
+      return undefined;
+    }
+
+    if (goal.status === "done") {
+      return this.reopenContinuableGoal(goal, text, sourceId, origin);
+    }
+
+    const updated =
+      goal.status === "blocked"
+        ? (await this.answerBlockedGoal(goal.id, text, sourceId)) ?? goal
+        : await this.appendOwnerUpdate(goal, text, sourceId);
+
+    await this.recordBoxTurn(origin, updated.intakeReply, "broker", updated.id);
+    return {
+      action: "reply",
+      text: updated.intakeReply,
+      goalId: updated.id,
+      outcome:
+        updated.status === "queued" && goal.status === "clarifying" ? "queued" : "updated",
+    };
+  }
+
+  private async reopenContinuableGoal(
+    goal: RealtimeGoalRecord,
+    text: string,
+    sourceId: string,
+    origin: RealtimeGoalOrigin,
+  ): Promise<RealtimeGoalRouteResult | undefined> {
+    if (!isContinuableGoal(goal)) {
+      await this.clearActiveGoalPointer(origin);
+      return undefined;
+    }
+
+    const reply = this.ownerUpdateReply(goal, text, false, false);
+    let applied = false;
+    const updated = await this.store.update(goal.id, (item) => {
+      if (item.handledSourceIds?.includes(sourceId)) return;
+      applied = true;
+      item.messages.push({ at: isoNow(), role: "owner", text });
+      item.objective = `${item.objective}\n\nOwner update: ${text}`;
+      item.status = item.kanbanTaskId ? "ready" : "queued";
+      if (!item.kanbanTaskId) {
+        item.releaseAt = new Date(Date.now() + releaseDelayMs()).toISOString();
+      }
+      markSourceHandled(item, sourceId, reply, "updated");
+      if (item.kanbanTaskId) {
+        item.pendingOwnerUpdates ??= [];
+        item.pendingOwnerUpdates.push({
+          sourceId,
+          text,
+          at: isoNow(),
+          fromBlockedAnswer: false,
+        });
+      }
+    });
+    if (!updated) return undefined;
+
+    const receipt = updated.sourceReceipts?.find((item) => item.sourceId === sourceId);
+    const replyText = receipt?.reply ?? updated.intakeReply;
+
+    if (applied && updated.kanbanTaskId) {
+      await callKanbanBridge({
+        action: "reopen",
+        board: REALTIME_GOALS_KANBAN_BOARD,
+        task_id: updated.kanbanTaskId,
+      }).catch((error) => {
+        console.warn(
+          `[realtime-goals] reopen task=${updated.kanbanTaskId} failed: ${(error as Error).message}`,
+        );
+      });
+      const flushed = await this.flushOwnerUpdates(updated.id).catch(() => false);
+      if (!flushed) {
+        const fallback = await this.store.update(updated.id, (item) => {
+          item.intakeReply =
+            `I saved that update for “${item.title}” and will keep retrying the worker handoff.`;
+          const itemReceipt = item.sourceReceipts?.find((entry) => entry.sourceId === sourceId);
+          if (itemReceipt) itemReceipt.reply = item.intakeReply;
+        });
+        if (fallback) {
+          await this.recordBoxTurn(origin, fallback.intakeReply, "broker", fallback.id);
+          return {
+            action: "reply",
+            text: fallback.intakeReply,
+            goalId: fallback.id,
+            outcome: "updated",
+          };
+        }
+      }
+    }
+
+    const finalGoal = (await this.store.get(updated.id)) ?? updated;
+    await this.recordBoxTurn(origin, replyText, "broker", finalGoal.id);
+    return {
+      action: "reply",
+      text: replyText,
+      goalId: finalGoal.id,
+      outcome: "updated",
+    };
+  }
+
   private async createGoal(input: {
     origin: RealtimeGoalOrigin;
     text: string;
@@ -503,19 +775,26 @@ export class RealtimeGoalBroker {
       ],
       delivery: { state: "pending", attempts: 0 },
     };
-    return this.store.insert(goal);
+    const inserted = await this.store.insert(goal);
+    await this.setActiveGoalPointer(input.origin, inserted.id);
+    return inserted;
   }
 
   private ownerUpdateReply(
     target: RealtimeGoalRecord,
     text: string,
     wasBlocked: boolean,
+    wasClarifying: boolean,
   ): string {
     const choice = text.trim().replace(/\s+/g, " ").slice(0, 80);
     if (wasBlocked) {
       return choice
         ? `Got it — continuing with “${choice}.” Please wait a moment while I finish the booking.`
         : `Got it — I have your answer and I'm continuing the booking now. Please wait a moment.`;
+    }
+    // Clarifying goals have no Kanban worker yet — be honest that work is queued.
+    if (wasClarifying) {
+      return queuedReply();
     }
     if (target.status === "running") {
       return `Got it — noted for “${target.title}.” I'm still on it and will work that in.`;
@@ -529,14 +808,20 @@ export class RealtimeGoalBroker {
     sourceId: string,
   ): Promise<RealtimeGoalRecord> {
     const wasBlocked = target.status === "blocked";
-    const reply = this.ownerUpdateReply(target, text, wasBlocked);
+    const wasClarifying = target.status === "clarifying";
+    const reply = this.ownerUpdateReply(target, text, wasBlocked, wasClarifying);
     let applied = false;
     const updated = await this.store.update(target.id, (goal) => {
       if (goal.handledSourceIds?.includes(sourceId)) return;
       applied = true;
       goal.messages.push({ at: isoNow(), role: "owner", text });
       goal.objective = `${goal.objective}\n\nOwner update: ${text}`;
-      markSourceHandled(goal, sourceId, reply, "updated");
+      markSourceHandled(
+        goal,
+        sourceId,
+        reply,
+        wasClarifying ? "queued" : "updated",
+      );
       if (goal.kanbanTaskId) {
         goal.pendingOwnerUpdates ??= [];
         goal.pendingOwnerUpdates.push({
@@ -545,6 +830,12 @@ export class RealtimeGoalBroker {
           at: isoNow(),
           fromBlockedAnswer: wasBlocked,
         });
+      }
+      if (goal.status === "clarifying") {
+        // Owner answered the broker's clarification — enter the commit window.
+        goal.status = "queued";
+        goal.releaseAt = new Date(Date.now() + releaseDelayMs()).toISOString();
+        goal.clarificationQuestion = undefined;
       }
       if (goal.status === "blocked") {
         const now = isoNow();
@@ -800,6 +1091,7 @@ export class RealtimeGoalBroker {
             item.delivery.lastDeliveredKey = undefined;
           }
         });
+        await this.setActiveGoalPointer(goal.origin, goal.id);
         if (suppressRepeat) {
           console.info(
             `[realtime-goals] suppressed repeat blocked SMS goal=${goal.id} (owner already answered)`,
@@ -839,6 +1131,7 @@ export class RealtimeGoalBroker {
       if (shouldDeliver) {
         await this.deliverAndRecord(goal.id, summary, "completed");
       }
+      await this.clearActiveGoalPointer(goal.origin);
       return;
     }
 
@@ -863,6 +1156,7 @@ export class RealtimeGoalBroker {
       if (shouldDeliver) {
         await this.deliverAndRecord(goal.id, message, "failed");
       }
+      await this.clearActiveGoalPointer(goal.origin);
       return;
     }
 
@@ -921,5 +1215,8 @@ export class RealtimeGoalBroker {
       result,
       MAX_DELIVERY_ATTEMPTS,
     );
+    if (result.delivered) {
+      await this.recordBoxTurn(goal.origin, text, "delivery", goal.id);
+    }
   }
 }

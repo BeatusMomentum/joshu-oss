@@ -101,6 +101,18 @@ On fleet boxes, rsync host `public/` after image bake (bind-mount is `:ro`, so
 
 Desktop shortcuts: [`arozos-desktop-shortcuts.md`](arozos-desktop-shortcuts.md).
 
+### jWeb UI (URL bar + identity bubble)
+
+jWeb is **browser-first**: full-width Camofox/noVNC, no legacy Hermes run sidebar.
+
+| UI | Role |
+| --- | --- |
+| **URL bar** (browser chrome) | `POST /joshu/api/camofox/navigate` → Playwright `ensureTab(url, { navigateExisting: true })`. Use this for addresses — **not** Paste into field (that targets page inputs via insert-text, not Firefox chrome). |
+| **Paste into field** | Page form fields only (`insert-text`). Clipboard bar hint explains the split. |
+| **Identity bubble** (`public/jchat-bubble.js`) | Chat Head FAB from `GET /joshu/api/instance/identity`; click posts `joshu:toggle-jchat-docked` to the ArozOS desktop (same docked jChat as the taskbar avatar). Closed by default — no embedded iframe. |
+
+Status poll updates the URL bar from `lastBrowserUrl` unless the owner is editing it.
+
 ## VNC clipboard (paste / copy)
 
 **x11vnc does not reliably exchange clipboard with the Mac/host.** Braces and
@@ -171,6 +183,7 @@ Joshu bypasses VNC entirely. One visible buffer + two buttons:
 
 | Action | UI | Joshu API | Camofox |
 |--------|----|-----------|---------|
+| Navigate to URL | **URL bar → Go** | `POST /joshu/api/camofox/navigate` | Playwright navigate on shared HITL tab |
 | Paste into focused field | **Paste into field**, or **Cmd+V** on the page | `POST /joshu/api/camofox/insert-text` | HITL `POST /tabs/:id/insert-text` (DOM insert at caret) |
 | Overlay scan (handoff) | **More Options → Scan fields** (auto on page change) | `GET /joshu/api/browser-handoff/:id/form-fields` | HITL `POST /tabs/:id/form-fields` + Joshu LLM labels |
 | Overlay page watch | (poll) | `GET /joshu/api/browser-handoff/:id/page-key` | Playwright evaluate — URL + control shape, no stamps |
@@ -231,6 +244,17 @@ watcher never starts x11vnc again. noVNC gets **1011** (`connection refused` on
 `:5900`) — jWeb looks like it **instantly crashes**. Overlay:
 `scripts/camofox-vnc-watcher.sh` via `scripts/patch-camofox-vnc-watcher.sh`
 (image build + `vps-start`).
+
+**Bug (validated on patrick, 2026-09-20, 0.1.46):** two independent launch
+failures stacked after recreate. (1) camoufox-js saw an **empty**
+`/root/.cache/camoufox/addons/UBO` (failed AMO download / mkdir race) and
+treated it as extracted — every `POST /tabs` 500'd
+(`manifest.json is missing`) so `fit-viewport` stayed **502**. Repair: delete
+the empty dir (or wait for `HITL_ADDON_MANIFEST_REPAIR` in
+`patch-camofox-single-tab.mjs`). (2) Camoufox 1.16 starts
+`Xvfb -displayfd N` (no `:99` in argv). The watcher regex never found a
+display, so x11vnc never bound `:5900` even after Firefox was up. Overlay
+marker: `HITL_VNC_DISPLAYFD`.
 
 **Hardening (keep the timeout; make start/stop clean):**
 
@@ -360,6 +384,7 @@ after the redirect chain. Logs: `hitl oauth popup waiting for callback`.
 | `scripts/ensure-camofox-container.sh` | Create/start container + wait for `/health` |
 | `POST /joshu/api/camofox/fit-viewport` | Bootstrap tab → Camofox viewport route |
 | `POST /joshu/api/camofox/warm` | Same bootstrap as fit-viewport **without** viewport resize (agent / EA) |
+| `POST /joshu/api/camofox/navigate` | jWeb URL bar — explicit Playwright navigation (`navigateExisting: true`) |
 | `POST /joshu/api/camofox/insert-text` | Playwright paste into focused control (HITL insert-text / evaluate) |
 | `POST /joshu/api/camofox/copy-selection` | Read selection or focused field |
 | `POST /joshu/api/camofox/scroll` | Wheel / Arrow / Page keys via Playwright (`public/vnc-scroll.js`; rate-limited) |
@@ -407,6 +432,8 @@ a 30s watchdog also respawns a dead gateway.
 - `fb: 1024×768`
 
 If the pane looks stretched/wide, confirm `layoutVncScreen()` still delegates to `layoutLetterboxedScreen` and that `/app/server.js` contains `window: [__hitlVp.width, __hitlVp.height]` (Camofox 1.6 `executable_path` needle must match the patch script).
+
+**Chrome visible but no VNC canvas (zero-height black strip):** `.workspace` is a column flex; `.browser-column` must be `flex: 1` (and `min-height: 0`) so `#vnc-frame` has a definite height. Dropping the old two-column grid without that rule collapses the pane.
 
 ### ArozOS float window
 

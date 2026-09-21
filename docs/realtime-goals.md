@@ -5,6 +5,10 @@ durable Hermes Kanban worker. The owner receives an immediate same-channel
 acknowledgment, may continue chatting or queue more work, and receives blocked
 questions and completion results on the originating channel.
 
+**Theory of operation** (routing model, session thread vs Hermes, channel
+policy): [`realtime-goals-theory-of-operation.md`](realtime-goals-theory-of-operation.md).
+This page is the implementation reference.
+
 ## Scope
 
 Included owner-authenticated surfaces:
@@ -21,20 +25,35 @@ Mail ingress and public Share Chat are intentionally excluded.
 
 ## Flow
 
-1. The channel adapter sends the owner message and stable transport identity to
-   `RealtimeGoalBroker`.
-2. Deterministic cancel/status phrases run first. A small structured classifier
-   then returns `pass`, `clarify`, `queue`, `update`, `cancel`, or `status`.
+1. The channel adapter records the owner turn in a bounded **session thread**
+   (owner↔box transcript — not Hermes history) and sends the message to
+   `RealtimeGoalBroker` on queue-capable channels.
+2. The context router reads recent thread turns + active goals and returns
+   `pass`, `clarify`, `queue`, `update`, `cancel`, `status`, or `ack`.
 3. Classification is intentionally conservative. Only high-confidence work that
    is clearly longer than about one minute is deferred. Errors and uncertainty
    pass through to the normal Hermes turn.
 
+### Channel policy
+
+| Channel | Auto queue via broker | `realtime_goal_defer` | Session thread |
+| --- | --- | --- | --- |
+| SMS | yes | yes | yes |
+| PSTN / browser voice | yes | yes | yes |
+| Slack / Telegram | yes | yes | yes |
+| jChat | no (sync only) | no | yes |
+| AG-UI | no (sync only) | no | yes |
+| mail | excluded | — | — |
+
+jChat and AG-UI assume the owner can wait on a synchronous Hermes turn. They
+still append to the session thread for consistency, but never auto-queue.
+
 ### Channel-neutral admission (coding preference)
 
-**One policy for every surface** — SMS, jChat, AG-UI, Slack, Telegram, browser
-voice, PSTN. Do **not** add domain whitelists (`search_flights`, `book_hotel`,
-travel regexes, etc.) or channel-specific “long intent” tables in the broker or
-classifier. Those rot quickly and duplicate what the classifier already does.
+**One router policy for queue-capable surfaces.** Do **not** add domain
+whitelists (`search_flights`, `book_hotel`, travel regexes, etc.) or
+channel-specific “long intent” tables. Those rot quickly and duplicate what the
+context router already does with thread + goals.
 
 When a channel mis-queues or mis-passes, fix **plumbing** so the classifier sees
 the same owner substance other channels get:
@@ -50,9 +69,13 @@ Voice-realtime: [`packages/voice-realtime/src/brainThink.ts`](../packages/voice-
 calls `POST /api/realtime-goals/route` before Hermes. PSTN uses stable
 `sessionKey: pstn:owner` so status/cancel works across `CallSid`s.
 
-The classifier prompt may mention structured voice fields generically (weight
-`User said` when present). Deterministic shortcuts stay limited to **control
-phrases** — cancel, status, greetings — never task taxonomy.
+The router prompt may mention structured voice fields generically (weight
+`User said` when present). Deterministic shortcuts stay limited to explicit
+cancel/status phrases and greetings — never task taxonomy or ack phrase lists.
+
+Interpret follow-ups in thread context: *"Nope"* after *"Anything else?"* →
+`ack`; *"also include the New York Times"* → `update`; *"actually, never mind"*
+→ `cancel`.
 
 General Joshu preferences for this subsystem: minimize scope, keep architecture
 clean, avoid application-specific exceptions when a structural fix suffices, and
@@ -80,10 +103,15 @@ State defaults to:
 
 ```text
 ${JOSHU_FILES_ROOT}/.joshu/realtime-goals/state.json
+${JOSHU_FILES_ROOT}/.joshu/realtime-goals/threads.json
 ```
 
-Local development falls back to `.local/realtime-goals/state.json`. Override
-with `JOSHU_REALTIME_GOALS_STATE_DIR`.
+Local development falls back to `.local/realtime-goals/`. Override with
+`JOSHU_REALTIME_GOALS_STATE_DIR`.
+
+Session threads store the last **12 turns** (default) or **48h** TTL, keyed by
+stable `sessionKey` (`sms:+1…`, `pstn:owner`, etc.). Provider `messageId`
+deduplicates owner appends on transport retry.
 
 Each record stores the logical goal ID, origin route, source event ID, intake
 messages, release time, Kanban task ID, task status, result summary, and delivery
@@ -161,7 +189,11 @@ local services.
 
 “Never mind”, “cancel that”, “stop that”, and “forget it” target the most
 recently acknowledged active goal only when unambiguous; with several jobs, the
-owner is asked to name one. The broker first enters a durable `cancelling` state
+owner is asked to name one.
+
+The router uses thread context so bare negation answering *“Anything else?”*
+returns `ack`, not `cancel`. Only explicit cancel intent (or high-confidence
+cancel with thread/goal binding) stops work. The broker first enters a durable `cancelling` state
 and suppresses completion delivery. A pre-release goal is never created on
 Kanban. For a released goal, the bridge verifies the worker PID belongs to that
 Kanban task, terminates its process group, confirms it stopped, records an audit
@@ -178,10 +210,13 @@ Repo plugin `.hermes/plugins/joshu-realtime-goals/`:
 - exposes `realtime_goal_defer` when an initially synchronous Hermes turn
   discovers that the work is long.
 
-The defer handler accepts only explicit jChat/AG-UI/SMS/PSTN/Slack/Telegram
-session identities. It rejects mail, public Share Chat, unknown sessions, and
-all Kanban worker processes (`HERMES_KANBAN_TASK`) so background workers cannot
-recursively create or misroute realtime goals.
+The defer handler accepts only queue-capable session identities (SMS, PSTN,
+browser voice, Slack, Telegram). It rejects jChat, AG-UI, mail, public Share
+Chat, unknown sessions, and all Kanban worker processes (`HERMES_KANBAN_TASK`).
+
+On `pass` for queue-capable channels, Hermes receives a compact broker snapshot
+(active goals + recent thread) as an extra system message so sync chat does not
+contradict cancelled/queued state.
 
 Factory skill `realtime-goal` is force-loaded by deferred workers. It requires
 workers to re-read owner updates before consequential actions, use normal action
@@ -197,8 +232,12 @@ JOSHU_REALTIME_GOALS_RELEASE_SECONDS=60
 # Default lifecycle poll is 5000 ms, minimum 1000.
 JOSHU_REALTIME_GOALS_POLL_MS=5000
 
-# Optional cheap classifier override.
+# Optional cheap router override.
 JOSHU_REALTIME_GOALS_CLASSIFIER_MODEL=openai/gpt-5.4-nano
+
+# Session thread bounds (defaults: 12 turns, 48h).
+JOSHU_REALTIME_GOALS_THREAD_MAX_TURNS=12
+JOSHU_REALTIME_GOALS_THREAD_TTL_HOURS=48
 
 # Optional explicit persistent state directory.
 JOSHU_REALTIME_GOALS_STATE_DIR=
@@ -207,11 +246,14 @@ JOSHU_REALTIME_GOALS_STATE_DIR=
 JOSHU_REALTIME_GOALS_CALLBACK_SECRET=
 ```
 
-The classifier uses the existing Day 0/OpenRouter credential path. If it is not
+The router uses the existing Day 0/OpenRouter credential path. If it is not
 configured, realtime admission fails open and normal Hermes handles the turn.
 
-Implementation: [`src/realtimeGoals/classifier.ts`](../src/realtimeGoals/classifier.ts),
+Implementation: [`src/realtimeGoals/router.ts`](../src/realtimeGoals/router.ts),
+[`src/realtimeGoals/sessionThread.ts`](../src/realtimeGoals/sessionThread.ts),
 [`src/realtimeGoals/broker.ts`](../src/realtimeGoals/broker.ts).
+
+See also: [`realtime-goals-theory-of-operation.md`](realtime-goals-theory-of-operation.md).
 
 ## Verification
 

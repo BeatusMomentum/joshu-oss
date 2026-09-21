@@ -26,6 +26,7 @@ HITL_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-hitl-patch.sh"
 LANGFUSE_SYSTEM_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-langfuse-system-patch.sh"
 CONTENT_FILTER_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-content-filter-patch.sh"
 READ_FILE_UTF8_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-read-file-utf8-patch.sh"
+DSML_STREAM_SCRUB_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-dsml-stream-scrub.sh"
 STALE_STREAM_KEEPALIVE_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-stale-stream-keepalive.sh"
 INVOKE_TOOL_POST_HOOK_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-invoke-tool-post-hook-patch.sh"
 KANBAN_WORKER_TERMINATE_PATCH_SCRIPT="${ROOT_DIR}/scripts/apply-hermes-kanban-worker-terminate-on-complete.sh"
@@ -360,6 +361,9 @@ apply_content_filter_patch_if_needed() {
   fi
   if [[ -x "${READ_FILE_UTF8_PATCH_SCRIPT}" ]]; then
     HERMES_DIR="${HERMES_DIR}" bash "${READ_FILE_UTF8_PATCH_SCRIPT}" || true
+  fi
+  if [[ -x "${DSML_STREAM_SCRUB_PATCH_SCRIPT}" ]]; then
+    HERMES_DIR="${HERMES_DIR}" bash "${DSML_STREAM_SCRUB_PATCH_SCRIPT}" || true
   fi
   if [[ -x "${STALE_STREAM_KEEPALIVE_PATCH_SCRIPT}" ]]; then
     HERMES_DIR="${HERMES_DIR}" bash "${STALE_STREAM_KEEPALIVE_PATCH_SCRIPT}" || true

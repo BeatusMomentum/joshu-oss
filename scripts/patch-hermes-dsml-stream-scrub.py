@@ -9,6 +9,9 @@ not DSML.  This patch adds:
   1. Batch scrub in ``strip_think_blocks`` (post-stream + defensive callers)
   2. ``StreamingDsmlScrubber`` — hold-back streaming scrubber (like think_scrubber)
   3. Wire scrubber in agent init + ``_fire_stream_delta`` + reset paths
+  4. End-of-stream flush (``_flush_stream_dsml_tail``) so the last 32 chars
+     reach jChat/SMS before the gateway SSE sentinel — reset-time flush is
+     too late (it runs at the *next* model call)
 
 Marker: _joshu_dsml_scrub
 """
@@ -26,6 +29,8 @@ TARGET_SCRUBBER = HERMES_DIR / "agent/think_scrubber.py"
 TARGET_INIT = HERMES_DIR / "agent/agent_init.py"
 TARGET_RUN = HERMES_DIR / "run_agent.py"
 TARGET_LOOP = HERMES_DIR / "agent/conversation_loop.py"
+TARGET_CHAT_HELPERS = HERMES_DIR / "agent/chat_completion_helpers.py"
+EOS_MARKER = f"{MARKER}_eos"
 
 HELPERS_PATTERNS = f'''
 # Joshu ({MARKER}): DeepSeek native DSML tool markup in assistant content.
@@ -175,6 +180,88 @@ RESET_TRACKING_INSERT = f"""                if think_tail:
                     self._record_streamed_assistant_text(dsml_tail)
         # Flush any benign partial-tag tail held by the context scrubber so it"""
 
+# Emit the 32-char DSML hold-back *before* the gateway SSE sentinel. Reset-time
+# flush in ``_reset_stream_delivery_tracking`` runs at the *next* model call,
+# after jChat/SMS already received finish_reason: stop.
+FLUSH_METHOD_OLD = '''                self._record_streamed_assistant_text(tail)
+        self._current_streamed_assistant_text = ""
+
+    def _record_streamed_assistant_text(self, text: str) -> None:'''
+
+FLUSH_METHOD_NEW = f'''                self._record_streamed_assistant_text(tail)
+        self._current_streamed_assistant_text = ""
+
+    def _flush_stream_dsml_tail(self) -> None:
+        """Joshu ({EOS_MARKER}): emit DSML hold-back on this SSE turn.
+
+        ``StreamingDsmlScrubber.feed`` always retains the last 32 characters.
+        Flushing only from ``_reset_stream_delivery_tracking`` is too late:
+        that reset runs at the *next* model call, after the gateway has
+        already put the None sentinel on the stream queue.
+        """
+        dsml_scrubber = getattr(self, "_stream_dsml_scrubber", None)
+        if dsml_scrubber is None:
+            return
+        superseded = getattr(self, "_stream_writer_superseded", None)
+        if callable(superseded) and superseded():
+            dsml_scrubber.reset()
+            return
+        dsml_tail = dsml_scrubber.flush()
+        if not dsml_tail:
+            return
+        ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
+        if ctx_scrubber is not None:
+            dsml_tail = ctx_scrubber.feed(dsml_tail)
+        if not dsml_tail:
+            return
+        callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
+        delivered = False
+        for cb in callbacks:
+            try:
+                cb(dsml_tail)
+                delivered = True
+            except Exception:
+                pass
+        if delivered:
+            self._record_streamed_assistant_text(dsml_tail)
+
+    def _record_streamed_assistant_text(self, text: str) -> None:'''
+
+CHAT_EOS_AFTER_CANCEL_OLD = '''        if _stream_attempt_was_cancelled(stream_attempt_id):
+            raise _httpx.RemoteProtocolError(
+                f"stream attempt {stream_attempt_id} was superseded"
+            )
+
+        # Some OpenAI-compatible adapters accept ``stream=True`` but return a'''
+
+CHAT_EOS_AFTER_CANCEL_NEW = f'''        if _stream_attempt_was_cancelled(stream_attempt_id):
+            raise _httpx.RemoteProtocolError(
+                f"stream attempt {{stream_attempt_id}} was superseded"
+            )
+
+        # Joshu ({EOS_MARKER}): flush DSML 32-char hold-back while this writer
+        # still owns the SSE queue. Iterator path: last 32 chars of streamed
+        # prose. final_response path: no-op here; flushed again after the
+        # one-shot ``_fire_stream_delta`` below.
+        _flush_dsml = getattr(agent, "_flush_stream_dsml_tail", None)
+        if callable(_flush_dsml):
+            _flush_dsml()
+
+        # Some OpenAI-compatible adapters accept ``stream=True`` but return a'''
+
+CHAT_EOS_FINAL_RESPONSE_OLD = '''                if isinstance(content, str) and content:
+                    _fire_first_delta()
+                    agent._fire_stream_delta(content)
+            return final_response'''
+
+CHAT_EOS_FINAL_RESPONSE_NEW = f'''                if isinstance(content, str) and content:
+                    _fire_first_delta()
+                    agent._fire_stream_delta(content)
+            _flush_dsml = getattr(agent, "_flush_stream_dsml_tail", None)
+            if callable(_flush_dsml):
+                _flush_dsml()  # {EOS_MARKER}
+            return final_response'''
+
 
 def _apply_once(path: Path, old: str, new: str, label: str) -> None:
     text = path.read_text(encoding="utf-8")
@@ -224,10 +311,25 @@ def main() -> int:
     _apply_once(run_path, RUN_DELTA_OLD, RUN_DELTA_NEW, "run_agent delta")
     if RESET_TRACKING_INSERT_AFTER in run_path.read_text(encoding="utf-8"):
         _apply_once(run_path, RESET_TRACKING_INSERT_AFTER, RESET_TRACKING_INSERT, "run_agent flush")
+    _apply_once(run_path, FLUSH_METHOD_OLD, FLUSH_METHOD_NEW, "run_agent eos flush method")
 
     loop_path = TARGET_LOOP
     if loop_path.is_file():
         _apply_once(loop_path, LOOP_RESET_OLD, LOOP_RESET_NEW, "conversation_loop reset")
+
+    if TARGET_CHAT_HELPERS.is_file():
+        _apply_once(
+            TARGET_CHAT_HELPERS,
+            CHAT_EOS_AFTER_CANCEL_OLD,
+            CHAT_EOS_AFTER_CANCEL_NEW,
+            "chat_completion_helpers eos flush",
+        )
+        _apply_once(
+            TARGET_CHAT_HELPERS,
+            CHAT_EOS_FINAL_RESPONSE_OLD,
+            CHAT_EOS_FINAL_RESPONSE_NEW,
+            "chat_completion_helpers final_response flush",
+        )
 
     print("[hermes-dsml-scrub] done — restart Hermes gateway to load changes")
     return 0

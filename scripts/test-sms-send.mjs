@@ -105,11 +105,14 @@ import { smsModelReplyPlaintext } from "../src/smsModelReplyPlaintext.js";
 
 {
   const scrubber = new HermesStreamContentScrubber();
-  const parts = ["there is a ", "thread in ", "your inbox"];
-  let out = "";
-  for (const p of parts) out += scrubber.feed(p);
-  out += scrubber.flush();
-  assert.equal(out, "there is a thread in your inbox");
+  const full =
+    "Hey. Quiet Sunday morning over here.\n\nHow's it actually going — rested, or already working?";
+  let streamed = "";
+  for (const ch of full) streamed += scrubber.feed(ch);
+  assert.ok(streamed.length < full.length, "hold-back must retain a tail mid-stream");
+  assert.equal(streamed.endsWith("working?"), false);
+  streamed += scrubber.flush();
+  assert.equal(streamed, full);
 }
 
 function pendingDirForRoot(root) {

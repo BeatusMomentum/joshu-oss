@@ -357,6 +357,36 @@ def _dispatch(payload: Dict[str, Any]) -> Dict[str, Any]:
             "task": _task_summary(task) if task else {"task_id": task_id},
         }
 
+    if action == "reopen":
+        task_id = str(payload.get("task_id") or "").strip()
+        if not task_id:
+            return {"success": False, "error": "task_id is required"}
+        task = kanban_db.get_task(conn, task_id)
+        if not task:
+            return {"success": False, "error": f"task {task_id} not found"}
+        status = str(task.status or "")
+        if status in ("ready", "running", "todo", "blocked"):
+            return {
+                "success": True,
+                "task_id": task_id,
+                "action_taken": "already_active",
+                "task": _task_summary(task),
+            }
+        if status != "done":
+            return {
+                "success": False,
+                "error": f"task {task_id} cannot reopen from status {status}",
+            }
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", ("ready", task_id))
+        conn.commit()
+        refreshed = kanban_db.get_task(conn, task_id)
+        return {
+            "success": True,
+            "task_id": task_id,
+            "action_taken": "reopened",
+            "task": _task_summary(refreshed) if refreshed else {"task_id": task_id},
+        }
+
     if action == "unblock":
         task_id = str(payload.get("task_id") or "").strip()
         idempotency_key = str(payload.get("idempotency_key") or "").strip()

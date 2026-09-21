@@ -11,6 +11,8 @@
 #   - forgets the display when Xvfb disappears
 #   - reattaches when x11vnc died under the same display
 #   - skips spawning a second websockify if :6080 is already up (live restart)
+#   - HITL_VNC_DISPLAYFD: Camoufox 1.16+ starts `Xvfb -displayfd N` (no `:99`
+#     in argv). Resolve the display from /tmp/.X11-unix/XN.
 #
 # Called by the VNC plugin via child_process.spawn. Not meant to run standalone.
 #
@@ -59,11 +61,26 @@ fi
 log "VNC watcher started -- will attach x11vnc when Camoufox's Xvfb appears"
 
 find_xvfb_display() {
-  ps -eo args= 2>/dev/null | awk -v res="$VNC_RESOLUTION" '
-    /\/Xvfb :[0-9]+/ && index($0, res) {
+  # Older Camoufox: `/usr/bin/Xvfb :99 -screen 0 1024x768x24 …`
+  found=$(ps -eo args= 2>/dev/null | awk -v res="$VNC_RESOLUTION" '
+    /\/Xvfb :[0-9]+/ && (res == "" || index($0, res)) {
       for (i=1;i<=NF;i++) if ($i ~ /^:[0-9]+$/) { print $i; exit }
     }
-  ' | head -1
+  ' | head -1)
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  # Camoufox 1.16+ / camoufox-js virtual_display: `Xvfb -displayfd 3 -screen 0 1024x768x24`
+  # — the display number is not in argv. HITL_VNC_DISPLAYFD
+  if ! pgrep -x Xvfb >/dev/null 2>&1 && ! pgrep -f '/Xvfb( |$|-)' >/dev/null 2>&1; then
+    return 0
+  fi
+  for sock in /tmp/.X11-unix/X[0-9]*; do
+    [ -S "$sock" ] || continue
+    printf ':%s\n' "${sock##*/X}"
+    return 0
+  done
 }
 
 x11vnc_alive() {

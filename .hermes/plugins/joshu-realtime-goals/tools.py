@@ -75,6 +75,8 @@ def _origin_from_session(session_key: str, message_id: str = "") -> dict | None:
         channel = "sms"
     if not channel:
         return None
+    if channel in ("jchat", "agui"):
+        return None
 
     pieces = key.split(":")
     if channel == "sms" and len(pieces) >= 2:

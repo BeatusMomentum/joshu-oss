@@ -12,7 +12,8 @@ export type KanbanBridgeAction =
   | "show"
   | "comment"
   | "append_body"
-  | "cancel";
+  | "cancel"
+  | "reopen";
 
 export type KanbanBridgePayload = Record<string, unknown> & { action: KanbanBridgeAction };
 

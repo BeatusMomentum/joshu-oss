@@ -53,12 +53,24 @@ Hermes can keep calling tools for up to **90 iterations** on one user message (t
 
 Joshu sends SSE comment heartbeats every 15s on `/api/hermes-chat/stream` (and AG-UI), and Caddy `reverse_proxy /joshu/*` uses `flush_interval -1` plus 1h read/write timeouts. Recreate **caddy** after image/dist so the Caddyfile regenerates. If a drop still happens, jChat marks the bubble as an error instead of a successful empty reply — send **continue** to pick up Hermes session history.
 
-Clearly long owner work is now admitted through the
-[Realtime Goal Broker](realtime-goals.md) before the Hermes stream. jChat gets a
-plain acknowledgment immediately and remains usable for more requests. Kanban
-completion enters a durable per-session surface-event queue; the open client
-polls it into the visible transcript, and the next owner turn carries that
-assistant message back into Hermes context.
+DeepSeek replies can also look finished but end mid-sentence. Joshu’s DSML
+scrubber holds back 32 characters so a split `<DSML…` tag is not shown; that
+tail must be flushed **before** the gateway SSE sentinel or jChat keeps
+`rested, or a` as the whole message. See
+[hermes-integration — DeepSeek DSML stream scrub](hermes-integration.md#deepseek-dsml-stream-scrub).
+jChat also applies `finalText` from the `done` event when it is a longer
+prefix of the streamed deltas.
+
+jChat is **sync-only** for the [Realtime Goal Broker](realtime-goals.md): every
+turn goes to Hermes on the SSE stream (the owner can wait). Joshu still appends
+owner/box turns to the **session thread** for routing consistency on other
+surfaces, but jChat does not auto-queue long work. If a jChat turn discovers
+mid-flight that work is long, Hermes cannot call `realtime_goal_defer` from a
+jChat session — use SMS, voice, Slack, or Telegram for deferred goals.
+
+Kanban completions for goals **started on other channels** may still appear via
+the durable per-session surface-event queue; the open client polls that into the
+transcript. See [theory of operation — channel policy](realtime-goals-theory-of-operation.md#channel-policy-summary).
 
 ### System prompt layers
 

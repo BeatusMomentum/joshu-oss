@@ -65,6 +65,10 @@ const APPLY_HERMES_READ_FILE_UTF8_PATCH_SCRIPT = path.resolve(
   process.cwd(),
   "scripts/apply-hermes-read-file-utf8-patch.sh",
 );
+const APPLY_HERMES_DSML_STREAM_SCRUB_SCRIPT = path.resolve(
+  process.cwd(),
+  "scripts/apply-hermes-dsml-stream-scrub.sh",
+);
 const MAX_HISTORY_MESSAGES = 12;
 const MAX_OBSERVATION_CHARS = 14_000;
 const DEFAULT_JOSHU_HERMES_SKILLS_DIR = path.resolve(process.cwd(), "integrations/hermes/skills");
@@ -1656,6 +1660,47 @@ export class HermesApiRunner extends EventEmitter {
     }
   }
 
+  private async ensureHermesDsmlStreamScrubPatch(): Promise<boolean> {
+    const hermesDir = resolveHermesCheckoutDir(this.opts.binary);
+    if (!hermesDir) return false;
+
+    const helpers = path.join(hermesDir, "agent", "chat_completion_helpers.py");
+    try {
+      await execFile("test", ["-f", helpers]);
+    } catch {
+      return false;
+    }
+
+    let hadEosFlush = false;
+    try {
+      const text = await readFile(helpers, "utf8");
+      hadEosFlush = text.includes("_joshu_dsml_scrub_eos");
+    } catch {
+      return false;
+    }
+
+    try {
+      await execFile("bash", [APPLY_HERMES_DSML_STREAM_SCRUB_SCRIPT], {
+        env: { ...process.env, HERMES_DIR: hermesDir },
+        timeout: 20_000,
+      });
+    } catch (err) {
+      console.warn(`[hermes-api] DSML stream scrub patch skipped: ${(err as Error).message}`);
+      return false;
+    }
+
+    if (hadEosFlush) return false;
+    let nowHasEosFlush = false;
+    try {
+      nowHasEosFlush = (await readFile(helpers, "utf8")).includes("_joshu_dsml_scrub_eos");
+    } catch {
+      return false;
+    }
+    if (!nowHasEosFlush) return false;
+    console.log("[hermes-api] DSML stream end-of-stream flush applied; Hermes gateway will restart");
+    return true;
+  }
+
   private async ensureHermesReadFileUtf8Patch(): Promise<boolean> {
     const hermesDir = resolveHermesCheckoutDir(this.opts.binary);
     if (!hermesDir) return false;
@@ -1683,7 +1728,8 @@ export class HermesApiRunner extends EventEmitter {
     const resyncPatchApplied = await this.ensureHermesHitlBrowserPatch();
     const contentFilterPatchApplied = await this.ensureHermesContentFilterPatch();
     const readFileUtf8PatchApplied = await this.ensureHermesReadFileUtf8Patch();
-    if (resyncPatchApplied || contentFilterPatchApplied || readFileUtf8PatchApplied) {
+    const dsmlStreamScrubPatchApplied = await this.ensureHermesDsmlStreamScrubPatch();
+    if (resyncPatchApplied || contentFilterPatchApplied || readFileUtf8PatchApplied || dsmlStreamScrubPatchApplied) {
       await this.stopGatewayDaemon();
       this.gateway = undefined;
     }

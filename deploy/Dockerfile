@@ -12,7 +12,7 @@ ARG HERMES_AGENT_REF=3c27eb6234bf91b8ceee9e9071591b31e9b148cb
 ARG GO_VERSION=1.24.1
 ARG PGVECTOR_REPO=https://github.com/pgvector/pgvector.git
 ARG PGVECTOR_REF=v0.8.1
-ARG POSTGRES_VERSION=15
+ARG POSTGRES_VERSION=17
 
 ENV APP_DIR=/opt/joshu \
     HERMES_DIR=/opt/hermes-agent \
@@ -166,6 +166,7 @@ FROM ${CAMOFOX_BASE} AS runtime
 
 ARG HERMES_AGENT_REF=3c27eb6234bf91b8ceee9e9071591b31e9b148cb
 ARG GBRAIN_REF=fa2c7a6990a7a57b251979ef6e1988ff09529021
+ARG POSTGRES_VERSION=17
 
 ENV APP_DIR=/opt/joshu \
     HERMES_DIR=/opt/hermes-agent \
@@ -174,7 +175,7 @@ ENV APP_DIR=/opt/joshu \
 
 # x11vnc/novnc/websockify: Camofox VNC plugin apt.txt deps (not installed by base image).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl ffmpeg git libopus0 libportaudio2 openssh-client patch poppler-utils postgresql-15 procps python3 python3-pip ripgrep rsync unzip util-linux \
+    bash ca-certificates curl ffmpeg git libopus0 libportaudio2 openssh-client patch poppler-utils postgresql-${POSTGRES_VERSION} procps python3 python3-pip ripgrep rsync unzip util-linux \
     x11vnc novnc python3-websockify net-tools \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m pip install --no-cache-dir --break-system-packages pypdf \
@@ -203,8 +204,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 COPY --from=builder /opt/hermes-agent /opt/hermes-agent
 COPY --from=builder /opt/arozos-template /opt/arozos-template
 COPY --from=builder /opt/joshu-design /opt/joshu-design
-COPY --from=builder /usr/lib/postgresql/15/lib/vector.so /usr/lib/postgresql/15/lib/vector.so
-COPY --from=builder /usr/share/postgresql/15/extension/vector* /usr/share/postgresql/15/extension/
+COPY --from=builder /usr/lib/postgresql/${POSTGRES_VERSION}/lib/vector.so /usr/lib/postgresql/${POSTGRES_VERSION}/lib/vector.so
+COPY --from=builder /usr/share/postgresql/${POSTGRES_VERSION}/extension/vector* /usr/share/postgresql/${POSTGRES_VERSION}/extension/
 
 WORKDIR ${APP_DIR}
 COPY deploy/runtime/package.json deploy/runtime/package-lock.json ./

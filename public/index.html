@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="design-system/typography.css" />
     <link rel="stylesheet" href="design-system/tokens.css" />
     <link rel="stylesheet" href="design-system/base.css" />
+    <link rel="stylesheet" href="jchat-bubble.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -20,7 +21,18 @@
             <div class="chrome-dots" aria-hidden="true">
               <span></span><span></span><span></span>
             </div>
-            <div class="chrome-title">Joshu</div>
+            <form id="url-form" class="chrome-url-form" autocomplete="off">
+              <input
+                id="url-bar"
+                class="chrome-url-input"
+                type="text"
+                inputmode="url"
+                spellcheck="false"
+                placeholder="Enter URL or search terms"
+                aria-label="Page address"
+              />
+              <button id="url-go" type="submit" class="chrome-url-go" title="Go">Go</button>
+            </form>
             <div class="chrome-tools">
               <div class="chrome-tool-labeled" id="chrome-vnc-status" title="Remote desktop">
                 <span id="vnc-indicator" class="vnc-indicator" aria-hidden="true"></span>
@@ -47,7 +59,7 @@
               class="vnc-clipboard-text"
               rows="2"
               spellcheck="false"
-              placeholder="Paste here (Cmd+V), or Cmd+V directly on a field in the page"
+              placeholder="Paste here for page fields (Cmd+V), or use the URL bar above for navigation"
               aria-label="Clipboard buffer"
             ></textarea>
             <button type="button" id="vnc-paste-remote" class="vnc-clipboard-btn vnc-clipboard-btn-primary" title="Insert Mac clipboard (or this box) into the focused page field">
@@ -57,7 +69,7 @@
               Copy from browser
             </button>
             <p id="vnc-clipboard-hint" class="vnc-clipboard-hint">
-              Click a field in the page, then Paste — or Cmd+V while the page is focused.
+              For URLs, use the address bar — paste targets page fields, not Firefox chrome.
             </p>
           </div>
           <div id="vnc-frame" class="browser-viewport">
@@ -66,29 +78,6 @@
           <pre id="vnc-debug" class="vnc-debug" hidden aria-live="polite"></pre>
         </div>
       </section>
-
-      <aside class="chat-column" aria-label="Chat">
-        <div class="chat-panel">
-          <header class="chat-header">
-            <h2 class="chat-title">Chat</h2>
-            <span id="run-status" class="run-status" aria-live="polite"></span>
-          </header>
-          <pre id="log" class="chat-log" aria-live="polite"></pre>
-          <form id="run-form" class="chat-composer">
-            <textarea
-              id="prompt"
-              rows="3"
-              placeholder="Ask Hermes…"
-              required
-              aria-label="Message"
-            ></textarea>
-            <div class="chat-actions">
-              <button id="submit-run" type="submit">Send</button>
-              <button id="cancel-run" type="button" class="btn-ghost" disabled>Stop</button>
-            </div>
-          </form>
-        </div>
-      </aside>
     </div>
 
     <div id="settings-modal" class="modal" hidden>
@@ -118,7 +107,7 @@
           <section class="settings-group">
             <h3>Browser</h3>
             <label class="field">
-              <span class="label">Start URL <span class="muted">(optional, next run)</span></span>
+              <span class="label">Start URL <span class="muted">(optional, next bootstrap)</span></span>
               <input id="initial-url" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false" />
             </label>
             <div class="settings-actions">
@@ -131,7 +120,6 @@
             <h3>Hermes</h3>
             <div class="settings-actions">
               <button id="forget-session" type="button">Reset Hermes session</button>
-              <button id="clear-log" type="button" class="btn-ghost">Clear chat log</button>
             </div>
           </section>
 
@@ -148,6 +136,6 @@
       </div>
     </div>
 
-    <script type="module" src="app.js?v=ui-browser-11"></script>
+    <script type="module" src="app.js?v=ui-browser-13"></script>
   </body>
 </html>

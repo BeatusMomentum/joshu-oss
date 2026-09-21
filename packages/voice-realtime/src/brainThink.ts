@@ -63,6 +63,49 @@ export function buildThinkUserMessage(params: {
   return lines.join("\n");
 }
 
+type VoiceThreadOrigin = {
+  channel: "browser_voice" | "pstn_voice";
+  sessionKey: string;
+  sessionId: string;
+  messageId: string;
+  appId?: string;
+};
+
+async function fetchBrokerContext(origin: VoiceThreadOrigin): Promise<string | undefined> {
+  try {
+    const res = await fetch(`${JOSHU_API_BASE}/api/realtime-goals/context`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${HERMES_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ origin }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return undefined;
+    const json = (await res.json()) as { context?: string | null };
+    return typeof json.context === "string" && json.context.trim() ? json.context : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function recordVoiceThreadBox(origin: VoiceThreadOrigin, text: string): Promise<void> {
+  try {
+    await fetch(`${JOSHU_API_BASE}/api/realtime-goals/thread/box`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${HERMES_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ origin, text, source: "hermes" }),
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch {
+    /* fail open */
+  }
+}
+
 async function drainDesktopActionsFromJoshu(sessionKey: string): Promise<DesktopSurfaceAction[]> {
   try {
     const url = `${JOSHU_API_BASE}/api/desktop-actions/drain?sessionKey=${encodeURIComponent(sessionKey)}`;
@@ -94,6 +137,13 @@ export async function runJoshuThink(params: ThinkParams): Promise<string> {
     : `joshu-hermes-chat:${params.callSid}`;
   const voiceThinkKey = `voice-think:${params.callSid}:${params.jobId}`;
   const forScreen = params.presentation === "screen";
+  const voiceOrigin: VoiceThreadOrigin = {
+    channel: forScreen ? "browser_voice" : "pstn_voice",
+    sessionKey: forScreen ? sessionKey : "pstn:owner",
+    sessionId: hermesSessionId,
+    messageId: params.jobId,
+    ...(appCtx?.appId ? { appId: appCtx.appId } : {}),
+  };
   const ownerText =
     resolveThinkUserQuote(params.userQuote) ||
     [params.intent, params.summary].filter(Boolean).join("\n");
@@ -114,15 +164,7 @@ export async function runJoshuThink(params: ThinkParams): Promise<string> {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          origin: {
-            channel: forScreen ? "browser_voice" : "pstn_voice",
-            // One passphrase-authenticated PSTN owner per box. Keep broker
-            // identity stable across CallSids so later calls can status/cancel.
-            sessionKey: forScreen ? sessionKey : "pstn:owner",
-            sessionId: hermesSessionId,
-            messageId: params.jobId,
-            appId: appCtx?.appId,
-          },
+          origin: voiceOrigin,
           text: brokerText,
         }),
         signal: AbortSignal.timeout(10_000),
@@ -144,11 +186,13 @@ export async function runJoshuThink(params: ThinkParams): Promise<string> {
     }
   }
 
+  const brokerContext = await fetchBrokerContext(voiceOrigin);
   const messages: ChatMessage[] = [
     {
       role: "system",
       content: buildThinkSystemPrompt(identity, forScreen ? "screen" : "phone"),
     },
+    ...(brokerContext ? [{ role: "system" as const, content: brokerContext }] : []),
     ...(appCtx ? buildEmbeddedAppThinkMessages(appCtx) : []),
     {
       role: "user",
@@ -272,5 +316,7 @@ export async function runJoshuThink(params: ThinkParams): Promise<string> {
   await flushSurfaceActions();
 
   const name = identity.name;
-  return finalText.trim() || `(No response from ${name}.)`;
+  const spoken = finalText.trim() || `(No response from ${name}.)`;
+  await recordVoiceThreadBox(voiceOrigin, spoken);
+  return spoken;
 }

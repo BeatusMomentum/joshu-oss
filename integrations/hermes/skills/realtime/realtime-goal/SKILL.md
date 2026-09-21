@@ -48,14 +48,18 @@ If the card body contains **`Owner selection — BOOK THIS (do not re-search)`**
 5. If required owner input is missing and there is no owner selection yet, call
    `kanban_block` with one concise, answerable question. Do not guess
    consequential details.
-6. When the owner answers a blocked question with a specific choice (hotel name,
+6. **Presenting a menu or asking the owner to choose** (hotel shortlist, rate
+   type, date confirmation, etc.) → **`kanban_block`**, not `kanban_complete`.
+   The branch stays open until the owner picks and you hand off checkout or
+   report a final irreversible outcome.
+7. When the owner answers a blocked question with a specific choice (hotel name,
    date confirmation, etc.), treat it as authorization to proceed — book or hold
    **that** option. Do not restart a broad OTA search unless the chosen option
    is unavailable.
-7. On success, call `kanban_complete` with a self-contained plain-language
-   summary. Include artifact paths, handoff links, confirmations, and any
-   unresolved caveats.
-8. Never send the completion directly. Joshu's durable delivery layer returns it
+8. Call **`kanban_complete` only** when handing off a checkout link or reporting
+   a truly finished outcome (booked, confirmed, delivered artifact). Include
+   artifact paths, handoff links, confirmations, and any unresolved caveats.
+9. Never send the completion directly. Joshu's durable delivery layer returns it
    to the originating channel.
 
 Treat cancellation or an archived task as terminal. Stop work immediately and do

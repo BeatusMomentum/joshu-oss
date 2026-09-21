@@ -117,44 +117,26 @@ button:focus-visible {
   color: var(--color-warn);
 }
 
-/* —— Main split: browser | chat —— */
+/* —— Full-width browser (chat is the floating identity bubble) —— */
 .workspace {
   flex: 1;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--joshu-chat-width, 17.5rem);
-  grid-template-rows: minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   width: 100%;
 }
 
-/* Stack only on very narrow viewports (not the default 1024×768 HITL window). */
-@media (max-width: 640px) {
-  .workspace {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(45vh, 1fr) auto;
-  }
-
-  .chat-column {
-    border-left: none;
-    border-top: var(--border-default);
-  }
-}
-
+/* Fill the workspace so #vnc-frame gets a real height. Without flex:1 the
+   viewport (flex:1; min-height:0) collapses and the noVNC canvas is clipped. */
 .browser-column {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  height: 100%;
   background: var(--color-border-subtle);
   padding: 0.5rem 0.5rem 0.5rem 0.65rem;
-}
-
-.chat-column {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-left: var(--border-default);
-  background: var(--color-paper);
 }
 
 /* —— Browser window chrome —— */
@@ -206,12 +188,32 @@ button:focus-visible {
   background: #28c840;
 }
 
-.chrome-title {
+.chrome-url-form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chrome-url-input {
+  flex: 1;
+  min-width: 0;
   font-size: 0.78rem;
-  font-weight: 700;
-  color: var(--color-ink-muted);
-  white-space: nowrap;
-  padding-right: 0.25rem;
+  padding: 0.28rem 0.5rem;
+  border-radius: 999px;
+  background: #fff;
+}
+
+.chrome-url-input.navigating {
+  opacity: 0.65;
+}
+
+.chrome-url-go {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  padding: 0.28rem 0.65rem;
+  border-radius: 999px;
 }
 
 .chrome-tools {
@@ -411,108 +413,6 @@ button:focus-visible {
   border: 1px solid rgba(184, 240, 200, 0.35);
   pointer-events: none;
   white-space: pre;
-}
-
-/* —— Chat sidebar —— */
-.chat-panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  max-height: 100vh;
-}
-
-.chat-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.55rem 0.75rem;
-  border-bottom: var(--border-default);
-  background: var(--color-surface-panel);
-  flex-shrink: 0;
-}
-
-.chat-title {
-  margin: 0;
-  font-size: 0.92rem;
-  font-weight: 700;
-}
-
-.chat-log {
-  flex: 1;
-  margin: 0;
-  padding: 0.65rem 0.75rem;
-  overflow: auto;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: var(--color-terminal-bg);
-  color: var(--color-terminal-green);
-  border: none;
-  min-height: 0;
-}
-
-.chat-log .ev {
-  display: block;
-  padding: 1px 0;
-}
-
-.chat-log .ev.system {
-  color: var(--color-terminal-yellow);
-  font-style: italic;
-}
-
-.chat-log .ev.stderr {
-  color: var(--color-terminal-amber);
-}
-
-.chat-log .ev.final {
-  color: var(--color-terminal-green);
-  border-top: 1px dashed rgba(255, 255, 255, 0.15);
-  margin-top: 0.45rem;
-  padding-top: 0.45rem;
-}
-
-.chat-composer {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-  padding: 0.55rem 0.75rem 0.65rem;
-  border-top: var(--border-default);
-  background: var(--color-surface-panel);
-  flex-shrink: 0;
-}
-
-.chat-actions {
-  display: flex;
-  gap: 0.45rem;
-}
-
-.chat-actions button[type="submit"] {
-  flex: 1;
-}
-
-.run-status {
-  font-size: 0.68rem;
-  font-family: var(--font-mono);
-  color: var(--color-text-muted);
-  text-transform: lowercase;
-}
-
-.run-status.succeeded {
-  color: var(--color-ok);
-}
-
-.run-status.running {
-  color: var(--color-action);
-}
-
-.run-status.failed,
-.run-status.cancelled {
-  color: var(--color-err);
 }
 
 /* —— Settings modal —— */

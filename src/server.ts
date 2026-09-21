@@ -718,6 +718,36 @@ function buildAppRouter(): {
     res.json({ ok: true, tab });
   });
 
+  /** Navigate the shared HITL tab via Playwright (jWeb URL bar — not VNC paste). */
+  router.post("/api/camofox/navigate", async (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as { url?: unknown };
+      const raw = typeof body.url === "string" ? body.url.trim() : "";
+      if (!raw) return res.status(400).json({ error: "url is required" });
+      let url: string;
+      try {
+        url = new URL(raw.includes("://") ? raw : `https://${raw}`).toString();
+      } catch {
+        return res.status(400).json({ error: `url is not a valid URL: ${raw}` });
+      }
+      await runner.ensureGatewayReady().catch(() => undefined);
+      const tab = await camofoxSession.ensureTab(url, { navigateExisting: true });
+      runner.rememberBrowserTarget(tab.url, HITL_CAMOFOX_USER_ID);
+      const observation = await camofoxSession.observe(tab).catch((err: Error) => {
+        console.warn(`[joshu] camofox navigate observe failed: ${err.message}`);
+        return undefined;
+      });
+      res.json({
+        ok: true,
+        tab,
+        currentUrl: observation?.url ?? tab.url,
+        title: observation?.title ?? tab.title,
+      });
+    } catch (err) {
+      res.status(502).json({ error: (err as Error).message });
+    }
+  });
+
   /** Paste/type into the focused Camofox page control via Playwright (correct braces/JSON). */
   router.post("/api/camofox/insert-text", async (req: Request, res: Response) => {
     try {
@@ -818,11 +848,7 @@ function buildAppRouter(): {
 
   router.get("/api/hermes-chat/status", async (req: Request, res: Response) => {
     try {
-      if (isComposioEnabled()) {
-        await syncComposioHermesMcp(PROJECT_ROOT).catch((err) => {
-          console.warn(`[composio] startup sync skipped: ${(err as Error).message}`);
-        });
-      }
+      // Status is polled by jChat — keep it fast; Composio sync runs on stream/connect routes.
       if (req.query.after_mcp_boot === "1") {
         await runner.prepareGatewayAfterMcpBoot();
       } else {
@@ -978,24 +1004,14 @@ function buildAppRouter(): {
     try {
       sseSend(res, "status", { status: "running" });
       const ownerText = extractLastUserMessageText(messages);
-      const brokerResult = ownerText
-        ? await realtimeGoalBroker.route({
-            origin: {
-              channel: "jchat",
-              sessionKey: `joshu-hermes-chat:${sessionId}`,
-              sessionId,
-              messageId: readString(body.sourceMessageId) || undefined,
-            },
-            text: ownerText,
-          })
-        : { action: "pass" as const };
-      if (brokerResult.action === "reply") {
-        sseSend(res, "delta", { text: brokerResult.text });
-        sseSend(res, "done", {
-          finalText: brokerResult.text,
-          realtimeGoalId: brokerResult.goalId,
-        });
-        return;
+      const jchatOrigin = {
+        channel: "jchat" as const,
+        sessionKey: `joshu-hermes-chat:${sessionId}`,
+        sessionId,
+        messageId: readString(body.sourceMessageId) || undefined,
+      };
+      if (ownerText) {
+        await realtimeGoalBroker.recordOwnerTurn(jchatOrigin, ownerText);
       }
       if (isComposioEnabled()) {
         await syncComposioHermesMcp(PROJECT_ROOT).catch(() => undefined);
@@ -1083,6 +1099,9 @@ function buildAppRouter(): {
       const actions = drainDesktopActionsForChat(activeSessionId);
       for (const action of actions) {
         sseSend(res, "desktop_action", { action });
+      }
+      if (result.finalText?.trim()) {
+        await realtimeGoalBroker.recordBoxTurn(jchatOrigin, result.finalText, "hermes");
       }
       sseSend(res, "done", result);
     } catch (error) {

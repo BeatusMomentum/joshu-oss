@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 const target = process.argv[2] ?? "/app/server.js";
 let source = readFileSync(target, "utf8");
@@ -1913,3 +1914,34 @@ writeFileSync(target, source);
 console.log(
   `[joshu] patched ${target} for single-tab HITL, viewport, selection clipboard route, tab-reaper keepalive, cold-launch warm, and proxy-tunnel recovery`,
 );
+
+// camoufox-js treats any existing addons/<name>/ dir as a successful extract.
+// A failed AMO download (or a launch race that mkdir'd UBO) leaves an empty dir;
+// confirmPaths then 500s every later launch: "manifest.json is missing" — jWeb
+// never warms (validated patrick 2026-09-20 after 0.1.46 recreate).
+const addonsJs = join(dirname(resolve(target)), "node_modules/camoufox-js/dist/addons.js");
+const ADDON_REPAIR_MARKER = "HITL_ADDON_MANIFEST_REPAIR";
+if (existsSync(addonsJs)) {
+  let addonsSource = readFileSync(addonsJs, "utf8");
+  if (!addonsSource.includes(ADDON_REPAIR_MARKER)) {
+    const staleExistsNeedle = `        if (fs.existsSync(addonPath)) {
+            addonsList.push(addonPath);
+            continue;
+        }`;
+    const staleExistsPatch = `        if (fs.existsSync(addonPath)) {
+            if (fs.existsSync(join(addonPath, "manifest.json"))) {
+                addonsList.push(addonPath);
+                continue;
+            }
+            // ${ADDON_REPAIR_MARKER} — incomplete extract is not success.
+            fs.rmSync(addonPath, { recursive: true, force: true });
+        }`;
+    if (addonsSource.includes(staleExistsNeedle)) {
+      addonsSource = addonsSource.replace(staleExistsNeedle, staleExistsPatch);
+      writeFileSync(addonsJs, addonsSource);
+      console.log(`[joshu] patched ${addonsJs} for incomplete addon extract repair`);
+    } else {
+      console.warn(`[joshu] ${ADDON_REPAIR_MARKER}: addons.js existsSync needle not found; skipping`);
+    }
+  }
+}

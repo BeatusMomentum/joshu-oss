@@ -265,8 +265,14 @@ export async function getOrCreateComposioSession(projectRoot = process.cwd()): P
   return { userId, sessionId: session.sessionId, mcp };
 }
 
-export async function syncComposioHermesMcp(
-  projectRoot = process.cwd(),
+/** jChat polls /hermes-chat/status often — debounce Composio session refresh. */
+const COMPOSIO_HERMES_SYNC_MIN_MS = 5 * 60_000;
+let lastComposioHermesSyncAt = 0;
+let composioHermesSyncInFlight: Promise<{ ok: boolean; enabled: boolean; configChanged: boolean }> | null =
+  null;
+
+async function syncComposioHermesMcpInner(
+  projectRoot: string,
 ): Promise<{ ok: boolean; enabled: boolean; configChanged: boolean }> {
   if (!isComposioEnabled()) {
     const configChanged = await applyComposioMcpToHermesConfig(null);
@@ -275,6 +281,23 @@ export async function syncComposioHermesMcp(
   const { mcp } = await getOrCreateComposioSession(projectRoot);
   const configChanged = await applyComposioMcpToHermesConfig(mcp);
   return { ok: true, enabled: Boolean(mcp.url), configChanged };
+}
+
+export async function syncComposioHermesMcp(
+  projectRoot = process.cwd(),
+  opts?: { force?: boolean },
+): Promise<{ ok: boolean; enabled: boolean; configChanged: boolean }> {
+  if (!opts?.force) {
+    if (composioHermesSyncInFlight) return composioHermesSyncInFlight;
+    if (Date.now() - lastComposioHermesSyncAt < COMPOSIO_HERMES_SYNC_MIN_MS) {
+      return { ok: true, enabled: isComposioEnabled(), configChanged: false };
+    }
+  }
+  composioHermesSyncInFlight = syncComposioHermesMcpInner(projectRoot).finally(() => {
+    composioHermesSyncInFlight = null;
+    lastComposioHermesSyncAt = Date.now();
+  });
+  return composioHermesSyncInFlight;
 }
 
 export async function listComposioToolkits(

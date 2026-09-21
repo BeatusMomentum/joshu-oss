@@ -103,14 +103,15 @@ Tests: `npm run test:coordination-scope` · `npm run test:owner-reply`.
 
 ## Deferred realtime goals
 
-Owner-authenticated SMS, jChat/AG-UI, browser/PSTN voice, Slack, and Telegram
-share Joshu's Realtime Goal Broker. Clearly long work is clarified if necessary,
-acknowledged immediately, held in a durable commit window, and executed as one
-managed Kanban task. Results and blocked questions return to the originating
-surface while that conversation remains available for additional requests.
+Owner-authenticated SMS, browser/PSTN voice, Slack, and Telegram share Joshu's
+Realtime Goal Broker and **session-thread router** — clearly long work is
+clarified if necessary, acknowledged immediately, held in a durable commit
+window, and executed as one managed Kanban task. jChat and AG-UI are sync-only
+(Hermes stream); they maintain a session thread but do not auto-queue.
 
-See [`realtime-goals.md`](realtime-goals.md) for state, idempotency,
-cancellation, callbacks, and verification.
+See [`realtime-goals-theory-of-operation.md`](realtime-goals-theory-of-operation.md)
+for the routing model, and [`realtime-goals.md`](realtime-goals.md) for state,
+idempotency, cancellation, callbacks, and verification.
 
 ## Related docs
 
@@ -118,5 +119,6 @@ cancellation, callbacks, and verification.
 - [`hermes-chat-arozos-app.md`](hermes-chat-arozos-app.md) — jChat request path and voice
 - [`safety-settings-arozos-app.md`](safety-settings-arozos-app.md) — Safety UI for messaging tokens
 - [`connectors.md`](connectors.md) — Composio, mail mirrors, action guard
-- [`realtime-goals.md`](realtime-goals.md) — durable long work from realtime channels
+- [`realtime-goals-theory-of-operation.md`](realtime-goals-theory-of-operation.md) — routing model
+- [`realtime-goals.md`](realtime-goals.md) — durable long work (implementation)
 - [`agent-safety.md`](agent-safety.md) — write policy overview

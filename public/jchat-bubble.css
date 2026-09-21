@@ -1,0 +1,99 @@
+/**
+ * jWeb — Joshu identity bubble (Chat Head FAB launcher).
+ */
+
+.jchat-bubble-dock {
+  position: fixed;
+  bottom: 1.25rem;
+  z-index: 1200;
+  pointer-events: none;
+}
+
+.jchat-bubble-dock--right {
+  right: 1.25rem;
+}
+
+.jchat-bubble-dock--left {
+  left: 1.25rem;
+}
+
+.jchat-bubble-dock > * {
+  pointer-events: auto;
+}
+
+.jchat-bubble-head-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.jchat-bubble-head {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  box-shadow:
+    0 4px 14px rgba(13, 13, 13, 0.2),
+    0 0 0 2px rgba(255, 255, 255, 0.85);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.jchat-bubble-head:hover {
+  transform: scale(1.04);
+}
+
+.jchat-bubble-head:active {
+  transform: scale(0.97);
+}
+
+.jchat-bubble-head--open {
+  box-shadow:
+    0 6px 18px rgba(13, 13, 13, 0.22),
+    0 0 0 3px var(--color-sage, #a3839a);
+}
+
+.jchat-bubble-head-ring {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  pointer-events: none;
+}
+
+.jchat-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--color-surface-panel, #fff);
+  border: var(--border-default, 1px solid rgba(13, 13, 13, 0.1));
+}
+
+.jchat-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.jchat-avatar-initials {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--color-sage, #a3839a);
+  line-height: 1;
+}
+
+.jchat-avatar--head {
+  width: 3.5rem;
+  height: 3.5rem;
+  border: none;
+}

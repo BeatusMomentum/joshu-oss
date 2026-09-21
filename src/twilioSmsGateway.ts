@@ -304,9 +304,20 @@ export function registerTwilioSmsRoutes(
           }
 
           await runner.ensureGatewayReady();
+          const smsOrigin = {
+            channel: "sms" as const,
+            sessionKey: `sms:${normalizePhone(from)}`,
+            sessionId: sessionKey,
+            messageId: messageSid || undefined,
+            replyAddress: from,
+          };
+          const brokerContext = await realtimeGoals
+            ?.buildHermesContextSnapshot(smsOrigin)
+            .catch(() => undefined);
           const messages: HermesChatMessage[] = [
             buildOwnerTimeSystemMessage(process.cwd()),
             { role: "system", content: systemPrompt },
+            ...(brokerContext ? [{ role: "system" as const, content: brokerContext }] : []),
             { role: "user", content: body.trim() },
           ];
           const { finalText } = await runner.streamHermesChat(
@@ -324,6 +335,7 @@ export function registerTwilioSmsRoutes(
             return;
           }
           await sendSms(from, reply);
+          await realtimeGoals?.recordBoxTurn(smsOrigin, reply, "hermes").catch(() => undefined);
         });
       } catch (err) {
         intakeHandled = false;

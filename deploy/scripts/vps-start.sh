@@ -10,7 +10,7 @@ HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 HINDSIGHT_HOME="${HINDSIGHT_HOME:-/home/hindsight/.hindsight}"
 HINDSIGHT_RUN_AS_USER="${HINDSIGHT_RUN_AS_USER:-hindsight}"
 HINDSIGHT_LOCAL_DATABASE_URL="${HINDSIGHT_LOCAL_DATABASE_URL:-postgresql://hindsight:hindsight@127.0.0.1:5432/hindsight}"
-HINDSIGHT_POSTGRES_BIN_DIR="${HINDSIGHT_POSTGRES_BIN_DIR:-/usr/lib/postgresql/15/bin}"
+HINDSIGHT_POSTGRES_BIN_DIR="${HINDSIGHT_POSTGRES_BIN_DIR:-/usr/lib/postgresql/17/bin}"
 HINDSIGHT_POSTGRES_DATA_DIR="${HINDSIGHT_POSTGRES_DATA_DIR:-/var/lib/postgresql/hindsight/data}"
 HINDSIGHT_POSTGRES_LOG_FILE="${HINDSIGHT_POSTGRES_LOG_FILE:-/var/lib/postgresql/hindsight/postgres.log}"
 AROZ_TEMPLATE="${AROZ_TEMPLATE:-/opt/arozos-template}"
@@ -147,7 +147,7 @@ fix_hindsight_secrets_permissions
 ensure_hermes_runtime_config() {
   local config="${HERMES_HOME}/config.yaml"
   local dotenv="${HERMES_HOME}/.env"
-  local model="${JOSHU_HERMES_MODEL:-deepseek/deepseek-v4-flash-0731}"
+  local model="${JOSHU_HERMES_MODEL:-deepseek/deepseek-v4.1-flash}"
   local provider="${JOSHU_HERMES_PROVIDER:-openrouter}"
   local toolsets="${JOSHU_HERMES_TOOLSETS:-[\"mcp-gbrain\", \"mcp-joshu-connectors\", \"kanban\", \"hermes-cli\", \"browser\"]}"
 
@@ -303,6 +303,13 @@ apply_hermes_read_file_utf8_patch() {
   HERMES_DIR="${HERMES_DIR}" bash "${script}" || echo "[vps-start] WARN: read_file UTF-8 patch failed" >&2
 }
 
+# DeepSeek DSML markup scrub + end-of-stream 32-char hold-back flush.
+apply_hermes_dsml_stream_scrub() {
+  local script="${JOSHU_SCRIPTS_ROOT}/apply-hermes-dsml-stream-scrub.sh"
+  [[ -f "${script}" ]] || return 0
+  HERMES_DIR="${HERMES_DIR}" bash "${script}" || echo "[vps-start] WARN: DSML stream scrub patch failed" >&2
+}
+
 # EA scheduling/mail: one card → one worker. Skip auto_decompose + keep block_loop off triage.
 apply_hermes_ea_kanban_no_autodecompose() {
   local script="${JOSHU_SCRIPTS_ROOT}/apply-hermes-ea-kanban-no-autodecompose.sh"
@@ -363,6 +370,7 @@ apply_hermes_langfuse_patches
 apply_hermes_kanban_ws_patch
 apply_hermes_content_filter_patch
 apply_hermes_read_file_utf8_patch
+apply_hermes_dsml_stream_scrub
 apply_hermes_ea_kanban_no_autodecompose
 apply_hermes_kanban_worker_terminate_on_complete
 apply_hermes_stale_stream_keepalive
@@ -731,6 +739,8 @@ repair_camfox_server_js() {
     elif ! grep -q 'HITL_FORM_PAGE_KEY_ROUTE' "$f" 2>/dev/null; then
       needs_hitl_patch=1
     elif ! grep -q 'window: \[__hitlVp.width, __hitlVp.height\]' "$f" 2>/dev/null; then
+      needs_hitl_patch=1
+    elif ! grep -q 'HITL_ADDON_MANIFEST_REPAIR' "${CAMOFOX_APP_DIR}/node_modules/camoufox-js/dist/addons.js" 2>/dev/null; then
       needs_hitl_patch=1
     fi
   fi

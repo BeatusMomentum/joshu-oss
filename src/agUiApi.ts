@@ -78,6 +78,22 @@ function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/** If Hermes hold-back dropped the last deltas, emit the assembled tail before TEXT_MESSAGE_END. */
+function emitUnstreamedAssistantTail(
+  streamed: string,
+  finalText: string | undefined,
+  res: Response,
+  messageId: string,
+): string {
+  if (!finalText || finalText.length <= streamed.length) return streamed;
+  if (streamed.length > 0 && !finalText.startsWith(streamed)) return streamed;
+  const rest = finalText.slice(streamed.length);
+  if (rest) {
+    agUiSseSend(res, { type: EVENT.TEXT_MESSAGE_CONTENT, messageId, delta: rest });
+  }
+  return finalText;
+}
+
 function agUiSseSend(res: Response, event: AgUiEvent): void {
   sseData(res, event);
 }
@@ -311,6 +327,14 @@ export function registerAgUiRoutes(
     let activeSessionId = threadId;
     const emittedClientToolStarts = new Set<string>();
     let boardMutationsThisRun = 0;
+    let assistantText = "";
+    const aguiOrigin = {
+      channel: "agui" as const,
+      sessionKey: sessionKey ?? `joshu-hermes-chat:${threadId}`,
+      sessionId: threadId,
+      messageId: sourceMessageId,
+      appId: appId || undefined,
+    };
     const noteEmittedGuiAction = (action: AppGuiAction) => {
       if (appId === "excalidraw" && isExcalidrawBoardMutatingAction(action.action)) {
         boardMutationsThisRun += 1;
@@ -320,26 +344,7 @@ export function registerAgUiRoutes(
     try {
       const ownerText = latestUserText(groundedMessages);
       if (realtimeGoals && ownerText) {
-        const brokerResult = await realtimeGoals.route({
-          origin: {
-            channel: "agui",
-            sessionKey: sessionKey ?? `joshu-hermes-chat:${threadId}`,
-            sessionId: threadId,
-            messageId: sourceMessageId,
-            appId: appId || undefined,
-          },
-          text: ownerText,
-        });
-        if (brokerResult.action === "reply") {
-          agUiSseSend(res, {
-            type: EVENT.TEXT_MESSAGE_CONTENT,
-            messageId,
-            delta: brokerResult.text,
-          });
-          agUiSseSend(res, { type: EVENT.TEXT_MESSAGE_END, messageId });
-          agUiSseSend(res, { type: EVENT.RUN_FINISHED, threadId, runId });
-          return;
-        }
+        await realtimeGoals.recordOwnerTurn(aguiOrigin, ownerText);
       }
       if (isComposioEnabled()) {
         await syncComposioHermesMcp(projectRoot).catch(() => undefined);
@@ -353,6 +358,7 @@ export function registerAgUiRoutes(
         },
         onDelta: (text) => {
           if (text) {
+            assistantText += text;
             agUiSseSend(res, { type: EVENT.TEXT_MESSAGE_CONTENT, messageId, delta: text });
           }
         },
@@ -441,7 +447,7 @@ export function registerAgUiRoutes(
         ...groundedMessages.filter(isHermesChatMessage),
       ];
 
-      await runner.streamHermesChat(
+      const firstTurn = await runner.streamHermesChat(
         {
           sessionId: threadId,
           sessionKey,
@@ -452,6 +458,7 @@ export function registerAgUiRoutes(
         },
         hermesHandlers,
       );
+      assistantText = emitUnstreamedAssistantTail(assistantText, firstTurn.finalText, res, messageId);
 
       drainAndEmitAppGuiActions(
         res,
@@ -472,7 +479,7 @@ export function registerAgUiRoutes(
         console.warn(
           `[ag-ui] whiteboard board-mutation gate: no proposeTransaction/recallToBoard/stageOpening — retrying once`,
         );
-        await runner.streamHermesChat(
+        const retryTurn = await runner.streamHermesChat(
           {
             sessionId: threadId,
             sessionKey,
@@ -491,6 +498,7 @@ export function registerAgUiRoutes(
           },
           hermesHandlers,
         );
+        assistantText = emitUnstreamedAssistantTail(assistantText, retryTurn.finalText, res, messageId);
         drainAndEmitAppGuiActions(
           res,
           messageId,
@@ -513,6 +521,9 @@ export function registerAgUiRoutes(
         }
       }
 
+      if (realtimeGoals && assistantText.trim()) {
+        await realtimeGoals.recordBoxTurn(aguiOrigin, assistantText.trim(), "hermes");
+      }
       agUiSseSend(res, { type: EVENT.TEXT_MESSAGE_END, messageId });
       agUiSseSend(res, { type: EVENT.RUN_FINISHED, threadId, runId });
     } catch (err) {

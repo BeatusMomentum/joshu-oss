@@ -640,10 +640,36 @@
     obs.observe(document.body, { childList: true });
   }
 
+  function jpReplyJChatDockedState(source) {
+    if (!source || typeof source.postMessage !== "function") return;
+    var $ = jpQuery();
+    var open = $ ? jpJChatIsOpen($) : false;
+    try {
+      source.postMessage({ type: "joshu:jchat-docked-state", open: open }, "*");
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
   function jpInstallMessageListener() {
     window.addEventListener("message", function (evt) {
       var data = evt.data;
       if (!data || !data.type) return;
+
+      if (data.type === "joshu:toggle-jchat-docked") {
+        jpToggleDockedJChat();
+        window.setTimeout(function () {
+          jpReplyJChatDockedState(evt.source);
+        }, 120);
+        return;
+      }
+
+      if (data.type === "joshu:open-jchat-docked") {
+        jpOpenDockedJChat(function () {
+          jpReplyJChatDockedState(evt.source);
+        });
+        return;
+      }
 
       if (data.type === "jchat:undock") {
         var undockFw = jpFloatWindowForSource(evt.source);

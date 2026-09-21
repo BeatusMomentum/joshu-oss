@@ -116,6 +116,14 @@ function safeJson(value: string): unknown {
   }
 }
 
+/** Prefer the server's assembled reply when SSE deltas were only a prefix (hold-back / dropped tail). */
+function mergeStreamedAssistantText(streamed: string, finalText: string): string {
+  if (finalText.length > streamed.length && (streamed.length === 0 || finalText.startsWith(streamed))) {
+    return finalText;
+  }
+  return streamed;
+}
+
 function buildUserContent(text: string, attachments: Attachment[]): string | HermesContentPart[] {
   if (attachments.length === 0) return text;
   const parts: HermesContentPart[] = [
@@ -522,6 +530,11 @@ function App() {
           }
           if (event.event === "done") {
             streamCompleted = true;
+            const finalText = typeof parsed?.finalText === "string" ? parsed.finalText : "";
+            updateAssistant(assistantId, (message) => ({
+              ...message,
+              content: mergeStreamedAssistantText(message.content, finalText),
+            }));
           }
         });
 

@@ -15,7 +15,8 @@ if [[ ! -f "$WATCHER" ]]; then
   exit 0
 fi
 if grep -q 'HITL_VNC_REATTACH' "$WATCHER" 2>/dev/null \
-  && grep -q 'X11VNC_NOXDAMAGE' "$WATCHER" 2>/dev/null; then
+  && grep -q 'X11VNC_NOXDAMAGE' "$WATCHER" 2>/dev/null \
+  && grep -q 'HITL_VNC_DISPLAYFD' "$WATCHER" 2>/dev/null; then
   echo "[patch-camofox-vnc-watcher] already patched ($WATCHER)"
   exit 0
 fi

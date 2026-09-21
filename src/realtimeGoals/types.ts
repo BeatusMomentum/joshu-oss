@@ -40,6 +40,36 @@ export type RealtimeGoalMessage = {
   text: string;
 };
 
+/** Bounded owner↔box transcript for session-scoped routing (not Hermes history). */
+export type SessionThreadTurnSource =
+  | "inbound"
+  | "broker"
+  | "delivery"
+  | "hermes";
+
+export type SessionThreadTurn = {
+  at: string;
+  role: "owner" | "box";
+  text: string;
+  source: SessionThreadTurnSource;
+  messageId?: string;
+  goalId?: string;
+};
+
+export type SessionThread = {
+  sessionKey: string;
+  turns: SessionThreadTurn[];
+  updatedAt: string;
+  /** Routing hint: the open branch on this trunk (authoritative status lives on the goal). */
+  activeGoalId?: string;
+  activeGoalSetAt?: string;
+};
+
+export type SessionThreadState = {
+  version: 1;
+  threads: Record<string, SessionThread>;
+};
+
 export type RealtimeGoalDelivery = {
   state: "pending" | "attempting" | "delivered" | "suppressed";
   attempts: number;
@@ -102,7 +132,7 @@ export type RealtimeGoalRecord = {
   sourceReceipts?: Array<{
     sourceId: string;
     reply: string;
-    outcome: "clarify" | "queued" | "updated" | "cancelled" | "status";
+    outcome: "clarify" | "queued" | "updated" | "cancelled" | "status" | "ack";
     at: string;
   }>;
   delivery: RealtimeGoalDelivery;
@@ -135,7 +165,13 @@ export type RealtimeGoalRouteResult =
       action: "reply";
       text: string;
       goalId?: string;
-      outcome: "clarify" | "queued" | "updated" | "cancelled" | "status";
+      outcome:
+        | "clarify"
+        | "queued"
+        | "updated"
+        | "cancelled"
+        | "status"
+        | "ack";
     };
 
 export type RealtimeGoalDeliveryKind = "blocked" | "completed" | "failed";

@@ -31,6 +31,7 @@ assert.match(buildNoVncStandaloneUrl("/joshu"), /camofox-viewer\.html/);
 const appJs = fs.readFileSync(path.join(root, "public", "app.js"), "utf8");
 assert.match(appJs, /loadNovncRfb/);
 assert.match(appJs, /attachVncLocalGestures/);
+assert.match(appJs, /function camofoxBrowserReady/);
 assert.doesNotMatch(appJs, /\$\{clientBaseUrl.*\}\/core\/rfb\.js/);
 
 const handoffJs = fs.readFileSync(path.join(root, "public", "handoff.js"), "utf8");

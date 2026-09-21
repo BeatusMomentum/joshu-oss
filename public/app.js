@@ -2,6 +2,7 @@ import { attachVncClipboard } from "./vnc-clipboard.js";
 import { configureNovncRfb, loadNovncRfb, preferVncLocalGestures } from "./vnc-client.js";
 import { attachVncLocalGestures } from "./vnc-gestures.js";
 import { attachVncScrollBridge } from "./vnc-scroll.js";
+import { attachJChatBubble } from "./jchat-bubble.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -37,9 +38,9 @@ function layoutLetterboxedScreen(hostEl, screenEl, { width: fbW, height: fbH, ma
   screenEl.style.maxHeight = py;
   return { width: w, height: h, aspect: w / h };
 }
+
 const STORAGE_KEY = "joshu-hitl-camofox-state";
 const DEBUG_VNC = new URLSearchParams(window.location.search).get("debugVnc") === "1";
-// Defaults until /api/status returns browserViewport (Camofox env).
 const CAMOFOX_FRAMEBUFFER = { width: 1024, height: 768 };
 
 const els = {
@@ -60,14 +61,10 @@ const els = {
   vncClipboardHint: $("#vnc-clipboard-hint"),
   sessionPill: $("#session-pill"),
   forgetSession: $("#forget-session"),
-  form: $("#run-form"),
   initialUrl: $("#initial-url"),
-  prompt: $("#prompt"),
-  submit: $("#submit-run"),
-  cancel: $("#cancel-run"),
-  runStatus: $("#run-status"),
-  log: $("#log"),
-  clearLog: $("#clear-log"),
+  urlForm: $("#url-form"),
+  urlBar: $("#url-bar"),
+  urlGo: $("#url-go"),
   settingsModal: $("#settings-modal"),
   openSettings: $("#open-settings"),
   closeSettings: $("#close-settings"),
@@ -75,9 +72,6 @@ const els = {
 
 const state = {
   sessionId: null,
-  conversationId: null,
-  runId: null,
-  source: null,
   RFB: null,
   rfb: null,
   intentionalRfbDisconnect: null,
@@ -85,21 +79,11 @@ const state = {
   vncClipboardDetach: null,
   vncScrollDetach: null,
   vncGestureDetach: null,
-  /** After a VNC drop, block auto-reconnect until this timestamp (ms). Reload VNC clears it. */
   vncReconnectAfter: 0,
-  /** True after the first automatic connect attempt (status poll must not keep reconnecting). */
   vncAutoConnectDone: false,
+  urlBarEditing: false,
+  urlBarDirty: false,
 };
-
-function appendLog(stream, text, opts = {}) {
-  const span = document.createElement("span");
-  span.className = `ev ${stream}`;
-  const prefix = opts.ts ? `${opts.ts.slice(11, 19)} ` : "";
-  span.textContent = (stream === "stdout" ? text : `${prefix}[${stream}] ${text}`) + "\n";
-  const nearBottom = els.log.scrollHeight - els.log.scrollTop - els.log.clientHeight < 40;
-  els.log.appendChild(span);
-  if (nearBottom) els.log.scrollTop = els.log.scrollHeight;
-}
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -109,11 +93,6 @@ function escapeHtml(s) {
     '"': "&quot;",
     "'": "&#39;",
   }[c]));
-}
-
-function setRunStatus(label, cls = "") {
-  els.runStatus.textContent = label;
-  els.runStatus.className = `run-status ${cls}`.trim();
 }
 
 function setVncStatus(label, cls = "") {
@@ -130,6 +109,12 @@ function setVncStatus(label, cls = "") {
     els.chromeVncStatus.title = line;
     els.chromeVncStatus.setAttribute("aria-label", line);
   }
+}
+
+function setUrlBar(url, { force = false } = {}) {
+  if (!els.urlBar) return;
+  if (!force && (state.urlBarEditing || state.urlBarDirty)) return;
+  els.urlBar.value = url || "";
 }
 
 function openSettingsModal() {
@@ -149,7 +134,6 @@ function closeSettingsModal() {
 function persistState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     sessionId: state.sessionId,
-    conversationId: state.conversationId,
   }));
 }
 
@@ -159,23 +143,9 @@ function loadPersistedState() {
     if (!raw) return;
     const saved = JSON.parse(raw);
     if (typeof saved.sessionId === "string") state.sessionId = saved.sessionId;
-    if (typeof saved.conversationId === "string") state.conversationId = saved.conversationId;
   } catch {
     localStorage.removeItem(STORAGE_KEY);
   }
-}
-
-function newConversationId() {
-  const suffix = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `joshu-hitl-${suffix}`;
-}
-
-function ensureConversationId() {
-  if (!state.conversationId) {
-    state.conversationId = newConversationId();
-    persistState();
-  }
-  return state.conversationId;
 }
 
 function setSession(id) {
@@ -185,16 +155,8 @@ function setSession(id) {
   els.sessionPill.classList.toggle("has-session", Boolean(id));
 }
 
-function setBusy(busy) {
-  els.submit.disabled = busy;
-  els.cancel.disabled = !busy;
-  els.prompt.disabled = busy;
-  els.initialUrl.disabled = busy;
-}
-
 function buildWebsocketUrl(pathOrUrl) {
   if (/^wss?:\/\//i.test(pathOrUrl)) return pathOrUrl;
-  // Resolve against the page URL so paths work under ArozOS (/joshu/...) and at /.
   const base = document.baseURI || window.location.href;
   try {
     const u = new URL(pathOrUrl, base);
@@ -242,7 +204,6 @@ function applyFramebufferAspect(width, height) {
   layoutVncScreen();
 }
 
-/** Letterbox #vnc-screen inside #vnc-frame to the 1024×768 framebuffer aspect (see docs/hitl-camofox-notes.md). */
 function layoutVncScreen() {
   return layoutLetterboxedScreen(els.vncFrame, els.vncScreen, {
     width: CAMOFOX_FRAMEBUFFER.width,
@@ -251,7 +212,6 @@ function layoutVncScreen() {
   });
 }
 
-/** Ask noVNC to rescale via its scaleViewport + window resize handler (no private Display APIs). */
 function syncVncScale() {
   layoutVncScreen();
   if (!state.rfb?.scaleViewport) return;
@@ -282,7 +242,6 @@ function updateVncDebug() {
   console.debug("[joshu vnc]", Object.fromEntries(lines.map((l) => l.split(": "))));
 }
 
-/** Install single-tab link shim once per VNC session (idempotent in the tab). */
 async function installCamofoxShimOnce() {
   await fetch("api/camofox/shim", { method: "POST", cache: "no-store" }).catch(() => undefined);
 }
@@ -292,8 +251,11 @@ function camofoxHandoffOperational(camofox) {
   return (h?.activeTabs ?? 0) > 0;
 }
 
-/** After BROWSER_IDLE_TIMEOUT_MS shutdown, Camofox stays up but Firefox is gone.
- *  Status polls must not navigate live tabs — fit-viewport only creates when missing. */
+function camofoxBrowserReady(camofox) {
+  const h = camofox?.health;
+  return Boolean(h?.browserConnected && h?.browserRunning);
+}
+
 let lastCamofoxWarmAt = 0;
 async function maybeWarmCamofoxBrowser(data) {
   if (camofoxHandoffOperational(data?.camofox)) return false;
@@ -306,7 +268,6 @@ async function maybeWarmCamofoxBrowser(data) {
   if (!state.rfb) setVncStatus("starting Camofox browser…", "warn");
   const res = await fetch("api/camofox/fit-viewport", { method: "POST", cache: "no-store" }).catch(() => undefined);
   if (!res?.ok) return false;
-  // Idle shutdown often disconnects VNC with a 60s backoff — clear so we reconnect now.
   state.vncReconnectAfter = 0;
   state.vncAutoConnectDone = false;
   return true;
@@ -341,7 +302,6 @@ async function connectVnc(novnc, { force = false } = {}) {
   setVncStatus("connecting", "running");
   try {
     const RFB = await loadRfb(clientBaseUrl);
-    // Exclusive session — shared viewers make x11vnc drop the previous client (connect/disconnect loop).
     const rfb = new RFB(els.vncScreen, buildWebsocketUrl(websocketPath), { shared: false });
     state.rfb = rfb;
     configureNovncRfb(rfb);
@@ -424,14 +384,13 @@ async function connectVnc(novnc, { force = false } = {}) {
         return;
       }
       if (state.rfb === rfb) state.rfb = null;
-      // Status poll must not auto-reconnect; use Reload VNC after backoff.
       state.vncReconnectAfter = Date.now() + 60_000;
       const hint = event.detail?.clean ? "disconnected — Reload VNC" : "disconnected — Reload VNC";
       setVncStatus(hint, event.detail?.clean ? "" : "warn");
     });
   } catch (err) {
     setVncStatus("failed", "failed");
-    appendLog("stderr", `noVNC failed to connect: ${err.message}`);
+    console.warn("[joshu] noVNC failed to connect:", err.message);
   }
 }
 
@@ -440,6 +399,39 @@ if (els.vncFrame) {
 }
 if (els.vncScreen) {
   new ResizeObserver(() => syncVncScale()).observe(els.vncScreen);
+}
+
+async function navigateFromUrlBar(raw) {
+  const url = raw.trim();
+  if (!url) return;
+  els.urlBar?.classList.add("navigating");
+  if (els.urlGo) els.urlGo.disabled = true;
+  try {
+    const res = await fetch("api/camofox/navigate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+      cache: "no-store",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    state.urlBarDirty = false;
+    setUrlBar(data.currentUrl || url, { force: true });
+  } catch (err) {
+    console.warn("[joshu] navigate failed:", err.message);
+    if (els.vncClipboardHint) {
+      els.vncClipboardHint.textContent = `Navigate failed: ${err.message}`;
+      window.setTimeout(() => {
+        if (els.vncClipboardHint) {
+          els.vncClipboardHint.textContent =
+            "For URLs, use the address bar — paste targets page fields, not Firefox chrome.";
+        }
+      }, 4000);
+    }
+  } finally {
+    els.urlBar?.classList.remove("navigating");
+    if (els.urlGo) els.urlGo.disabled = false;
+  }
 }
 
 async function refreshStatus() {
@@ -457,8 +449,8 @@ async function refreshStatus() {
     els.status.innerHTML = parts.join(" &middot; ");
     if (data.browserViewport) applyFramebufferAspect(data.browserViewport.width, data.browserViewport.height);
     if (data.novnc?.embedUrl) els.openVnc.href = data.novnc.embedUrl;
+    if (data.lastBrowserUrl) setUrlBar(data.lastBrowserUrl);
     const warmed = await maybeWarmCamofoxBrowser(data);
-    // After warm, re-read status so VNC connects against live browserConnected.
     const statusForVnc = warmed
       ? await fetch("api/status", { cache: "no-store" }).then((r) => (r.ok ? r.json() : data)).catch(() => data)
       : data;
@@ -470,7 +462,6 @@ async function refreshStatus() {
 }
 
 async function resetConversation(reason, { purgeTabs = false } = {}) {
-  state.conversationId = newConversationId();
   setSession(null);
   els.initialUrl.value = "";
   try {
@@ -480,101 +471,43 @@ async function resetConversation(reason, { purgeTabs = false } = {}) {
       body: JSON.stringify({ purgeTabs }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    appendLog("system", `${reason}; recycled Hermes gateway and cleared app history`);
+    console.info("[joshu]", reason, "— Hermes gateway recycled");
   } catch (err) {
-    appendLog("stderr", `Hermes reset failed: ${err.message}`);
+    console.warn("[joshu] Hermes reset failed:", err.message);
   }
-}
-
-async function submitRun(ev) {
-  ev.preventDefault();
-  if (state.runId) return;
-  const prompt = els.prompt.value.trim();
-  if (!prompt) return;
-  setBusy(true);
-  setRunStatus("starting", "running");
-
-  // Snapshot the live noVNC tab before Hermes runs so tool calls adopt the same page.
-  await fetch("api/camofox/sync", { method: "POST", cache: "no-store" }).catch(() => undefined);
-
-  let runId;
-  try {
-    const res = await fetch("api/runs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt,
-        initialUrl: els.initialUrl.value.trim() || undefined,
-        conversationId: ensureConversationId(),
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    runId = data.runId;
-  } catch (err) {
-    appendLog("stderr", `failed to start run: ${err.message}`);
-    setRunStatus("failed", "failed");
-    setBusy(false);
-    return;
-  }
-
-  state.runId = runId;
-  appendLog("system", `>>> run ${runId}`);
-  els.prompt.value = "";
-  els.initialUrl.value = "";
-  attachRunStream(runId);
-}
-
-function attachRunStream(runId) {
-  if (state.source) state.source.close();
-  const src = new EventSource(`api/runs/${runId}/events`);
-  state.source = src;
-  src.addEventListener("log", (e) => {
-    const ev = JSON.parse(e.data);
-    appendLog(ev.stream, ev.text, { ts: ev.ts });
-  });
-  src.addEventListener("status", (e) => {
-    const { status } = JSON.parse(e.data);
-    setRunStatus(status, status);
-  });
-  src.addEventListener("final", (e) => {
-    const summary = JSON.parse(e.data);
-    if (summary.sessionId) setSession(summary.sessionId);
-    if (summary.finalResponse) appendLog("final", summary.finalResponse);
-    teardownRun();
-  });
-}
-
-function teardownRun() {
-  if (state.source) state.source.close();
-  state.source = null;
-  state.runId = null;
-  setBusy(false);
-}
-
-async function cancelRun() {
-  if (!state.runId) return;
-  await fetch(`api/runs/${state.runId}/cancel`, { method: "POST" }).catch((err) => appendLog("stderr", `cancel failed: ${err.message}`));
 }
 
 async function restartCamofox() {
   els.restartCamofox.disabled = true;
-  appendLog("system", "restarting Camofox Docker container...");
   try {
     const res = await fetch("api/camofox/restart", { method: "POST" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     await resetConversation("Camofox restarted");
     setTimeout(refreshStatus, 1500);
   } catch (err) {
-    appendLog("stderr", `Camofox restart failed: ${err.message}`);
+    console.warn("[joshu] Camofox restart failed:", err.message);
   } finally {
     els.restartCamofox.disabled = false;
   }
 }
 
-els.form.addEventListener("submit", submitRun);
-els.cancel.addEventListener("click", cancelRun);
-els.clearLog.addEventListener("click", () => { els.log.textContent = ""; });
+els.urlForm?.addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  void navigateFromUrlBar(els.urlBar?.value || "");
+});
+
+els.urlBar?.addEventListener("focus", () => {
+  state.urlBarEditing = true;
+});
+
+els.urlBar?.addEventListener("blur", () => {
+  state.urlBarEditing = false;
+});
+
+els.urlBar?.addEventListener("input", () => {
+  state.urlBarDirty = true;
+});
+
 els.forgetSession.addEventListener("click", () => resetConversation("session forgotten"));
 els.reloadVnc.addEventListener("click", () => {
   state.vncReconnectAfter = 0;
@@ -592,19 +525,11 @@ els.settingsModal?.querySelectorAll("[data-close-settings]").forEach((node) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && els.settingsModal && !els.settingsModal.hidden) closeSettingsModal();
 });
-els.prompt.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    els.form.requestSubmit();
-  }
-});
 
-setBusy(false);
-setRunStatus("idle");
 applyFramebufferAspect(CAMOFOX_FRAMEBUFFER.width, CAMOFOX_FRAMEBUFFER.height);
 layoutVncScreen();
 loadPersistedState();
-ensureConversationId();
 setSession(state.sessionId);
+attachJChatBubble({ position: "right" });
 refreshStatus();
 setInterval(refreshStatus, 8000);

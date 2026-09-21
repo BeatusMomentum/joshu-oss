@@ -4,6 +4,7 @@ import {
   isDirectLocalhostRequest,
   verifyArozosDesktopSession,
 } from "../httpLocalhost.js";
+import { isDeferCapableChannel } from "./channelPolicy.js";
 import type { RealtimeGoalBroker } from "./broker.js";
 import type {
   RealtimeGoalChannel,
@@ -81,13 +82,64 @@ export function registerRealtimeGoalRoutes(
       res.status(400).json({ error: "origin and text are required" });
       return;
     }
-    const goal = await broker.defer({ origin, text }, readString(req.body?.title));
-    res.json({
-      ok: true,
-      goalId: goal.id,
-      reply: goal.intakeReply,
-      releaseAt: goal.releaseAt,
-    });
+    if (!isDeferCapableChannel(origin.channel)) {
+      res.status(400).json({
+        ok: false,
+        error: `realtime_goal_defer is unavailable on channel ${origin.channel}`,
+      });
+      return;
+    }
+    try {
+      const goal = await broker.defer({ origin, text }, readString(req.body?.title));
+      res.json({
+        ok: true,
+        goalId: goal.id,
+        reply: goal.intakeReply,
+        releaseAt: goal.releaseAt,
+      });
+    } catch (error) {
+      res.status(400).json({ ok: false, error: (error as Error).message });
+    }
+  });
+
+  router.post("/api/realtime-goals/context", async (req: Request, res: Response) => {
+    if (!hasInternalServiceAuth(req)) {
+      res.status(403).json({ error: "internal service authentication required" });
+      return;
+    }
+    const origin = parseOrigin(req.body?.origin);
+    if (!origin) {
+      res.status(400).json({ error: "origin is required" });
+      return;
+    }
+    res.json({ context: (await broker.buildHermesContextSnapshot(origin)) ?? null });
+  });
+
+  router.post("/api/realtime-goals/thread/box", async (req: Request, res: Response) => {
+    if (!hasInternalServiceAuth(req)) {
+      res.status(403).json({ error: "internal service authentication required" });
+      return;
+    }
+    const origin = parseOrigin(req.body?.origin);
+    const text = readString(req.body?.text);
+    const source = readString(req.body?.source);
+    const goalId = readString(req.body?.goalId);
+    if (!origin || !text) {
+      res.status(400).json({ error: "origin and text are required" });
+      return;
+    }
+    const allowed = new Set(["broker", "delivery", "hermes"]);
+    if (!allowed.has(source)) {
+      res.status(400).json({ error: "source must be broker, delivery, or hermes" });
+      return;
+    }
+    await broker.recordBoxTurn(
+      origin,
+      text,
+      source as "broker" | "delivery" | "hermes",
+      goalId || undefined,
+    );
+    res.json({ ok: true });
   });
 
   /** Embedded AG-UI clients poll this durable queue while their chat panel is mounted. */
