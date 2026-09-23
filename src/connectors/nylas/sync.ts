@@ -39,24 +39,20 @@ export type NylasSyncResult = {
   error?: string;
 };
 
-/** Nylas Agent Account grants reject `search_query_native` (400). Fall back to limit-only listing. */
+/**
+ * List recent agent-inbox threads.
+ * Nylas Agent Account grants reject `search_query_native` (400 "Bad request") —
+ * use `latest_message_after` instead of Gmail-style `newer_than:Xd`.
+ */
 async function listAgentInboxThreads(
   grantId: string,
   opts: { limit: number; days: number },
 ): Promise<Awaited<ReturnType<typeof listThreads>>> {
-  try {
-    return await listThreads(grantId, {
-      limit: opts.limit,
-      searchQueryNative: `newer_than:${opts.days}d`,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!/bad request/i.test(msg)) throw err;
-    console.info(
-      `[nylas-sync] native search unsupported — listing ${opts.limit} recent threads without filter`,
-    );
-    return listThreads(grantId, { limit: opts.limit });
-  }
+  const latestMessageAfter = Math.floor(Date.now() / 1000) - opts.days * 24 * 3600;
+  return listThreads(grantId, {
+    limit: opts.limit,
+    latestMessageAfter,
+  });
 }
 
 export async function syncNylasConnectors(

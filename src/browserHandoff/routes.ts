@@ -1,6 +1,7 @@
 import type { Request, Response, Router } from "express";
 import type { CamofoxSessionCoordinator } from "../camofoxSession.js";
 import type { HermesApiRunner } from "../hermesApi.js";
+import { pauseBrowserAgent, resumeBrowserAgent } from "../browserAgent.js";
 import { isDirectLocalhostRequest } from "../httpLocalhost.js";
 import { setHandoffAuthCookie, verifyArozosPassword, verifyOwnerHandoffSession } from "./boxAuth.js";
 import { browserHandoffLockStub, publicHandoffView } from "./lock.js";
@@ -202,6 +203,8 @@ export function registerBrowserHandoffRoutes(
         kanbanTaskId: readString(body.kanbanTaskId) || undefined,
         hermesSessionKey: readString(body.hermesSessionKey) || undefined,
       });
+      // Owner has the tab. A running browser-use step must not click under them.
+      void pauseBrowserAgent();
 
       res.json({
         ok: true,
@@ -244,6 +247,7 @@ export function registerBrowserHandoffRoutes(
     }
     const id = readString(req.params.id);
     const record = cancelHandoff(projectRoot, id);
+    void resumeBrowserAgent();
     if (!record) {
       res.status(404).json({ error: "handoff_not_found" });
       return;
@@ -275,6 +279,7 @@ export function registerBrowserHandoffRoutes(
       res.status(404).json({ error: "handoff_not_found" });
       return;
     }
+    void resumeBrowserAgent();
     await touchCamofoxKeepalive(camofoxSession);
     res.json({ ok: true, handoff: publicHandoffView(record) });
   });
@@ -352,6 +357,7 @@ export function registerBrowserHandoffRoutes(
       res.status(404).json({ error: "handoff_not_found" });
       return;
     }
+    void resumeBrowserAgent();
     await touchCamofoxKeepalive(camofoxSession);
     res.json({ ok: true, handoff: publicHandoffView(record) });
     void deliverSmsHandoffContinuation(projectRoot, record, runner).catch((err) => {
@@ -577,7 +583,7 @@ export function registerBrowserHandoffRoutes(
 <body>
   <div id="handoff-root"></div>
   <script id="handoff-config" type="application/json">${config}</script>
-  <script type="module" src="handoff.js"></script>
+  <script type="module" src="handoff.js?v=20260922d"></script>
 </body>
 </html>`);
   });

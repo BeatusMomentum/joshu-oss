@@ -414,15 +414,17 @@ subservice is registered. Joshu Express is always available at
 
 **Stopping the stack:** **Ctrl+C** in the `dev:arozos` terminal stops Joshu, ArozOS, Hindsight, voice-realtime, and gbrain (see [`scripts/dev-arozos.sh`](../scripts/dev-arozos.sh) `cleanup` trap). Connectors MCP (`:8795`), Composio guard (`:8796`), Hermes gateway, and Camofox Docker may keep running — usually fine for `npm run dev:arozos` again. For a full local teardown, stop the Hermes gateway (`hermes gateway stop`), kill connectors MCP on `:8795`, and stop the Camofox container.
 
-**Camofox container:** `bash scripts/ensure-camofox-container.sh` creates or
-starts `camofox-hitl` (see `CAMOFOX_CONTAINER` in `.env`). Image ref comes from
-`deploy/RELEASE.json` → `camofoxBase` (digest pin). The script patches
-`/app/server.js` on **every container start** (repo mounted at `/opt/joshu`).
+**Browser container:** `bash scripts/ensure-camofox-container.sh` builds and
+starts `camofox-hitl` from `browser/chromium` (image `joshu-chromium-cdp:local`).
+CDP is `http://127.0.0.1:9222`, noVNC stays on `:6080`, health stays on `:9377`.
+`PROXY_*` from `.env` is passed through; the container name is still
+`camofox-hitl` so existing supervisors match. `dev:arozos` exports
+`BROWSER_CDP_URL` so Joshu drives that Chromium. Hermes is pointed at the same
+URL with `browser.backend: off`
+([why](hitl-camofox-notes.md#why-hermes-browserbackend-is-off)).
 
-Recreate the container (not just `docker start`) when changing `VNC_RESOLUTION`,
-after updating `scripts/patch-camofox-single-tab.mjs`, or if Camofox exits with
-`Camofox viewport route must call __hitlFitBrowserWindow with width/height` — that
-indicates a stale hybrid patch in the container layer:
+Recreate the container (not just `docker start`) when changing `VNC_RESOLUTION`
+or `PROXY_*`:
 
 ```bash
 docker rm -f camofox-hitl

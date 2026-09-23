@@ -1,0 +1,5 @@
+name: joshu-browser-agent
+version: 1.0.0
+description: Delegate web work to the browser-use Agent on the shared Chromium tab.
+provides_tools:
+  - browser_task

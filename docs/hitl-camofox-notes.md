@@ -2,25 +2,82 @@
 
 Fleet topology: [`vps-sandbox/runtime-topology.md`](vps-sandbox/runtime-topology.md).
 
+## Chromium CDP (shared browser)
+
+Local `scripts/ensure-camofox-container.sh` starts **one headed Chromium** (`joshu-chromium-cdp:local`) instead of Camofox. CDP is `http://127.0.0.1:9222` (published on localhost only). Chrome 136+ binds DevTools to container localhost, so the supervisor proxies `0.0.0.0:9222` to that socket. noVNC stays on `:6080`, and the control health port stays `:9377` so jWeb and handoff keep the same URLs.
+
+Joshu drives that browser with Playwright `connectOverCDP` when `BROWSER_CDP_URL` is set (`scripts/dev-arozos.sh` exports it). Form scan, fill, and paste run in the page. Hermes attaches to the same CDP endpoint (`browser.cdp_url`) with `browser.backend: off`. See [Why Hermes `browser.backend` is off](#why-hermes-browserbackend-is-off).
+
+Decodo is unchanged: the container gets `PROXY_*` (`PROXY_HOST=us.decodo.com`, `PROXY_PORTS=10001-10010`, country `us`). When credentials are set, `supervisor.mjs` runs a localhost auth-inject proxy (`127.0.0.1:8877`, [`localProxy.mjs`](../browser/chromium/localProxy.mjs)) and points Chromium at it with `--proxy-server`. Raw CDP clients never see Decodo's `Proxy-Authorization`. Health on `:9377` reports `proxyPort` and `localProxyPort`.
+
+**Port rotation.** A CONNECT that is not HTTP 200, times out, or drops tries the next `PROXY_PORTS` entry before Chrome is told the tunnel failed. Chromium stays on `127.0.0.1:8877`, so the tab and its cookies survive the switch. A tab already showing Chrome's error page (`chrome-error://chromewebdata/`, body `ERR_TUNNEL_CONNECTION_FAILED` or "This site can't be reached") is reloaded on the next port, up to three times. `POST /rotate-proxy` only relaunches Chromium when the upstream address was passed straight to the browser. With the local proxy it only advances `proxyPort`. Joshu's own `goto` treats that error the same way and reloads instead of killing Chrome.
+
+**Startup probe.** Before launch, the supervisor CONNECTs to `probe.example:443` on each port. Decodo often answers that name with `502`, so every port looks unhealthy, the log says `no healthy upstream port found; launching anyway`, and the browser still starts. The first real site CONNECT then rotates. `proxyPort` in `/health` is the port after that rotation, not proof that the probe passed.
+
+**What a tunnel error costs.** The handoff viewer is the live tab. `ERR_TUNNEL_CONNECTION_FAILED` means the checkout never loaded; the address bar host is only Chrome's error title. After the proxy recovers, a reload requests that URL again. An airline cart does not come back; the site usually returns its search form. Restarting `supervisor.mjs` starts a new profile under `/tmp/playwright_chromiumdev_profile-*`, so cookies die even if the proxy is healthy.
+
+These files live in the image's `/opt/browser` layer. A hotpatch there is lost when the container is recreated. `vps-start.sh` copies `/opt/joshu/hotfix/browser` only when `/opt/browser/entrypoint.sh` is missing, which it is not on a box that already booted Chromium. Image `0.1.46` does not contain the rotation above.
+
+**Viewer shape.** CDP screencast is not locked to 4:3. jWeb fills its pane and the phone handoff fills the picture above the form. Each viewer sends that box over the screencast socket (`{type:"viewport"}`). [`viewportForBox`](../src/browserViewport.ts) turns it into a browser size whose area stays near **1024×768**. A tall phone becomes a portrait viewport; a wide jWeb pane becomes landscape. There is one Chromium, so the last viewer to resize wins. noVNC, when it is still the live path, stays letterboxed at 4:3. Default Xvfb is `1600x1600` when `VNC_RESOLUTION` is unset, so a portrait window has room; an existing box keeps the resolution it was created with until the browser process starts again.
+
+**Browser agent Python.** `browser-use` is installed in the 3.12 venv (`/opt/browser/venv/lib/python3.12/site-packages`). The venv's plain `python` can be a 3.13 symlink, and that interpreter cannot import `browser-use` (`No module named 'browser_use'`, `browser_task` returns 502, agent phase `error`). [`entrypoint.sh`](../browser/chromium/entrypoint.sh) starts the sidecar with `python3.12` when that binary exists. A task error with that message means the running agent is on the wrong interpreter; restart it with `/opt/browser/venv/bin/python3.12`, not `python`.
+
+**Handoff form fields.** The overlay scans inputs inside open shadow roots. A control that is 1×0 is still included when its custom-element host is visibly sized (Alaska `mbx-auro-input` / `mbx-auro-select`). Fill writes the host's `value` as well as the inner control, because the picture follows the host. The overlay does not rebuild while the owner has typed, so a page-key poll cannot wipe the form. "I'm done" marks the handoff complete and, if the record has no `sms:` session, continues on the owner phone from Telephone settings. A kanban worker often mints the handoff without `hermesSessionKey`.
+
+Fleet images that do not yet contain `/usr/bin/chromium` and `/opt/browser/entrypoint.sh` still boot Camofox. Once the image has both, `vps-start.sh` starts the Chromium supervisor and exports `BROWSER_CDP_URL`.
+
 Working notes for the jWeb (human-in-the-loop) browser stack: Joshu, Hermes,
 Camofox, noVNC, and ArozOS subservices.
 
 ## Hermes vs VNC
 
-Hermes and jWeb VNC are **parallel paths into the same Camofox tab**, not the
+Hermes and jWeb VNC are **parallel paths into the same Chromium page**, not the
 same pipeline:
 
-- **Hermes** drives Camofox over HTTP (`browser_navigate`, `browser_snapshot`,
-  `browser_click`, …) using accessibility trees. It does **not** go through VNC
-  pixels. Camofox has no CDP, so Joshu keeps Hermes on the built-in browser
-  tools (not Browser Use mode).
+- **Hermes** attaches with `browser.cdp_url` and `browser.backend: off`. It does
+  **not** go through VNC pixels. Why that backend is forced off is below.
 - **jWeb / mobile handoff** is the human view: noVNC canvas → websockify →
-  x11vnc → Firefox on Xvfb.
-- Shared-tab contract: Joshu writes `browser.camofox.user_id` /
-  `session_key` / `adopt_existing_tab: true` and patches Hermes
-  ([`scripts/hermes-browser-camofox-hitl.patch`](../scripts/hermes-browser-camofox-hitl.patch)).
+  x11vnc → that same Chromium on Xvfb.
+- Shared-tab contract: Joshu and Hermes both use the existing page. Extra tabs
+  are closed unless they are an OAuth popup. Handoff lock and the browser write
+  gate live in [`scripts/patch-hermes-browser-cdp-guards.mjs`](../scripts/patch-hermes-browser-cdp-guards.mjs).
+
+Older notes below describe the Camofox HTTP path. Fleet images that do not yet
+ship `/usr/bin/chromium` and `/opt/browser/entrypoint.sh` still boot that path.
 
 Faster VNC redraw helps humans. It does not speed up Hermes tool calls.
+
+## Why Hermes `browser.backend` is off
+
+Hermes [Browser Use mode](https://hermes-agent.nousresearch.com/docs/user-guide/features/browser#browser-use-mode-default)
+is one `browser_exec` tool: the Hermes model writes Python and the CLI runs it,
+often in Hermes's own browser. Joshu does not use that mode and does not use
+Browser Use Cloud's hosted Chromium.
+
+When `BROWSER_CDP_URL` is set, Joshu still writes `browser.backend: "off"` and
+drops the Hermes `browser` toolset. Web work is `browser_task`, which calls a
+sidecar (`browser/chromium/agent-service.py`) running the browser-use **Agent**
+class against that same CDP Chromium. The model is `ChatBrowserUse`. Fleet
+boxes send those completions to the control-plane relay
+(`BROWSER_USE_LLM_URL`); the `bu_` key stays on the control plane. jWeb and
+handoff watch the tab with CDP screencast, not noVNC. Xvfb remains so Chromium
+has a screen.
+
+That Hermes default is the wrong driver for this stack:
+
+- **One window.** With no cloud provider and no `/browser connect`, Browser Use
+  mode launches Hermes's own Chromium and closes it after
+  `browser.inactivity_timeout` (120s in the Joshu Hermes config). A `session`
+  name starts another browser. The phone is noVNC of one long-lived headed
+  Chromium, with Decodo set at launch. Hermes has to drive that process.
+- **The lock is a split between tools.** While a handoff is pending,
+  `browser_snapshot` still works and navigate, click, type, press, and back are
+  refused. `browser_exec` is one Python call that can look and click, so the
+  lock in [`scripts/patch-hermes-browser-cdp-guards.mjs`](../scripts/patch-hermes-browser-cdp-guards.mjs)
+  cannot express that split.
+
+Older Hermes checkouts ignore an unknown `backend` key and already expose the
+built-in tools. Writing `off` keeps a newer Hermes on those tools.
 
 ## VNC stack versions
 
@@ -368,7 +425,7 @@ after the redirect chain. Logs: `hitl oauth popup waiting for callback`.
 
 | Variable / script | Role |
 |-------------------|------|
-| `VNC_RESOLUTION`, `CAMOFOX_VIEWPORT_WIDTH`, `CAMOFOX_VIEWPORT_HEIGHT` | Xvfb + viewport (apply at **container create**) |
+| `VNC_RESOLUTION`, `CAMOFOX_VIEWPORT_WIDTH`, `CAMOFOX_VIEWPORT_HEIGHT` | Xvfb + launch window (apply at **container create**). Unset `VNC_RESOLUTION` defaults to **1600×1600** so a portrait screencast fits. Live screencast size is `viewportForBox`, not this window |
 | `ENABLE_VNC` + Camofox `plugins.vnc.enabled` | noVNC on `:6080` — Camofox **1.6+** requires both (see troubleshooting) |
 | `CAMOFOX_START_URL` | Default tab URL when none exists (`https://joshu.me/`) |
 | `TAB_INACTIVITY_MS` | Camofox tab reaper; **`0` for jWeb HITL** (default on VPS) |
@@ -388,16 +445,16 @@ after the redirect chain. Logs: `hitl oauth popup waiting for callback`.
 | `POST /joshu/api/camofox/insert-text` | Playwright paste into focused control (HITL insert-text / evaluate) |
 | `POST /joshu/api/camofox/copy-selection` | Read selection or focused field |
 | `POST /joshu/api/camofox/scroll` | Wheel / Arrow / Page keys via Playwright (`public/vnc-scroll.js`; rate-limited) |
-| `public/app.js` `layoutLetterboxedScreen` | Keep jWeb VNC pane at **4:3** (1024×768) inside the float window |
+| `public/app.js` `layoutLetterboxedScreen` | noVNC stays **4:3** (1024×768). CDP screencast fills the jWeb pane or the phone picture and the browser viewport follows that shape at about **1024×768 pixels** (`viewportForBox`) |
 
 **Requires:** Joshu `dist/server.js` from `npm run build:deploy` before
 `vps:build-image`, plus patched Camofox `/app/server.js`.
 
 ### Soft-restart caution
 
-Joshu listens on `:8788`; Docker healthchecks that endpoint. Killing only
+Joshu listens on `:8788`; Docker healthchecks that endpoint. `vps-start.sh` ends in `wait "${JOSHU_PID}"` under `set -e`, so the node process exiting makes pid 1 exit and Docker restarts the whole stack. That drops the Chromium profile and any staged checkout. Killing only
 `node dist/server.js` or Camofox `node server.js` without a fast relaunch can
-fail health → **stack recreate** (~5–7 min boot), which drops in-container Camofox
+also fail health → **stack recreate** (~5–7 min boot), which drops in-container Camofox
 patches until `vps-start` / image rebuild re-applies them. Prefer image bake +
 `repair_camfox_server_js` over ad-hoc hotpatches. **`vps-start.sh` does not
 respawn** killed background node processes — wait for `healthy` or restart the
@@ -427,11 +484,15 @@ a 30s watchdog also respawns a dead gateway.
 
 ### Debug overlay (`?debugVnc=1`)
 
+noVNC still targets 4:3:
+
 - `screen` aspect ≈ **1.333** (4:3)
 - `innerWidth` ≈ **1024**
 - `fb: 1024×768`
 
-If the pane looks stretched/wide, confirm `layoutVncScreen()` still delegates to `layoutLetterboxedScreen` and that `/app/server.js` contains `window: [__hitlVp.width, __hitlVp.height]` (Camofox 1.6 `executable_path` needle must match the patch script).
+If a noVNC pane looks stretched, confirm `layoutVncScreen()` still delegates to `layoutLetterboxedScreen` and that `/app/server.js` contains `window: [__hitlVp.width, __hitlVp.height]` (Camofox 1.6 `executable_path` needle must match the patch script).
+
+CDP screencast does the opposite of that letterbox: the picture fills the pane, and the browser viewport follows it. A wide jWeb frame or a tall phone frame is expected. The JPEG stays near 1024×768 pixels.
 
 **Chrome visible but no VNC canvas (zero-height black strip):** `.workspace` is a column flex; `.browser-column` must be `flex: 1` (and `min-height: 0`) so `#vnc-frame` has a definite height. Dropping the old two-column grid without that rule collapses the pane.
 

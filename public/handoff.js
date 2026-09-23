@@ -1,5 +1,6 @@
 import { attachVncClipboard } from "./vnc-clipboard.js";
 import { wrapPasswordInput } from "./handoff-password-toggle.js";
+import { connectScreencast } from "./screencast-client.js?v=20260922d";
 import { configureNovncRfb, loadNovncRfb } from "./vnc-client.js";
 import { attachVncLocalGestures } from "./vnc-gestures.js";
 import { attachVncScrollBridge } from "./vnc-scroll.js";
@@ -166,6 +167,7 @@ async function main() {
   const fb = { width: 1024, height: 768 };
   let rfb = null;
   let heartbeatTimer = null;
+  let rescanTimer = null;
   let lastWarmAt = 0;
   let lastScan = { fields: [], primaryButtonId: null, primaryButtonLabel: null };
   let lastPageKey = "";
@@ -262,6 +264,8 @@ async function main() {
 
   async function maybeRescanIfPageChanged() {
     if (overlayBusy()) return;
+    // A rescan rebuilds the form and would wipe what the owner already typed.
+    if (overlayHasOwnerEdits()) return;
     try {
       const data = await getJson(`api/browser-handoff/${encodeURIComponent(cfg.handoffId)}/page-key`);
       const nextKey = typeof data.pageKey === "string" ? data.pageKey : "";
@@ -280,12 +284,21 @@ async function main() {
     overlayStatus.textContent = "Filling the remote page…";
     try {
       const fields = collectOverlayValues(fieldsForm);
-      await postJson(`api/browser-handoff/${encodeURIComponent(cfg.handoffId)}/fill-form`, {
+      const result = await postJson(`api/browser-handoff/${encodeURIComponent(cfg.handoffId)}/fill-form`, {
         fields,
         clickPrimary: Boolean(lastScan.primaryButtonId),
         primaryButtonId: lastScan.primaryButtonId,
       });
-      overlayStatus.textContent = "Filled — waiting for the next page…";
+      const filled = Number(result.filled) || 0;
+      const missing = Array.isArray(result.missing) ? result.missing.length : 0;
+      if (filled === 0) {
+        overlayStatus.textContent = "Nothing was written on the page. Scan fields and try again.";
+        updateFillButton();
+        return;
+      }
+      overlayStatus.textContent = missing
+        ? `Wrote ${filled} field${filled === 1 ? "" : "s"}. ${missing} could not be found.`
+        : `Wrote ${filled} field${filled === 1 ? "" : "s"} on the page.`;
       quietUntil = Date.now() + 1500;
       lastPageKey = "";
     } catch (err) {
@@ -331,11 +344,15 @@ async function main() {
     doneBtn.disabled = true;
     try {
       await postJson(`api/browser-handoff/${encodeURIComponent(cfg.handoffId)}/complete`);
+      if (heartbeatTimer) window.clearInterval(heartbeatTimer);
+      if (rescanTimer) window.clearInterval(rescanTimer);
       const banner = document.createElement("div");
       banner.className = "handoff-done-banner";
-      banner.textContent = "Thanks — you can close this page. Your Joshu will continue.";
+      banner.textContent = "Got it. Joshu will text you when it has picked this up.";
       root.insertBefore(banner, root.firstChild);
       doneBtn.textContent = "Done";
+      overlayStatus.textContent = "Done.";
+      statusEl.textContent = "Done.";
     } catch (err) {
       doneBtn.disabled = false;
       statusEl.textContent = String(err.message || err);
@@ -357,7 +374,7 @@ async function main() {
 
   heartbeatTimer = window.setInterval(heartbeat, 20_000);
   heartbeat();
-  window.setInterval(() => {
+  rescanTimer = window.setInterval(() => {
     maybeRescanIfPageChanged().catch(() => undefined);
   }, 1500);
 
@@ -371,7 +388,37 @@ async function main() {
 
   await fetch("api/camofox/fit-viewport", { method: "POST", cache: "no-store" }).catch(() => undefined);
 
-  const connectVnc = async () => {
+  const connectLive = async () => {
+    if (data?.liveView?.mode === "screencast" && data.liveView.websocketPath) {
+      if (rfb) {
+        rfb.disconnect();
+        rfb = null;
+      }
+      connectScreencast(screenEl, data.liveView.websocketPath, {
+        onStatus: (text) => {
+          statusEl.textContent = text;
+        },
+        pasteViaApi: async (text) => {
+          const pasteRes = await fetch("api/camofox/insert-text", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+            cache: "no-store",
+          });
+          if (!pasteRes.ok) {
+            const err = await pasteRes.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${pasteRes.status}`);
+          }
+          return true;
+        },
+        ui: {
+          pasteBtn: document.getElementById("vnc-paste-remote"),
+          copyBtn: document.getElementById("vnc-copy-remote"),
+          textarea: document.getElementById("vnc-clipboard-text"),
+        },
+      });
+      return;
+    }
     const base = data.novnc?.clientBaseUrl?.replace(/\/+$/, "");
     const path = data.novnc?.websocketPath;
     if (!base || !path) throw new Error("noVNC not configured");
@@ -441,7 +488,7 @@ async function main() {
     layout();
     requestAnimationFrame(() => layout());
   });
-  await connectVnc();
+  await connectLive();
   layout();
   scanFields().catch(() => undefined);
 
@@ -451,7 +498,7 @@ async function main() {
     data = await statusRes.json();
     if (await maybeWarm(data)) {
       await fetch("api/camofox/fit-viewport", { method: "POST", cache: "no-store" }).catch(() => undefined);
-      if (!rfb) await connectVnc().catch(() => undefined);
+      if (!rfb) await connectLive().catch(() => undefined);
     }
   }, 8000);
 

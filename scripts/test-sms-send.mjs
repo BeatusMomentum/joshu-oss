@@ -13,7 +13,7 @@ import path from "node:path";
 import { parseApprovalReply } from "../src/actionGuard/approvalReply.js";
 import { listOpenPending } from "../src/actionGuard/pending.js";
 import { handleSmsApprovalIngress } from "../src/actionGuard/smsIngress.js";
-import { SMS_MAX_CHARS, SMS_MAX_PARTS, smsGsmParts, smsGsmPlaintext } from "../src/twilioSmsSend.js";
+import { SMS_MAX_CHARS, SMS_MAX_PARTS, smsGsmFold, smsGsmParts, smsGsmPlaintext } from "../src/twilioSmsSend.js";
 import {
   HermesStreamContentScrubber,
   looksLikeLeakedModelOutput,
@@ -34,6 +34,13 @@ import { smsModelReplyPlaintext } from "../src/smsModelReplyPlaintext.js";
   assert.equal(parseApprovalReply("Ok on Nevada. Before I blocked it I was unable to log in."), null);
   assert.equal(parseApprovalReply("Yes I want to book the Tuesday slot with Maria"), null);
   assert.equal(parseApprovalReply("See last text"), null);
+}
+
+{
+  const folded = smsGsmFold("LAX\u2194SFO 7:16 AM \u2192 SFO\nBack line");
+  assert.match(folded, /LAX-SFO 7:16 AM to SFO/);
+  assert.match(folded, /Back line/);
+  assert.equal(/[^\x09\x0A\x0D\x20-\x7E]/.test(folded), false);
 }
 
 {

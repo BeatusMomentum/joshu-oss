@@ -35,6 +35,7 @@ import {
   realtimeGoalVoiceToken,
   verifyRealtimeGoalVoiceToken,
 } from "../src/realtimeGoals/voiceCallback.ts";
+import { formatOwnerCompletion } from "../src/realtimeGoals/ownerDelivery.ts";
 import {
   EA_KANBAN_BOARDS,
   REALTIME_GOALS_KANBAN_BOARD,
@@ -554,6 +555,26 @@ try {
   );
   assert.match(routerSource, /decision.*ack/);
   assert.doesNotMatch(routerSource, /SHORT_ACK_PATTERN/);
+
+  const raw =
+    "Alaska LAX\u2194SFO same-day round trip for Mon 2026-09-28 is staged at checkout and handed to the owner. " +
+    "Out AS 1501 LAX 7:16 AM \u2192 SFO 8:40 AM; back AS 520 SFO 3:41 PM \u2192 LAX 5:12 PM; Main cabin, $442.80 all-in. " +
+    "Contact fields prefilled (db@project-aeon.com, +1, US); owner enters name and pays at the handoff link. " +
+    "An image CAPTCHA on alaskaair.com's cart\u2192checkout step was cleared this run.";
+  const link = "https://patrick.box.joshu.me/joshu/handoff/ddc5d6eb-8a75-4d1a-9fee-2670383dec00?exp=1";
+  const friendly = formatOwnerCompletion(raw, [link]);
+  assert.match(friendly, /LAX-SFO/);
+  assert.match(friendly, /7:16 AM to SFO/);
+  assert.match(friendly, /^Out /m);
+  assert.match(friendly, /ready for you to finish/);
+  assert.match(friendly, /Please enter/);
+  assert.match(friendly, /Finish and pay here/);
+  assert.match(friendly, new RegExp(link.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(friendly, /handed to the owner/);
+  assert.doesNotMatch(friendly, /CAPTCHA/);
+  assert.doesNotMatch(friendly, /cart to checkout/);
+  assert.match(friendly, /^Back /m);
+  assert.equal(formatOwnerCompletion(`Done.\n\nFinish and pay here:\n${link}`, [link]).split(link).length, 2);
 
   console.log("test-realtime-goals: ok");
 } finally {

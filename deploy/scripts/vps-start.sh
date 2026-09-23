@@ -360,6 +360,14 @@ apply_hermes_terminal_secrets_guard() {
     || echo "[vps-start] WARN: Hermes terminal secrets-guard patch failed" >&2
 }
 
+apply_hermes_browser_cdp_guards() {
+  local script="${JOSHU_SCRIPTS_ROOT}/patch-hermes-browser-cdp-guards.mjs"
+  local browser_tool="${HERMES_DIR}/tools/browser_tool.py"
+  [[ -f "${script}" && -f "${browser_tool}" ]] || return 0
+  node "${script}" "${browser_tool}" \
+    || echo "[vps-start] WARN: Hermes CDP browser guard patch failed" >&2
+}
+
 bootstrap_hermes_learning_skills() {
   local script="${JOSHU_SCRIPTS_ROOT}/bootstrap-hermes-learning-skills.sh"
   [[ -f "${script}" ]] || return 0
@@ -377,6 +385,7 @@ apply_hermes_stale_stream_keepalive
 apply_hermes_kanban_guidance_gate
 apply_hermes_joshu_disable_native_sms_platform
 apply_hermes_terminal_secrets_guard
+apply_hermes_browser_cdp_guards
 bootstrap_hermes_learning_skills
 ensure_hermes_runtime_config
 restart_hermes_gateway_if_running
@@ -880,6 +889,36 @@ ensure_camofox_better_sqlite3() {
   }
 }
 
+# Hotfix bundle lives on the host bind (/opt/joshu/hotfix/browser) so a recreate
+# can copy it back. Chrome 136+ needs a non-default profile; the supervisor does that.
+ensure_shared_chromium() {
+  local bundle="${HOTFIX_SCRIPTS}/browser"
+  if [[ ! -x /opt/browser/entrypoint.sh && -f "${bundle}/entrypoint.sh" && -f "${bundle}/supervisor.mjs" ]]; then
+    echo "[vps-start] installing /opt/browser from hotfix bundle"
+    mkdir -p /opt/browser
+    cp -a "${bundle}/entrypoint.sh" "${bundle}/supervisor.mjs" "${bundle}/localProxy.mjs" "${bundle}/package.json" /opt/browser/
+    if [[ -f "${bundle}/package-lock.json" ]]; then
+      cp -a "${bundle}/package-lock.json" /opt/browser/
+    fi
+    chmod +x /opt/browser/entrypoint.sh
+    ( cd /opt/browser && npm install --omit=dev --no-audit --no-fund ) \
+      || echo "[vps-start] WARN: /opt/browser npm install failed" >&2
+  fi
+  if ! command -v chromium >/dev/null 2>&1; then
+    echo "[vps-start] installing chromium"
+    apt-get update -qq \
+      && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends chromium xvfb \
+      || echo "[vps-start] WARN: chromium install failed" >&2
+  fi
+}
+ensure_shared_chromium
+
+if [[ -x /opt/browser/entrypoint.sh ]] && command -v chromium >/dev/null 2>&1; then
+  export BROWSER_CDP_URL="${BROWSER_CDP_URL:-http://127.0.0.1:9222}"
+  echo "[vps-start] Chromium CDP ${BROWSER_CDP_URL}"
+  ( bash /opt/browser/entrypoint.sh ) &
+  for _ in $(seq 1 90); do curl -fsS "${CAMOFOX_URL}/health" >/dev/null 2>&1 && break; sleep 1; done
+else
 echo "[vps-start] Camofox ${CAMOFOX_URL}"
 ensure_camofox_better_sqlite3 || true
 repair_camfox_server_js
@@ -891,6 +930,7 @@ if [[ "${JOSHU_WARM_CAMOFOX}" =~ ^(1|true|yes)$ ]]; then
   warm_camofox_browser || true
 else
   echo "[vps-start] Camofox warm-up skipped (JOSHU_WARM_CAMOFOX=false); browser starts on first use"
+fi
 fi
 
 start_hindsight_postgres_if_needed
@@ -985,6 +1025,17 @@ ensure_last30days_engine() {
   source "${script}" || echo "[vps-start] WARN: last30days engine ensure failed" >&2
 }
 ensure_last30days_engine
+
+# dist/chromiumSession.js imports playwright-core. The 0.1.46 image does not ship it.
+ensure_playwright_core() {
+  if ( cd "${APP_DIR}" && node --input-type=module -e "import 'playwright-core'" ) >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "[vps-start] installing playwright-core"
+  ( cd "${APP_DIR}" && npm install --omit=dev --no-audit --no-fund --no-save playwright-core@1.55.1 ) \
+    || echo "[vps-start] WARN: playwright-core install failed" >&2
+}
+ensure_playwright_core
 
 echo "[vps-start] Joshu ${HOST}:${PORT}"
 export JOSHU_DEFER_HERMES_GATEWAY_WARM=true

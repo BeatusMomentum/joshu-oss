@@ -1,3 +1,4 @@
+import { connectScreencast } from "./screencast-client.js";
 import { attachVncClipboard } from "./vnc-clipboard.js";
 import { configureNovncRfb, loadNovncRfb, preferVncLocalGestures } from "./vnc-client.js";
 import { attachVncLocalGestures } from "./vnc-gestures.js";
@@ -204,7 +205,20 @@ function applyFramebufferAspect(width, height) {
   layoutVncScreen();
 }
 
+function layoutFillScreen(screenEl) {
+  if (!screenEl) return;
+  screenEl.style.flex = "1 1 auto";
+  screenEl.style.width = "100%";
+  screenEl.style.height = "100%";
+  screenEl.style.maxWidth = "100%";
+  screenEl.style.maxHeight = "100%";
+}
+
 function layoutVncScreen() {
+  if (state.screencast) {
+    layoutFillScreen(els.vncScreen);
+    return null;
+  }
   return layoutLetterboxedScreen(els.vncFrame, els.vncScreen, {
     width: CAMOFOX_FRAMEBUFFER.width,
     height: CAMOFOX_FRAMEBUFFER.height,
@@ -273,7 +287,58 @@ async function maybeWarmCamofoxBrowser(data) {
   return true;
 }
 
+function connectScreencastView(websocketPath) {
+  if (state.screencast && state.screencastPath === websocketPath) return;
+  state.screencast?.close();
+  disconnectVnc({ clear: false });
+  state.screencastPath = websocketPath;
+  layoutFillScreen(els.vncScreen);
+  state.screencast = connectScreencast(els.vncScreen, websocketPath, {
+    onStatus: (text) => setVncStatus(text, text.startsWith("connected") ? "ok" : "warn"),
+    pasteViaApi: async (text) => {
+      const res = await fetch("api/camofox/insert-text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      return true;
+    },
+    copyViaApi: async () => {
+      const res = await fetch("api/camofox/copy-selection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      return typeof data.text === "string" ? data.text : "";
+    },
+    ui: {
+      pasteBtn: els.vncPasteRemote,
+      copyBtn: els.vncCopyRemote,
+      textarea: els.vncClipboardText,
+    },
+  });
+}
+
 async function maybeConnectVncFromStatus(data, { force = false } = {}) {
+  if (data?.liveView?.mode === "screencast" && data.liveView.websocketPath) {
+    if (!camofoxBrowserReady(data.camofox)) {
+      if (!state.screencast) setVncStatus("waiting for browser", "warn");
+      return;
+    }
+    connectScreencastView(data.liveView.websocketPath);
+    return;
+  }
   if (!data?.novnc?.clientBaseUrl || !data?.novnc?.websocketPath) return;
   if (!camofoxBrowserReady(data.camofox)) {
     if (!state.rfb) setVncStatus("waiting for Camofox browser", "warn");
@@ -512,8 +577,11 @@ els.forgetSession.addEventListener("click", () => resetConversation("session for
 els.reloadVnc.addEventListener("click", () => {
   state.vncReconnectAfter = 0;
   state.vncAutoConnectDone = false;
+  state.screencast?.close();
+  state.screencast = null;
+  state.screencastPath = "";
   void refreshStatus().then(() => {
-    if (state.novnc) void connectVnc(state.novnc, { force: true });
+    if (!state.screencast && state.novnc) void connectVnc(state.novnc, { force: true });
   });
 });
 els.restartCamofox.addEventListener("click", restartCamofox);

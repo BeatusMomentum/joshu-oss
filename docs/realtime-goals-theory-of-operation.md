@@ -128,6 +128,10 @@ SMS carrier keywords (`STOP`, etc.) stay in the SMS gateway, not the router.
 4. **Delivery** — broker reads Kanban state and pushes blocked/completed/failed
    text back on the **originating channel** and appends to the session thread.
    Blocked delivery keeps the active pointer; true completion clears it.
+   Completed text is the worker's `kanban_complete` summary after
+   [`formatOwnerCompletion`](../src/realtimeGoals/ownerDelivery.ts) (owner voice,
+   line breaks, and a real handoff URL when the summary only says "the handoff
+   link"). The worker must not send that message itself.
 
 Kanban owns execution truth; Joshu state owns intake, idempotency, thread,
 active branch pointer, delivery cursors, and the commit window.

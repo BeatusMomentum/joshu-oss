@@ -19,14 +19,23 @@ export const SMS_MAX_PARTS = 4;
 
 /** Fold fancy punctuation so Twilio stays on GSM-7 (160 chars/segment). */
 export function smsGsmFold(raw: string): string {
-  let text = raw.replace(/\s+/g, " ").trim();
+  let text = raw.replace(/\r\n/g, "\n");
   text = text
+    .replace(/[\u2192\u279C\u27A1]/g, " to ")
+    .replace(/\u2190/g, " from ")
+    .replace(/[\u2194\u21D4]/g, "-")
     .replace(/[\u201C\u201D\u00AB\u00BB]/g, '"')
     .replace(/[\u2018\u2019\u201A]/g, "'")
     .replace(/[\u2014\u2013\u2212]/g, "-")
     .replace(/\u2026/g, "...")
     .replace(/\u00A0/g, " ")
     .replace(/[\u2022\u00B7]/g, "-");
+  text = text
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   // Remaining non-ASCII forces UCS-2 and blows the segment budget.
   return text.replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "");
 }

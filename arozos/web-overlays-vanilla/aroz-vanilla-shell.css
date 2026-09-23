@@ -622,7 +622,7 @@ body:has(.floatWindow.jp-jchat-docked:not(.jp-jchat-dock-hidden)) #tfwdragpanel 
   width: min(var(--vb-jchat-dock-w), calc(100vw - 1rem)) !important;
   height: calc(100vh - var(--vb-nav-h) - var(--vb-jchat-dock-inset) - 0.35rem) !important;
   max-height: calc(100vh - var(--vb-nav-h) - 0.35rem) !important;
-  z-index: 1100 !important;
+  z-index: 5000 !important;
   margin: 0 !important;
   display: flex !important;
   flex-direction: column !important;

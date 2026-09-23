@@ -719,6 +719,12 @@
     jpEnsureTrayDom();
     jpSwapClockAndTrayOrder();
     jpInstallMessageListener();
+    window.joshuToggleDockedJChat = jpToggleDockedJChat;
+    if (window.location.hash === "#open-jchat") {
+      window.setTimeout(function () {
+        jpOpenDockedJChat();
+      }, 400);
+    }
     jpInstallChromeSync();
     jpInstallFloatWindowObserver();
     jpHookOpenModule();

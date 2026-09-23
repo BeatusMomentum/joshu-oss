@@ -15,6 +15,7 @@ import {
   shouldSuppressRepeatBlockedPrompt,
 } from "./blockedAnswer.js";
 import { isContinuableGoal } from "./branchBinding.js";
+import { collectHandoffUrls, formatOwnerCompletion } from "./ownerDelivery.js";
 import { buildHermesBrokerContextMessage } from "./brokerContext.js";
 import { isDeferCapableChannel, isQueueCapableChannel, usesSessionThread } from "./channelPolicy.js";
 import {
@@ -124,7 +125,8 @@ function taskBody(goal: RealtimeGoalRecord): string {
     "If the card body contains an Owner selection — BOOK THIS section, the search phase is over: book that choice only.",
     "If required owner input is missing, call kanban_block with one concise question.",
     "When checkout is staged with a browser handoff link, call kanban_complete with the link — do not kanban_block with an old menu.",
-    "On success, call kanban_complete with a self-contained plain-language summary and any artifacts.",
+    "kanban_complete summary is sent to the owner as-is. Write it as a short text to them: itinerary, price, what they still enter, and the full handoff URL on its own line.",
+    "Do not write \"the owner\", \"handed to the owner\", \"this run\", or \"at the handoff link\" without the URL.",
     "",
     "## Intake",
     "",
@@ -1112,11 +1114,15 @@ export class RealtimeGoalBroker {
       if (goal.status === "cancelled" || goal.delivery.state === "suppressed") return;
       const newCompletion = goal.lastKanbanStatus !== "done";
       const run = task.latest_run;
-      const summary =
+      const rawSummary =
         run?.summary?.trim() ||
         task.completion_summary?.trim() ||
         task.recent_comments?.at(-1)?.body?.trim() ||
         `Completed “${goal.title}.”`;
+      const summary = formatOwnerCompletion(
+        rawSummary,
+        collectHandoffUrls(this.projectRoot, task, rawSummary),
+      );
       await this.store.update(goal.id, (item) => {
         item.status = "done";
         item.lastKanbanStatus = "done";

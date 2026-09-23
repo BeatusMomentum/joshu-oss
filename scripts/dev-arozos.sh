@@ -475,6 +475,7 @@ prepare_hermes_read_file_utf8_patch
 prepare_hermes_invoke_tool_post_hook_patch
 prepare_hermes_kanban_ws_patch
 start_local_camofox_if_needed
+export BROWSER_CDP_URL="${BROWSER_CDP_URL:-http://127.0.0.1:9222}"
 start_hindsight_if_needed
 prepare_arozos_template
 prepare_arozos_data
@@ -491,6 +492,7 @@ echo "[dev-arozos] starting Joshu on 127.0.0.1:${JOSHU_PORT} (base ${PUBLIC_BASE
   export JOSHU_VOICE_WSS_HOST="${JOSHU_VOICE_WSS_HOST:-127.0.0.1:${JOSHU_PORT}}"
   export PUBLIC_BASE_PATH
   export CAMOFOX_URL
+  export BROWSER_CDP_URL="${BROWSER_CDP_URL:-http://127.0.0.1:9222}"
   export NOVNC_URL="${NOVNC_URL:-/novnc}"
   export NOVNC_PROXY_TARGET
   export NOVNC_CLIENT_PATH="${NOVNC_CLIENT_PATH:-/novnc}"

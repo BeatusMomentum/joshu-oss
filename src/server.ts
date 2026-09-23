@@ -87,6 +87,8 @@ import { registerRealtimeGoalRoutes } from "./realtimeGoals/routes.js";
 import { registerRealtimeGoalVoiceRoutes } from "./realtimeGoals/voiceCallback.js";
 import { registerAppInvokeRoutes } from "./appInvokeApi.js";
 import { getPendingHandoffPinUrl, registerBrowserHandoffRoutes } from "./browserHandoff/index.js";
+import { readBrowserAgentStatus, registerBrowserAgentRoutes, screencastInputAllowed } from "./browserAgent.js";
+import { BrowserScreencastHub, screencastWsPath } from "./browserScreencast.js";
 import { registerHindsightRecallRoute } from "./hindsightRecallApi.js";
 import type { CreateRunRequest, CreateRunResponse, RunRecord, StatusReport } from "./types.js";
 
@@ -199,6 +201,7 @@ const PORT = Number(envOr("JOSHU_PORT", envOr("PORT", "8788")));
 const HOST = envOr("HOST", "127.0.0.1");
 const VOICE_REALTIME_TARGET = envOr("VOICE_REALTIME_URL", "http://127.0.0.1:8792").replace(/\/+$/, "");
 const CAMOFOX_URL = envOr("CAMOFOX_URL", "http://localhost:9377");
+const BROWSER_CDP_URL = envOr("BROWSER_CDP_URL", "");
 const NOVNC_URL = envOr("NOVNC_URL", "http://localhost:6080");
 const NOVNC_CLIENT_PATH = envOr("NOVNC_CLIENT_PATH", NOVNC_URL.startsWith("/") ? NOVNC_URL : "/novnc");
 const NOVNC_PROXY_TARGET = envOr("NOVNC_PROXY_TARGET", NOVNC_URL.startsWith("/") ? "http://localhost:6080" : NOVNC_URL);
@@ -223,6 +226,19 @@ const HINDSIGHT_API_KEY = envOr("HINDSIGHT_API_KEY", "");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
+const CDP_HTTP_URL = (process.env.BROWSER_CDP_URL || "").trim();
+const SCRENCAST_WS_PATH = screencastWsPath(PUBLIC_BASE_PATH);
+const browserScreencast = CDP_HTTP_URL
+  ? new BrowserScreencastHub({
+      cdpHttpUrl: CDP_HTTP_URL,
+      inputAllowed: () => screencastInputAllowed(PROJECT_ROOT),
+    })
+  : null;
+if (browserScreencast) {
+  setInterval(() => {
+    void readBrowserAgentStatus();
+  }, 2000);
+}
 const HERMES_API_AUTO_START =
   readHermesGatewayPreference(PROJECT_ROOT) ?? HERMES_API_AUTO_START_ENV;
 const PUBLIC_DIR = path.resolve(PROJECT_ROOT, "public");
@@ -232,6 +248,7 @@ const normalizedNovncClientPath = withPublicBase(NOVNC_CLIENT_PATH).replace(/\/+
 const runner = new HermesApiRunner({
   binary: HERMES_BIN,
   camofoxUrl: CAMOFOX_URL,
+  cdpUrl: BROWSER_CDP_URL,
   apiBaseUrl: HERMES_API_BASE_URL,
   apiKey: HERMES_API_KEY,
   autoStartGateway: HERMES_API_AUTO_START,
@@ -246,6 +263,7 @@ realtimeGoalBroker.start();
 
 const camofoxSession = new CamofoxSessionCoordinator({
   camofoxUrl: CAMOFOX_URL,
+  cdpUrl: BROWSER_CDP_URL,
   userId: HITL_CAMOFOX_USER_ID,
   sessionKey: HITL_CAMOFOX_SESSION_KEY,
   singleTab: HITL_CAMOFOX_SINGLE_TAB,
@@ -532,6 +550,7 @@ function buildAppRouter(): {
   registerOwnerChannelRoutes(router, { projectRoot: PROJECT_ROOT });
   registerActionGuardRoutes(router, { projectRoot: PROJECT_ROOT });
   registerBrowserHandoffRoutes(router, { projectRoot: PROJECT_ROOT, camofoxSession, runner });
+  registerBrowserAgentRoutes(router, PROJECT_ROOT);
   registerVoiceWebRoutes(router);
 
   const joshuApiBase = `http://127.0.0.1:${PORT}${withPublicBase("/api")}`;
@@ -629,11 +648,17 @@ function buildAppRouter(): {
       runner.rememberBrowserTarget(currentTab.url, HITL_CAMOFOX_USER_ID);
     }
 
+    const engine = (cam.camofox.health as { engine?: string } | undefined)?.engine;
+    const liveView =
+      engine === "chromium" || Boolean(CDP_HTTP_URL)
+        ? { mode: "screencast" as const, websocketPath: SCRENCAST_WS_PATH }
+        : { mode: "novnc" as const, websocketPath: cam.novnc.websocketPath };
     const report: StatusReport = {
       hermes: { available: hermes.available, binary: HERMES_BIN, version: hermes.version, error: hermes.error },
       camofox: cam.camofox,
       docker,
       novnc: cam.novnc,
+      liveView,
       browserViewport: { width: CAMOFOX_VIEWPORT_WIDTH, height: CAMOFOX_VIEWPORT_HEIGHT },
       activeSessionId: runner.getActiveSessionId(),
       lastBrowserUrl: runner.getLastBrowserUrl(),
@@ -1405,9 +1430,13 @@ const hermesDashboardUpgradePrefixesList = hermesDashboardUpgradePrefixes(
   PUBLIC_BASE_PATH,
 );
 
-if (twilioUpgrade || voiceRealtimeProxy.upgrade || novncProxy || hermesDashboardProxy?.upgrade) {
+if (twilioUpgrade || voiceRealtimeProxy.upgrade || novncProxy || hermesDashboardProxy?.upgrade || browserScreencast) {
   server.on("upgrade", (req, socket, head) => {
     const pathOnly = (req.url ?? "").split("?")[0] ?? "";
+    if (browserScreencast && (pathOnly === SCRENCAST_WS_PATH || pathOnly.endsWith("/api/browser/screencast"))) {
+      browserScreencast.handleUpgrade(req, socket as Duplex, head as Buffer);
+      return;
+    }
     const voiceRtPrefixes = ["/voice-rt"];
     if (PUBLIC_BASE_PATH) {
       voiceRtPrefixes.push(`${PUBLIC_BASE_PATH}/voice-rt`);

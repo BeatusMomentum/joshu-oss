@@ -341,6 +341,7 @@ function syncInteractivePlatformKanbanToolsets(config: ConfigRecord): boolean {
     "joshu-desktop",
     "joshu-app-gui",
     "joshu-browser-handoff",
+    "joshu-browser-agent",
     "joshu-realtime-goals",
   ] as const;
   for (const platform of INTERACTIVE_HERMES_PLATFORMS) {
@@ -732,6 +733,7 @@ export class HermesApiRunner extends EventEmitter {
     private readonly opts: {
       binary: string;
       camofoxUrl: string;
+      cdpUrl?: string;
       apiBaseUrl: string;
       apiKey: string;
       autoStartGateway: boolean;
@@ -1588,6 +1590,7 @@ export class HermesApiRunner extends EventEmitter {
         API_SERVER_PORT: "8642",
         ...(langfuseUserId ? { HERMES_LANGFUSE_USER_ID: langfuseUserId } : {}),
         CAMOFOX_URL: this.opts.camofoxUrl,
+        ...(this.opts.cdpUrl ? { BROWSER_CDP_URL: this.opts.cdpUrl } : {}),
         // Project plugins live under <repo>/.hermes/plugins. This repo is trusted
         // by the Joshu host, so enable Hermes's opt-in project plugin scanner.
         HERMES_ENABLE_PROJECT_PLUGINS: process.env.HERMES_ENABLE_PROJECT_PLUGINS || "true",
@@ -1895,6 +1898,21 @@ export class HermesApiRunner extends EventEmitter {
     {
       const plugins = asRecord(config.plugins);
       const enabled = asStringArray(plugins.enabled);
+      if (!enabled.includes("joshu-browser-agent")) {
+        enabled.push("joshu-browser-agent");
+        changed = true;
+        pluginsChanged = true;
+      }
+      plugins.enabled = enabled;
+      config.plugins = plugins;
+    }
+    if (!toolsets.includes("joshu-browser-agent")) {
+      toolsets.push("joshu-browser-agent");
+      changed = true;
+    }
+    {
+      const plugins = asRecord(config.plugins);
+      const enabled = asStringArray(plugins.enabled);
       if (!enabled.includes("joshu-last30days")) {
         enabled.push("joshu-last30days");
         changed = true;
@@ -1923,29 +1941,50 @@ export class HermesApiRunner extends EventEmitter {
       changed = true;
     }
 
-    // Hermes tool workers read ~/.hermes/config.yaml; gateway env alone is not always
-    // enough. Pin the shared HITL Camofox identity so browser_scroll etc. reuse the
-    // noVNC tab instead of creating hermes_* sessions that fight Joshu.
+    // Shared browser. CDP Chromium (BROWSER_CDP_URL) uses Hermes built-in tools
+    // on that endpoint. Without it, keep the Camofox tab identity pin.
     const browser = asRecord(config.browser);
-    const camofox = asRecord(browser.camofox);
+    const cdpUrl = (this.opts.cdpUrl || envString("BROWSER_CDP_URL") || "").trim();
     const hitlUserId =
       envString("CAMOFOX_USER_ID") || envString("HITL_CAMOFOX_USER_ID") || this.opts.hitlCamofoxUserId;
     const hitlSessionKey =
       envString("CAMOFOX_SESSION_KEY") || envString("HITL_CAMOFOX_SESSION_KEY") || this.opts.hitlCamofoxSessionKey;
-    if (camofox.user_id !== hitlUserId) {
-      camofox.user_id = hitlUserId;
-      changed = true;
+    if (cdpUrl) {
+      if (browser.backend !== "off") {
+        browser.backend = "off";
+        changed = true;
+      }
+      if (browser.cdp_url !== cdpUrl) {
+        browser.cdp_url = cdpUrl;
+        changed = true;
+      }
+      if (browser.cloud_provider === "camofox") {
+        delete browser.cloud_provider;
+        changed = true;
+      }
+      // Drop the Camofox tab pin so Hermes does not also try to adopt a Camofox session.
+      if (browser.camofox != null) {
+        delete browser.camofox;
+        changed = true;
+      }
+      config.browser = browser;
+    } else {
+      const camofox = asRecord(browser.camofox);
+      if (camofox.user_id !== hitlUserId) {
+        camofox.user_id = hitlUserId;
+        changed = true;
+      }
+      if (camofox.session_key !== hitlSessionKey) {
+        camofox.session_key = hitlSessionKey;
+        changed = true;
+      }
+      if (camofox.adopt_existing_tab !== true) {
+        camofox.adopt_existing_tab = true;
+        changed = true;
+      }
+      browser.camofox = camofox;
+      config.browser = browser;
     }
-    if (camofox.session_key !== hitlSessionKey) {
-      camofox.session_key = hitlSessionKey;
-      changed = true;
-    }
-    if (camofox.adopt_existing_tab !== true) {
-      camofox.adopt_existing_tab = true;
-      changed = true;
-    }
-    browser.camofox = camofox;
-    config.browser = browser;
 
     // Pin Exa when fleet provisioned EXA_API_KEY is present (Hermes auto-detect
     // also prefers Tavily/Firecrawl if those keys exist — explicit backend wins).
@@ -2072,10 +2111,23 @@ export class HermesApiRunner extends EventEmitter {
       composioServer.enabled !== false &&
       typeof composioServer.url === "string" &&
       composioServer.url.length > 0;
+    const cdpForBrowser = (this.opts.cdpUrl || envString("BROWSER_CDP_URL") || "").trim();
+    // CDP Chromium is driven by the browser-use sidecar. Hermes's built-in
+    // browser toolset would be a second driver on the same tab.
+    const browserToolsets = cdpForBrowser ? toolsets.filter((name) => name !== "browser") : toolsets;
     const orderedToolsets = toolsetsWithFal(
-      toolsetsWithComposio(toolsets, composioSessionActive),
+      toolsetsWithComposio(browserToolsets, composioSessionActive),
       falActive,
     );
+    if (cdpForBrowser) {
+      const platformToolsets = asRecord(config.platform_toolsets);
+      for (const platform of Object.keys(platformToolsets)) {
+        const names = asStringArray(platformToolsets[platform]).filter((name) => name !== "browser");
+        if (!names.includes("joshu-browser-agent")) names.push("joshu-browser-agent");
+        platformToolsets[platform] = names;
+      }
+      config.platform_toolsets = platformToolsets;
+    }
     if (JSON.stringify(parseToolsets(config.toolsets)) !== JSON.stringify(orderedToolsets)) {
       config.toolsets = orderedToolsets;
       changed = true;
@@ -2186,7 +2238,12 @@ export class HermesApiRunner extends EventEmitter {
     } else if (wroteConfig && changed) {
       console.log(`[hermes-api] configured Joshu Hermes runtime at ${configPath}`);
     }
-    if (changed && browser.camofox) {
+    if (changed && cdpUrl) {
+      console.log(
+        `[hermes-api] browser CDP ${cdpUrl} (backend off). ` +
+          "Restart the Hermes gateway so navigate/click use the shared Chromium.",
+      );
+    } else if (changed && browser.camofox) {
       console.log(
         `[hermes-api] Camofox identity ${hitlUserId} / ${hitlSessionKey} (adopt_existing_tab=true). ` +
           "Restart the Hermes gateway if browser tools still open a second tab.",
@@ -2221,6 +2278,7 @@ export class HermesApiRunner extends EventEmitter {
       CAMOFOX_ADOPT_EXISTING_TAB: "true",
       HITL_CAMOFOX_USER_ID: hitlUserId,
       HITL_CAMOFOX_SESSION_KEY: hitlSessionKey,
+      ...(cdpUrl ? { BROWSER_CDP_URL: cdpUrl } : {}),
     };
     const anthropicKey = resolveAnthropicApiKey();
     if (anthropicKey) dotenvSync.ANTHROPIC_API_KEY = anthropicKey;

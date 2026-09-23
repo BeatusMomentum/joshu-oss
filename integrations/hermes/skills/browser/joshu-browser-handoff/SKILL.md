@@ -4,18 +4,20 @@ description: Live browser HITL — hand shared Camofox tab to owner on mobile fo
 metadata:
   hermes:
     category: browser
-    version: "1.5.0"
+    version: "1.6.0"
 ---
 
 # Joshu browser handoff (live HITL)
 
 Use when the **owner must take over the shared Camofox tab** (`hitl-camofox` / `hitl-main`) on their phone — payment, login, 2FA, irreversible confirms, or any step that is **sensitive, policy-bound, or explicitly owner-only**.
 
-This is **sustained live HITL**: the owner gets a signed link, embedded noVNC, your brief, and time to finish. It is **not** a single-click SMS approval (see action guard below).
+This is **sustained live HITL**: the owner gets a signed link, the live tab (CDP screencast on Chromium boxes, noVNC on Camofox), your brief, the form overlay, and time to finish. It is **not** a single-click SMS approval (see action guard below).
 
-**Tools:** `browser_handoff_request`, `browser_handoff_status`, `browser_handoff_complete` (Hermes plugin `joshu-browser-handoff`).
+**Tools:** `browser_task` (plugin `joshu-browser-agent`) drives the page. `browser_handoff_request`, `browser_handoff_status`, `browser_handoff_complete` (plugin `joshu-browser-handoff`) hand it to the owner.
 
-**Hard lock:** while handoff is `pending`, agent `browser_navigate` / click / type / press / back are blocked. Owner uses the handoff URL + noVNC. **`browser_snapshot` still works** for verification after completion.
+**Web work:** call `browser_task` with the goal. It runs the browser-use Agent on the shared tab. Stop the task before payment, a CAPTCHA, or typing secrets, then `browser_handoff_request`. Do not read CAPTCHA images. The owner fills the form overlay or taps the picture. Form fill still goes through Joshu, not through the agent.
+
+**Hard lock:** while handoff is `pending`, `browser_task` is refused and the agent is paused. Owner uses the handoff URL. The form overlay and screencast clicks both work. Built-in `browser_navigate` / click / type stay blocked if that toolset is still loaded.
 
 **Owner SMS:** any inbound owner text auto-completes a pending handoff for that SMS session before your turn (browser already unlocked). **jChat/voice:** call **`browser_handoff_complete`** when the owner says they are finished — no need to tap **I'm done** on the link.
 

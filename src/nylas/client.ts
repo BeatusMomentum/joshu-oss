@@ -247,20 +247,39 @@ function mapMessageDetail(data: {
   };
 }
 
+/** Nylas Threads API page size max (messages allow 200). */
+const NYLAS_THREADS_PAGE_MAX = 50;
+
+function clampThreadLimit(limit: number | undefined): number {
+  const raw = typeof limit === "number" && Number.isFinite(limit) ? limit : 20;
+  return Math.min(Math.max(1, raw), NYLAS_THREADS_PAGE_MAX);
+}
+
 /** List inbox threads (metadata + full message_ids). Bodies require fetchMessagesInThread. */
 export async function listThreads(
   grantId: string,
   queryParams: {
     limit?: number;
-    searchQueryNative?: string;
+    /** Unix seconds — Agent Accounts do not support search_query_native. */
+    latestMessageAfter?: number;
+    latestMessageBefore?: number;
   } = {},
 ): Promise<NylasThreadSummary[]> {
   assertNylasReady();
+  const limit = clampThreadLimit(queryParams.limit);
+  const threadArgs: Record<string, unknown> = { limit };
+  if (queryParams.latestMessageAfter != null) {
+    threadArgs.latestMessageAfter = queryParams.latestMessageAfter;
+  }
+  if (queryParams.latestMessageBefore != null) {
+    threadArgs.latestMessageBefore = queryParams.latestMessageBefore;
+  }
+
   if (useRelay()) {
     return nylasProxyCall({
       op: "listThreads",
       grantId,
-      args: queryParams,
+      args: threadArgs,
     });
   }
 
@@ -270,8 +289,13 @@ export async function listThreads(
   const { data } = await nylas.threads.list({
     identifier: grantId,
     queryParams: {
-      limit: queryParams.limit ?? 20,
-      ...(queryParams.searchQueryNative ? { searchQueryNative: queryParams.searchQueryNative } : {}),
+      limit,
+      ...(queryParams.latestMessageAfter != null
+        ? { latestMessageAfter: queryParams.latestMessageAfter }
+        : {}),
+      ...(queryParams.latestMessageBefore != null
+        ? { latestMessageBefore: queryParams.latestMessageBefore }
+        : {}),
     },
   });
 

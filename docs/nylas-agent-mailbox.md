@@ -127,7 +127,7 @@ Nylas threads are also mirrored to markdown for agent recall:
 joshu's files/connectors/mail/nylas/threads/{thread_id}.md
 ```
 
-- **Sync:** `POST /joshu/api/connectors/mail/nylas/sync` or connector cron (**every 10m** when `JOSHU_CONNECTORS_CRON=true` — same tick as Gmail; see [`src/connectors/scheduler.ts`](../src/connectors/scheduler.ts)). Uses Nylas **Threads API** for discovery + full `message_ids`, then hydrates bodies via `messages.list?thread_id=…` (up to 50 messages per thread).
+- **Sync:** `POST /joshu/api/connectors/mail/nylas/sync` or connector cron (**every 10m** when `JOSHU_CONNECTORS_CRON=true` — same tick as Gmail; see [`src/connectors/scheduler.ts`](../src/connectors/scheduler.ts)). Uses Nylas **Threads API** (`latest_message_after`, not `search_query_native`) for discovery + full `message_ids`, then hydrates bodies via `messages.list?thread_id=…` (up to 50 messages per thread).
 - **Status:** `GET /joshu/api/connectors/status` → `nylas.mirror`
 - **Search (app-local):** `GET /joshu/api/connectors/mail/nylas/search?q=`
 - **Hermes recall:** gbrain **`query`** over indexed mirrors — see [`docs/connectors.md`](connectors.md) and [`docs/file-brain.md`](file-brain.md#connector-mail-and-calendar-gbrain)
@@ -178,6 +178,7 @@ curl -s -X POST http://127.0.0.1:8788/joshu/api/nylas/events \
 | Many `400` / `404` on `/joshu/api/nylas/*` in `docker logs` | Hermes **`ea-scheduling`** trial-and-error (wrong path or missing required fields) | Use routes in the table above only. **404** on `/calendars`, `/events/create`, `/events/delete` means wrong URL — use `POST /events`, `DELETE /events/:id`. **400** on `POST /events` → need `title` plus **`date`/`startLocal`/`endLocal`/`timezone`** or `startTime`/`endTime`; on `messages/send` → `to`, `subject`, `body` (use **`cc`** for guests — not comma-separated `to`). Success lines (`200`) mixed in = normal agent learning, not outage. |
 | `400` `reply_subject_mismatch` on `messages/send` | Agent set `replyToMessageId` but changed the subject | Retry with `expectedSubject` from the error (exact parent subject; no decorations) |
 | `connectors/status` shows stale `lastSyncAt` | Cron disabled or Joshu API down | `JOSHU_CONNECTORS_CRON=true`; `GET /joshu/api/connectors/cron/jobs`; manual `POST …/connectors/mail/nylas/sync` |
+| CP `[nylas-proxy] op=listThreads failed: Bad request` | Box sent `search_query_native` (Gmail `newer_than:Xd`). Agent Account grants do not support native search | CP proxy strips that param; box sync uses `latest_message_after`. Deploy both. |
 
 **Log hygiene:** Express logs every HTTP status. For sync health, prefer **`/joshu/api/connectors/status`** over counting yellow `400`/`404` lines in `docker logs`. EA ops detail: [`ea-for-joshu.md`](hermes-integration.md#operations--logs).
 

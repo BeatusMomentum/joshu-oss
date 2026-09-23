@@ -47,10 +47,22 @@ export async function deliverSmsHandoffContinuation(
   record: BrowserHandoffRecord,
   runner: HermesApiRunner,
 ): Promise<{ delivered: boolean; error?: string }> {
+  let active = record;
   if (!shouldDeliverSmsHandoffContinuation(record)) {
-    return { delivered: false };
+    // Kanban workers often mint the handoff without the owner's sms: session.
+    const phone = ownerSmsPhone(projectRoot);
+    if (!phone) {
+      console.warn(
+        `[browser-handoff] SMS continuation skipped handoff=${record.id.slice(0, 8)} (no sms session)`,
+      );
+      return { delivered: false, error: "not_sms_handoff" };
+    }
+    active = { ...record, hermesSessionKey: `sms:${phone}` };
+    console.info(
+      `[browser-handoff] SMS continuation using owner phone handoff=${record.id.slice(0, 8)}`,
+    );
   }
-  if (record.smsContinuationDeliveredAt) {
+  if (active.smsContinuationDeliveredAt) {
     return { delivered: false, error: "sms_continuation_already_delivered" };
   }
 
@@ -62,8 +74,8 @@ export async function deliverSmsHandoffContinuation(
     return { delivered: false, error: "sms_continuation_already_delivered" };
   }
 
-  const ownerPhone = ownerSmsPhone();
-  const handoffPhone = phoneFromSmsHermesSessionKey(record.hermesSessionKey!);
+  const ownerPhone = ownerSmsPhone(projectRoot);
+  const handoffPhone = phoneFromSmsHermesSessionKey(active.hermesSessionKey!);
   if (!ownerPhone || !handoffPhone || !phonesMatch(handoffPhone, ownerPhone)) {
     return { delivered: false, error: "sms_handoff_not_owner_phone" };
   }
@@ -89,9 +101,9 @@ export async function deliverSmsHandoffContinuation(
     {
       role: "user",
       content:
-        `Browser handoff ${record.id} is complete.\n` +
-        `Handoff instructions: ${record.instructions}\n` +
-        `Staged page was: ${record.pageTitle || record.pageUrl}\n` +
+        `Browser handoff ${active.id} is complete.\n` +
+        `Handoff instructions: ${active.instructions}\n` +
+        `Staged page was: ${active.pageTitle || active.pageUrl}\n` +
         "Continue the task and text me the answer.",
     },
   ];
@@ -115,14 +127,14 @@ export async function deliverSmsHandoffContinuation(
       return { delivered: false, error: "empty_assistant_reply" };
     }
     await sendSms(handoffPhone, reply);
-    markSmsContinuationDelivered(projectRoot, record.id);
+    markSmsContinuationDelivered(projectRoot, active.id);
     console.info(
-      `[browser-handoff] SMS continuation delivered handoff=${record.id.slice(0, 8)} session=${sessionKey.slice(0, 24)}`,
+      `[browser-handoff] SMS continuation delivered handoff=${active.id.slice(0, 8)} session=${sessionKey.slice(0, 24)}`,
     );
     return { delivered: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[browser-handoff] SMS continuation failed handoff=${record.id}: ${message}`);
+    console.warn(`[browser-handoff] SMS continuation failed handoff=${active.id}: ${message}`);
     return { delivered: false, error: message };
   }
 }

@@ -175,8 +175,9 @@ ENV APP_DIR=/opt/joshu \
 
 # x11vnc/novnc/websockify: Camofox VNC plugin apt.txt deps (not installed by base image).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl ffmpeg git libopus0 libportaudio2 openssh-client patch poppler-utils postgresql-${POSTGRES_VERSION} procps python3 python3-pip ripgrep rsync unzip util-linux \
+    bash ca-certificates curl ffmpeg git libopus0 libportaudio2 openssh-client patch poppler-utils postgresql-${POSTGRES_VERSION} procps python3 python3-pip python3-venv ripgrep rsync unzip util-linux \
     x11vnc novnc python3-websockify net-tools \
+    chromium xvfb \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m pip install --no-cache-dir --break-system-packages pypdf \
     && curl -fsSL https://bun.sh/install | bash \
@@ -233,8 +234,13 @@ COPY arozos/locale ./arozos/locale
 COPY scripts ./scripts
 COPY deploy/scripts/vps-start.sh ${APP_DIR}/scripts/vps-start.sh
 COPY deploy/RELEASE.json ${APP_DIR}/RELEASE.json
+COPY browser/chromium/package.json browser/chromium/supervisor.mjs browser/chromium/localProxy.mjs browser/chromium/entrypoint.sh browser/chromium/agent-service.py browser/chromium/requirements.txt /opt/browser/
+RUN python3 -m venv /opt/browser/venv \
+    && /opt/browser/venv/bin/pip install --no-cache-dir -r /opt/browser/requirements.txt
 
-RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+RUN cd /opt/browser && npm install --omit=dev --no-audit --no-fund \
+    && chmod +x /opt/browser/entrypoint.sh \
+    && cd ${APP_DIR} && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && (patch --batch --forward -p1 -i patches/http-proxy+1.18.1.patch || true) \
     && node scripts/patch-camofox-single-tab.mjs /app/server.js \
     && bash scripts/patch-camofox-vnc-watcher.sh /app/plugins/vnc/vnc-watcher.sh \

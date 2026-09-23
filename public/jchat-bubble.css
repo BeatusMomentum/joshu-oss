@@ -5,7 +5,7 @@
 .jchat-bubble-dock {
   position: fixed;
   bottom: 1.25rem;
-  z-index: 1200;
+  z-index: 4000;
   pointer-events: none;
 }
 
@@ -28,6 +28,7 @@
 
 .jchat-bubble-head {
   position: relative;
+  z-index: 1;
   display: grid;
   place-items: center;
   width: 3.5rem;
@@ -35,8 +36,9 @@
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: transparent;
+  background: var(--color-surface-panel, #fff);
   cursor: pointer;
+  pointer-events: auto;
   box-shadow:
     0 4px 14px rgba(13, 13, 13, 0.2),
     0 0 0 2px rgba(255, 255, 255, 0.85);

@@ -166,15 +166,16 @@ camofox_click / camofox_type / camofox_press
 
 ### Browser handoff lock (owner mobile checkout)
 
-Separate from the optional browser **action guard**. When `browser_handoff_request` creates a **pending** handoff, Joshu **hard-locks** agent Camofox **navigate / click / type / press / back** until the owner completes via the signed handoff URL or the handoff expires/is cancelled.
+Separate from the optional browser **action guard**. When `browser_handoff_request` creates a **pending** handoff, Joshu pauses the browser-use sidecar and **refuses `browser_task`** until the owner completes via the signed handoff URL or the handoff is cancelled. On an SMS-originated realtime goal the owner does not get that URL from the worker’s chat reply. They get the Kanban completion, after [`formatOwnerCompletion`](../src/realtimeGoals/ownerDelivery.ts) appends the pending handoff link if the summary never pasted it. See [channel delivery](realtime-goals.md#channel-delivery). **I'm done** completes the handoff and starts an SMS continuation. If the worker minted the record without `hermesSessionKey`, that continuation uses the owner phone from Telephone settings. The form overlay includes shadow-DOM fields whose host is visible, including Alaska's 1×0 inputs, and writes the custom element's `value`. On the shared Chromium the built-in tool lock is still in `browser_tool.py` if that toolset is loaded. On the Camofox HTTP fallback it is in `browser_camofox.py`. Form fill and screencast clicks stay available to the owner while the agent is paused.
 
 | Path | Role |
 |------|------|
 | [`src/browserHandoff/`](../src/browserHandoff/) | Pending record, HMAC URL tokens, lock API |
-| Hermes `patch-hermes-camofox-handoff-lock.mjs` | Pre-flight `GET /api/browser-handoff/lock` in `browser_camofox.py` |
+| Hermes `patch-hermes-camofox-handoff-lock.mjs` | Pre-flight `GET /api/browser-handoff/lock` in `browser_camofox.py` (Camofox HTTP fallback) |
+| Hermes `patch-hermes-browser-cdp-guards.mjs` | Same lock, plus the browser write gate, in `tools/browser_tool.py` after the Camofox early-return. This is the path when `BROWSER_CDP_URL` is set. `browser_snapshot` is left unlocked. |
 | [`src/actionGuard/browserGate.ts`](../src/actionGuard/browserGate.ts) | Also returns `browser_handoff_locked` stub before action-guard HITL |
 
-**Allowed during lock:** `browser_snapshot`, `browser_handoff_status`, owner noVNC on the handoff page.
+**Allowed during lock:** `browser_handoff_status`, the owner's screencast clicks, and the form overlay (`fill-form`, paste). `browser_task` is refused. `browser_snapshot` still works if the built-in browser toolset is loaded.
 
 **Fail-open:** if Hermes cannot reach the lock endpoint, the handoff patch logs and allows the write (same as action guard).
 

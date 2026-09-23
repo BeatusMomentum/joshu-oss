@@ -92,6 +92,7 @@ prefer DRY channel adapters over parallel policies.
 7. The worker completes with `kanban_complete(summary, metadata, artifacts)` or
    blocks with one concise question. The broker treats persisted Kanban
    task/run state as authoritative and delivers the event on the source channel.
+   The completion summary **is** the owner message. The worker does not send it.
 
 Hermes's pinned Kanban implementation documents `scheduled_at`, but does not
 implement it. The commit window therefore lives in Joshu's persisted broker
@@ -132,7 +133,23 @@ acknowledgment instead of a newer goal response.
 
 ## Channel delivery
 
-- SMS uses the existing carrier-safe `sendSms` helper.
+- SMS uses the existing carrier-safe `sendSms` helper. Completion text is the
+  Kanban run summary (`latest_run.summary`, else `completion_summary`, else the
+  last comment). [`formatOwnerCompletion`](../src/realtimeGoals/ownerDelivery.ts)
+  rewrites that before send: second person, one fact per line, CAPTCHA and
+  "this run" notes removed. If the summary mentions a handoff and does not
+  include a URL, the broker appends the pending handoff link (same
+  `kanbanTaskId`, otherwise the newest pending record). The factory
+  `realtime-goal` skill and the task body tell the worker to write that summary
+  as a text to the owner, with the full URL on its own line. A worker that
+  still says "pays at the handoff link" does not omit the URL.
+- Handoff links expire (default 45 minutes; the handoff page heartbeat extends
+  them). An expired record stays `pending` on disk until something reads it.
+  The browser tab can still show the checkout URL after the link is dead. A
+  later proxy failure replaces that tab with Chrome's error page
+  (`chrome-error://chromewebdata/`, `ERR_TUNNEL_CONNECTION_FAILED`); reloading
+  once the proxy works does not restore an airline cart. The site typically
+  returns its search form.
 - jChat and AG-UI use a durable per-session surface-event queue polled by their
   mounted chat clients. Before acknowledging consumption, the client persists
   the assistant event in a bounded browser cache; reloads rehydrate it into the

@@ -5,7 +5,7 @@
  * live here — they stay on the Joshu → Camofox fill path.
  */
 
-export const HANDOFF_MAX_OVERLAY_FIELDS = 16;
+export const HANDOFF_MAX_OVERLAY_FIELDS = 32;
 
 export type OverlayInputType =
   | "email"

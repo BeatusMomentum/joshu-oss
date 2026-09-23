@@ -1,4 +1,5 @@
 import type { CatalogButton, CatalogField } from "./browserHandoff/formCatalog.js";
+import { ChromiumCdpSession } from "./chromiumSession.js";
 
 export interface CamofoxTab {
   tabId: string;
@@ -188,6 +189,8 @@ function explainInsertFailure(reason?: string): string {
 }
 
 export class CamofoxSessionCoordinator {
+  private readonly cdp: ChromiumCdpSession | null;
+
   constructor(
     private readonly opts: {
       camofoxUrl: string;
@@ -196,11 +199,26 @@ export class CamofoxSessionCoordinator {
       singleTab: boolean;
       viewportWidth?: number;
       viewportHeight?: number;
+      /** When set, drive the shared Chromium over CDP instead of the Camofox HTTP API. */
+      cdpUrl?: string;
     },
-  ) {}
+  ) {
+    const cdpUrl = opts.cdpUrl?.trim();
+    this.cdp = cdpUrl
+      ? new ChromiumCdpSession({
+          cdpUrl,
+          controlUrl: opts.camofoxUrl,
+          sessionKey: opts.sessionKey,
+          singleTab: opts.singleTab,
+          viewportWidth: opts.viewportWidth,
+          viewportHeight: opts.viewportHeight,
+        })
+      : null;
+  }
 
   /** Resize Playwright viewport and Firefox outer window to match the VNC framebuffer. */
   async readViewportMetrics(tabId?: string): Promise<{ innerWidth: number; innerHeight: number; screenWidth: number; screenHeight: number } | undefined> {
+    if (this.cdp) return this.cdp.readViewportMetrics(tabId);
     const tab = tabId ? { tabId } : await this.currentTab();
     if (!tab?.tabId) return undefined;
     const url = new URL(`/tabs/${tab.tabId}/evaluate`, this.opts.camofoxUrl);
@@ -225,6 +243,7 @@ export class CamofoxSessionCoordinator {
   }
 
   async fitViewport(tabId?: string): Promise<void> {
+    if (this.cdp) return this.cdp.fitViewport(tabId);
     const width = this.opts.viewportWidth ?? 1024;
     const height = this.opts.viewportHeight ?? 768;
     const tab = tabId ? { tabId } : await this.currentTab();
@@ -245,6 +264,7 @@ export class CamofoxSessionCoordinator {
    * 4–5 do not reach Firefox (common with scaled noVNC + x11vnc).
    */
   async scrollPage(opts: { direction?: "up" | "down" | "left" | "right"; amount?: number } = {}): Promise<void> {
+    if (this.cdp) return this.cdp.scrollPage(opts);
     const tab = await this.currentTab();
     if (!tab?.tabId) throw new Error("No Camofox tab");
     const direction = opts.direction ?? "down";
@@ -260,6 +280,7 @@ export class CamofoxSessionCoordinator {
 
   /** Send a key via Playwright (PageDown / ArrowDown / etc.) — VNC keysyms are flaky for nav. */
   async pressKey(key: string): Promise<void> {
+    if (this.cdp) return this.cdp.pressKey(key);
     const tab = await this.currentTab();
     if (!tab?.tabId) throw new Error("No Camofox tab");
     const res = await fetch(new URL(`/tabs/${tab.tabId}/press`, this.opts.camofoxUrl), {
@@ -272,6 +293,7 @@ export class CamofoxSessionCoordinator {
   }
 
   async listTabs(): Promise<CamofoxTab[]> {
+    if (this.cdp) return this.cdp.listTabs();
     const url = new URL("/tabs", this.opts.camofoxUrl);
     url.searchParams.set("userId", this.opts.userId);
     const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
@@ -281,6 +303,7 @@ export class CamofoxSessionCoordinator {
   }
 
   async currentTab(): Promise<CamofoxTab | undefined> {
+    if (this.cdp) return this.cdp.currentTab();
     const tabs = await this.listTabs();
     const matching = tabs.filter((tab) => tab.listItemId === this.opts.sessionKey);
     return (matching.length > 0 ? matching : tabs).at(-1);
@@ -293,6 +316,7 @@ export class CamofoxSessionCoordinator {
    * explicitly wants to load `url` (e.g. run initialUrl).
    */
   async ensureTab(url?: string, opts?: { navigateExisting?: boolean }): Promise<CamofoxTab> {
+    if (this.cdp) return this.cdp.ensureTab(url, opts);
     const existing = await this.currentTab();
     if (!existing) {
       const created = await this.createTab(url);
@@ -311,6 +335,7 @@ export class CamofoxSessionCoordinator {
   }
 
   async enforceSingleTab(): Promise<CamofoxTab | undefined> {
+    if (this.cdp) return this.cdp.enforceSingleTab();
     const tab = await this.currentTab();
     if (!tab) return undefined;
     if (this.opts.singleTab) await this.closeOtherTabs(tab.tabId).catch(() => undefined);
@@ -319,11 +344,13 @@ export class CamofoxSessionCoordinator {
   }
 
   async closeAllTabs(): Promise<void> {
+    if (this.cdp) return this.cdp.closeAllTabs();
     const tabs = await this.listTabs();
     await Promise.allSettled(tabs.map((tab) => this.closeTab(tab.tabId)));
   }
 
   async observe(tab: CamofoxTab): Promise<CamofoxPageObservation> {
+    if (this.cdp) return this.cdp.observe(tab);
     await this.installShim(tab.tabId);
     const url = new URL(`/tabs/${tab.tabId}/snapshot`, this.opts.camofoxUrl);
     url.searchParams.set("userId", this.opts.userId);
@@ -348,6 +375,7 @@ export class CamofoxSessionCoordinator {
    * Pass selectAll only when the caller wants to replace the whole field.
    */
   async insertText(text: string, opts?: { selectAll?: boolean }): Promise<void> {
+    if (this.cdp) return this.cdp.insertText(text, opts);
     const tab = await this.currentTab();
     if (!tab?.tabId) throw new Error("No Camofox tab");
     const selectAll = opts?.selectAll === true;
@@ -379,6 +407,7 @@ export class CamofoxSessionCoordinator {
   }
 
   async listFormFields(): Promise<{ fields: CatalogField[]; buttons: CatalogButton[] }> {
+    if (this.cdp) return this.cdp.listFormFields();
     const tab = await this.currentTab();
     if (!tab?.tabId) throw new Error("No Camofox tab");
     const url = new URL(`/tabs/${tab.tabId}/form-fields`, this.opts.camofoxUrl);
@@ -404,6 +433,7 @@ export class CamofoxSessionCoordinator {
 
   /** URL + control shape for auto-rescan. Does not stamp locators or send values. */
   async readFormSignature(): Promise<{ url: string; title: string; key: string }> {
+    if (this.cdp) return this.cdp.readFormSignature();
     const tab = await this.currentTab();
     if (!tab?.tabId) throw new Error("No Camofox tab");
     const keyUrl = new URL(`/tabs/${tab.tabId}/form-page-key`, this.opts.camofoxUrl);
@@ -441,6 +471,7 @@ export class CamofoxSessionCoordinator {
     fields: Array<{ id: string; value: string | boolean }>;
     buttonId?: string | null;
   }): Promise<{ ok: boolean; filled: number; missing: string[]; clicked: string | null }> {
+    if (this.cdp) return this.cdp.fillForm(opts);
     const tab = await this.currentTab();
     if (!tab?.tabId) throw new Error("No Camofox tab");
     const url = new URL(`/tabs/${tab.tabId}/fill-form`, this.opts.camofoxUrl);
@@ -479,6 +510,7 @@ export class CamofoxSessionCoordinator {
 
   /** Read selection, or the whole focused field when nothing is selected. */
   async readSelection(): Promise<string> {
+    if (this.cdp) return this.cdp.readSelection();
     const tab = await this.currentTab();
     if (!tab?.tabId) throw new Error("No Camofox tab");
 
@@ -523,6 +555,7 @@ export class CamofoxSessionCoordinator {
   }
 
   async installShim(tabId: string): Promise<void> {
+    if (this.cdp) return this.cdp.installShim(tabId);
     const url = new URL(`/tabs/${tabId}/evaluate`, this.opts.camofoxUrl);
     await fetch(url, {
       method: "POST",

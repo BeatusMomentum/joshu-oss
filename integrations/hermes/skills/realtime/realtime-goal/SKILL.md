@@ -57,8 +57,12 @@ If the card body contains **`Owner selection — BOOK THIS (do not re-search)`**
    **that** option. Do not restart a broad OTA search unless the chosen option
    is unavailable.
 8. Call **`kanban_complete` only** when handing off a checkout link or reporting
-   a truly finished outcome (booked, confirmed, delivered artifact). Include
-   artifact paths, handoff links, confirmations, and any unresolved caveats.
+   a truly finished outcome (booked, confirmed, delivered artifact). The summary
+   is the message the owner receives. Write it as a short text to them, not an
+   internal note. Put each fact on its own line (itinerary, price, what they
+   still enter) and put the full handoff URL on its own line. Use ASCII ("to",
+   "-"), not arrows. Never say "the owner", "handed to the owner", or "at the
+   handoff link" without pasting the URL. Leave out CAPTCHA and tool-run notes.
 9. Never send the completion directly. Joshu's durable delivery layer returns it
    to the originating channel.
 

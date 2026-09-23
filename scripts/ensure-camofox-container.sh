@@ -1,23 +1,11 @@
 #!/usr/bin/env bash
-# Create or start the local Camofox Docker container (patched for Joshu HITL).
+# Create or start the local shared Chromium container (CDP + noVNC + Decodo).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CAMOFOX_CONTAINER="${CAMOFOX_CONTAINER:-camofox-hitl}"
 CAMOFOX_URL="${CAMOFOX_URL:-http://127.0.0.1:9377}"
-
-# Pin matches deploy/RELEASE.json camofoxBase (override with CAMOFOX_BASE for experiments).
-read_camofox_base() {
-  if [[ -n "${CAMOFOX_BASE:-}" ]]; then
-    printf '%s' "${CAMOFOX_BASE}"
-    return
-  fi
-  node -e "
-    const r = JSON.parse(require('fs').readFileSync('${ROOT_DIR}/deploy/RELEASE.json', 'utf8'));
-    if (!r.camofoxBase) throw new Error('deploy/RELEASE.json missing camofoxBase');
-    process.stdout.write(r.camofoxBase);
-  "
-}
+CHROMIUM_IMAGE="${CHROMIUM_IMAGE:-joshu-chromium-cdp:local}"
 
 load_root_env() {
   if [[ -f "${ROOT_DIR}/.env" ]]; then
@@ -43,6 +31,10 @@ camofox_proxy_env_args() {
   done
 }
 
+container_image() {
+  docker inspect "${CAMOFOX_CONTAINER}" --format '{{.Config.Image}}' 2>/dev/null || true
+}
+
 container_has_proxy_env() {
   docker inspect "${CAMOFOX_CONTAINER}" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
     | grep -qE '^PROXY_(HOST|BACKCONNECT_HOST)='
@@ -52,17 +44,31 @@ load_root_env
 
 if curl -fsS "${CAMOFOX_URL}/health" >/dev/null 2>&1; then
   if proxy_configured && docker ps -a --format '{{.Names}}' | grep -qx "${CAMOFOX_CONTAINER}" && ! container_has_proxy_env; then
-    echo "[ensure-camofox] recreating ${CAMOFOX_CONTAINER} — PROXY_* in .env but container lacks proxy env"
+    echo "[ensure-chromium] recreating ${CAMOFOX_CONTAINER} — PROXY_* in .env but container lacks proxy env"
+    docker rm -f "${CAMOFOX_CONTAINER}" >/dev/null
+  elif docker ps -a --format '{{.Names}}' | grep -qx "${CAMOFOX_CONTAINER}" \
+    && [[ "$(container_image)" != "${CHROMIUM_IMAGE}" ]]; then
+    echo "[ensure-chromium] recreating ${CAMOFOX_CONTAINER} — not ${CHROMIUM_IMAGE}"
     docker rm -f "${CAMOFOX_CONTAINER}" >/dev/null
   else
-    echo "[ensure-camofox] already healthy at ${CAMOFOX_URL} (container ${CAMOFOX_CONTAINER})"
+    echo "[ensure-chromium] already healthy at ${CAMOFOX_URL} (container ${CAMOFOX_CONTAINER})"
     exit 0
   fi
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "[ensure-camofox] docker not found in PATH" >&2
+  echo "[ensure-chromium] docker not found in PATH" >&2
   exit 1
+fi
+
+echo "[ensure-chromium] building ${CHROMIUM_IMAGE}"
+docker build -t "${CHROMIUM_IMAGE}" "${ROOT_DIR}/browser/chromium"
+
+if docker ps -a --format '{{.Names}}' | grep -qx "${CAMOFOX_CONTAINER}"; then
+  if [[ "$(container_image)" != "${CHROMIUM_IMAGE}" ]]; then
+    echo "[ensure-chromium] removing ${CAMOFOX_CONTAINER} — image is $(container_image)"
+    docker rm -f "${CAMOFOX_CONTAINER}" >/dev/null
+  fi
 fi
 
 PROXY_DOCKER_ARGS=()
@@ -70,49 +76,35 @@ if proxy_configured; then
   while IFS= read -r -d '' arg; do
     PROXY_DOCKER_ARGS+=("${arg}")
   done < <(camofox_proxy_env_args)
-  echo "[ensure-camofox] proxy enabled (${PROXY_HOST:-${PROXY_BACKCONNECT_HOST}})"
+  echo "[ensure-chromium] proxy enabled (${PROXY_HOST:-${PROXY_BACKCONNECT_HOST}})"
 fi
 
 if docker ps -a --format '{{.Names}}' | grep -qx "${CAMOFOX_CONTAINER}"; then
-  echo "[ensure-camofox] starting existing container ${CAMOFOX_CONTAINER}"
+  echo "[ensure-chromium] starting existing container ${CAMOFOX_CONTAINER}"
   docker start "${CAMOFOX_CONTAINER}" >/dev/null
 else
-  CAMOFOX_IMAGE="$(read_camofox_base)"
-  echo "[ensure-camofox] creating container ${CAMOFOX_CONTAINER} (${CAMOFOX_IMAGE})"
+  echo "[ensure-chromium] creating container ${CAMOFOX_CONTAINER}"
   docker run -d --name "${CAMOFOX_CONTAINER}" \
     --restart unless-stopped \
+    --shm-size=1g \
     -p 127.0.0.1:9377:9377 \
     -p 127.0.0.1:6080:6080 \
-    -e ENABLE_VNC=1 \
-    -e VNC_BIND=0.0.0.0 \
+    -p 127.0.0.1:9222:9222 \
     -e VNC_RESOLUTION="${VNC_RESOLUTION:-1024x768}" \
     -e CAMOFOX_VIEWPORT_WIDTH="${CAMOFOX_VIEWPORT_WIDTH:-1024}" \
     -e CAMOFOX_VIEWPORT_HEIGHT="${CAMOFOX_VIEWPORT_HEIGHT:-768}" \
-    -e MAX_TABS_PER_SESSION="${MAX_TABS_PER_SESSION:-4}" \
-    -e MAX_TABS_GLOBAL="${MAX_TABS_GLOBAL:-8}" \
-    -e CAMOFOX_MAX_TABS="${CAMOFOX_MAX_TABS:-4}" \
-    -e HITL_FORCE_SINGLE_VISIBLE_PAGE="${HITL_FORCE_SINGLE_VISIBLE_PAGE:-true}" \
-    -e CAMOFOX_START_URL="${CAMOFOX_START_URL:-https://joshu.me/}" \
-    -e CAMOFOX_FF_VERSION="${CAMOFOX_FF_VERSION:-139}" \
     "${PROXY_DOCKER_ARGS[@]}" \
-    -v "${ROOT_DIR}:/opt/joshu:ro" \
-    --entrypoint /bin/sh \
-    "${CAMOFOX_IMAGE}" \
-    -lc 'node /opt/joshu/scripts/patch-camofox-single-tab.mjs /app/server.js && cd /app && node server.js' >/dev/null
+    "${CHROMIUM_IMAGE}" >/dev/null
 fi
 
 deadline=$((SECONDS + 90))
 until curl -fsS "${CAMOFOX_URL}/health" >/dev/null 2>&1; do
   if (( SECONDS >= deadline )); then
-    echo "[ensure-camofox] timed out waiting for ${CAMOFOX_URL}/health" >&2
-    docker logs "${CAMOFOX_CONTAINER}" 2>&1 | tail -30 >&2 || true
+    echo "[ensure-chromium] timed out waiting for ${CAMOFOX_URL}/health" >&2
+    docker logs "${CAMOFOX_CONTAINER}" 2>&1 | tail -40 >&2 || true
     exit 1
   fi
   sleep 1
 done
 
-if proxy_configured; then
-  docker logs "${CAMOFOX_CONTAINER}" 2>&1 | grep -iE 'proxy pool|no proxy' | tail -3 || true
-fi
-
-echo "[ensure-camofox] ready at ${CAMOFOX_URL}"
+echo "[ensure-chromium] ready at ${CAMOFOX_URL} (CDP http://127.0.0.1:9222)"

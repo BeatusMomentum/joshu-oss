@@ -192,6 +192,14 @@ const patchScript = fs.readFileSync(
 assert.match(patchScript, /hitl_browser_handoff_lock/);
 assert.match(patchScript, /camofox_navigate/);
 
+const cdpPatch = fs.readFileSync(
+  path.join(process.cwd(), "scripts/patch-hermes-browser-cdp-guards.mjs"),
+  "utf8",
+);
+assert.match(cdpPatch, /hitl_browser_cdp_guards/);
+assert.match(cdpPatch, /browser_navigate/);
+assert.doesNotMatch(cdpPatch, /browser_snapshot/);
+
 const camofoxPatch = fs.readFileSync(
   path.join(process.cwd(), "scripts/patch-camofox-single-tab.mjs"),
   "utf8",

@@ -51,22 +51,42 @@ async function fetchIdentity() {
   throw lastErr || new Error("identity unavailable");
 }
 
-function canReachDesktop() {
+function desktopFrames() {
+  const frames = [];
+  const push = (frame) => {
+    if (!frame || frame === window || frames.includes(frame)) return;
+    frames.push(frame);
+  };
   try {
-    return Boolean(window.top && window.top !== window);
+    push(window.parent);
   } catch {
-    return false;
+    /* cross-origin parent */
   }
+  try {
+    let frame = window.parent;
+    while (frame && frame !== frame.parent) {
+      push(frame.parent);
+      frame = frame.parent;
+    }
+  } catch {
+    /* stop at the first cross-origin frame */
+  }
+  return frames;
 }
 
 function postToDesktop(payload) {
-  if (!canReachDesktop()) return false;
-  try {
-    window.top.postMessage(payload, "*");
-    return true;
-  } catch {
-    return false;
+  const frames = desktopFrames();
+  if (frames.length === 0) return false;
+  let sent = false;
+  for (const frame of frames) {
+    try {
+      frame.postMessage(payload, "*");
+      sent = true;
+    } catch {
+      /* ignore a frame that rejects the message */
+    }
   }
+  return sent;
 }
 
 /**
@@ -114,10 +134,23 @@ export function attachJChatBubble({ position = "right" } = {}) {
     renderIdentity();
   }
 
-  function toggleDesktopJChat() {
-    if (!postToDesktop({ type: "joshu:toggle-jchat-docked", source: "jweb" })) {
-      console.warn("[jweb] jChat launcher needs the ArozOS desktop (not standalone jWeb)");
+  function toggleDesktopJChat(event) {
+    event?.preventDefault();
+    event?.stopPropagation();
+    for (const frame of desktopFrames()) {
+      try {
+        if (typeof frame.joshuToggleDockedJChat === "function") {
+          frame.joshuToggleDockedJChat();
+          return;
+        }
+      } catch {
+        /* cross-origin frame */
+      }
     }
+    if (postToDesktop({ type: "joshu:toggle-jchat-docked", source: "jweb" })) return;
+    const url = new URL("/", window.location.origin);
+    url.hash = "open-jchat";
+    window.open(url.href, "_blank", "noopener");
   }
 
   headBtn.addEventListener("click", toggleDesktopJChat);
