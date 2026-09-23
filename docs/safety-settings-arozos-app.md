@@ -35,6 +35,16 @@ Open from the ArozOS **Safety** desktop icon, or `http://127.0.0.1:8787/safety-s
 
 ## UI sections
 
+### Browser backend (jWeb / handoff)
+
+| Control | Description |
+|---------|-------------|
+| Shared browser | **Local Chromium** (default, OSS self-host) or **Browser Use Cloud** (Joshu-managed fleet with control plane) |
+
+Saved to `.joshu/safety-settings/local-env.json` as `JOSHU_BROWSER_BACKEND` and `JOSHU_CLOUD_BROWSER`. Overrides `instance.env` on stack restart. **Restart `joshu-stack`** after changing. Cloud option is disabled when `CONTROL_PLANE_URL` + instance agent token are missing.
+
+See [`hitl-camofox-notes.md` — Browser backend](hitl-camofox-notes.md#browser-backend-local-chromium-vs-browser-use-cloud).
+
 ### Status bar
 
 Live summary: gate active/off, owner SMS configured, Slack chat configured, **Hermes gateway** running/stopped.

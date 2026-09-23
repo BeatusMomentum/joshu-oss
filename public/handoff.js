@@ -1,6 +1,7 @@
 import { attachVncClipboard } from "./vnc-clipboard.js";
 import { wrapPasswordInput } from "./handoff-password-toggle.js";
 import { connectScreencast } from "./screencast-client.js?v=20260922d";
+import { mountCloudLiveFrame } from "./cloud-live-frame.js?v=ui-browser-21";
 import { configureNovncRfb, loadNovncRfb } from "./vnc-client.js";
 import { attachVncLocalGestures } from "./vnc-gestures.js";
 import { attachVncScrollBridge } from "./vnc-scroll.js";
@@ -172,6 +173,7 @@ async function main() {
   let lastScan = { fields: [], primaryButtonId: null, primaryButtonLabel: null };
   let lastPageKey = "";
   let scanInFlight = false;
+  let fastScanInFlight = false;
   let fillInFlight = false;
   let quietUntil = 0;
 
@@ -232,33 +234,51 @@ async function main() {
     applyPageMeta(data?.pageTitle, data?.pageUrl);
   }
 
-  async function scanFields() {
-    if (scanInFlight) return;
-    scanInFlight = true;
-    scanBtn.disabled = true;
-    overlayStatus.textContent = "Scanning page fields…";
+  function applyScanResult(data) {
+    lastScan = {
+      fields: Array.isArray(data.fields) ? data.fields : [],
+      primaryButtonId: data.primaryButtonId || null,
+      primaryButtonLabel: data.primaryButtonLabel || null,
+    };
+    rememberPageKey(data);
+    renderOverlayFields(fieldsForm, lastScan);
+    updateFillButton();
+  }
+
+  function setScanStatusMessage() {
+    if (lastScan.fields.length === 0) {
+      overlayStatus.textContent =
+        "No fillable fields on this page — use paste into focused field. Overlay updates when the page changes.";
+      return;
+    }
+    overlayStatus.textContent = lastScan.primaryButtonLabel
+      ? `Type below, then fill. Will click “${lastScan.primaryButtonLabel}”.`
+      : "Type below, then fill. No continue button detected — tap it in the picture after fill.";
+  }
+
+  /** fast=1 skips the LLM — DOM heuristics only (auto-rescan). Full scan labels fields with AI. */
+  async function scanFields({ fast = false, silent = false } = {}) {
+    if (scanInFlight && !fast) return;
+    if (fast && fastScanInFlight) return;
+    if (fast) fastScanInFlight = true;
+    else {
+      scanInFlight = true;
+      scanBtn.disabled = true;
+    }
+    if (!silent) overlayStatus.textContent = fast ? "Scanning page fields…" : "Refining field labels…";
     try {
-      const data = await getJson(`api/browser-handoff/${encodeURIComponent(cfg.handoffId)}/form-fields`);
-      lastScan = {
-        fields: Array.isArray(data.fields) ? data.fields : [],
-        primaryButtonId: data.primaryButtonId || null,
-        primaryButtonLabel: data.primaryButtonLabel || null,
-      };
-      rememberPageKey(data);
-      renderOverlayFields(fieldsForm, lastScan);
-      if (lastScan.fields.length === 0) {
-        overlayStatus.textContent = "No fillable fields on this page — use paste into focused field. Overlay updates when the page changes.";
-      } else {
-        overlayStatus.textContent = lastScan.primaryButtonLabel
-          ? `Type below, then fill. Will click “${lastScan.primaryButtonLabel}”.`
-          : "Type below, then fill. No continue button detected — tap it in the picture after fill.";
-      }
-      updateFillButton();
+      const q = fast ? "?fast=1" : "";
+      const data = await getJson(`api/browser-handoff/${encodeURIComponent(cfg.handoffId)}/form-fields${q}`);
+      applyScanResult(data);
+      if (!silent) setScanStatusMessage();
     } catch (err) {
-      overlayStatus.textContent = String(err.message || err);
+      if (!silent) overlayStatus.textContent = String(err.message || err);
     } finally {
-      scanInFlight = false;
-      scanBtn.disabled = false;
+      if (fast) fastScanInFlight = false;
+      else {
+        scanInFlight = false;
+        scanBtn.disabled = false;
+      }
     }
   }
 
@@ -272,7 +292,7 @@ async function main() {
       const nextUrl = typeof data.pageUrl === "string" ? data.pageUrl : "";
       applyPageMeta(data.pageTitle, nextUrl);
       if (!nextKey || nextKey === lastPageKey) return;
-      await scanFields();
+      await scanFields({ fast: true });
     } catch {
       /* non-fatal */
     }
@@ -359,7 +379,7 @@ async function main() {
     }
   });
   scanBtn.addEventListener("click", () => {
-    scanFields().catch(() => undefined);
+    scanFields({ fast: false }).catch(() => undefined);
   });
   fillBtn.addEventListener("click", () => {
     fillFields().catch(() => undefined);
@@ -376,7 +396,7 @@ async function main() {
   heartbeat();
   rescanTimer = window.setInterval(() => {
     maybeRescanIfPageChanged().catch(() => undefined);
-  }, 1500);
+  }, 2500);
 
   const res = await fetch("api/status", { cache: "no-store" });
   if (!res.ok) throw new Error(`status ${res.status}`);
@@ -389,6 +409,19 @@ async function main() {
   await fetch("api/camofox/fit-viewport", { method: "POST", cache: "no-store" }).catch(() => undefined);
 
   const connectLive = async () => {
+    if (data?.liveView?.mode === "cloud") {
+      const framePath = `api/browser/live-frame?handoffId=${encodeURIComponent(cfg.handoffId)}&t=${encodeURIComponent(cfg.token)}&exp=${encodeURIComponent(cfg.exp)}`;
+      mountCloudLiveFrame(screenEl, framePath, {
+        width: data.browserViewport?.width,
+        height: data.browserViewport?.height,
+        interactive: true,
+        pollMs: 4000,
+        onStatus: (text) => {
+          statusEl.textContent = text;
+        },
+      });
+      return;
+    }
     if (data?.liveView?.mode === "screencast" && data.liveView.websocketPath) {
       if (rfb) {
         rfb.disconnect();
@@ -490,7 +523,9 @@ async function main() {
   });
   await connectLive();
   layout();
-  scanFields().catch(() => undefined);
+  scanFields({ fast: true })
+    .then(() => scanFields({ fast: false, silent: true }))
+    .catch(() => undefined);
 
   window.setInterval(async () => {
     const statusRes = await fetch("api/status", { cache: "no-store" }).catch(() => undefined);

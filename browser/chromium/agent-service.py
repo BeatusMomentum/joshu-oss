@@ -10,9 +10,27 @@ import asyncio
 import json
 import os
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CDP_URL = os.environ.get("BROWSER_CDP_URL", "http://127.0.0.1:9222").rstrip("/")
+
+
+def _cdp_url() -> str:
+    """Joshu holds the cloud CDP socket. Fall back to the process env for local Chromium."""
+    base = (os.environ.get("PUBLIC_BASE_PATH") or "").rstrip("/")
+    port = (os.environ.get("PORT") or os.environ.get("JOSHU_PORT") or "8788").strip()
+    url = f"http://127.0.0.1:{port}{base}/api/browser/cdp"
+    try:
+        req = urllib.request.Request(url, headers={"Host": f"127.0.0.1:{port}", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=3) as res:
+            body = json.loads(res.read().decode("utf-8"))
+            found = str(body.get("cdpUrl") or "").strip()
+            if found:
+                return found
+    except Exception:
+        pass
+    return CDP_URL
 PORT = int(os.environ.get("BROWSER_AGENT_PORT", "9378"))
 MAX_STEPS = int(os.environ.get("BROWSER_AGENT_MAX_STEPS", "40"))
 
@@ -80,7 +98,7 @@ async def _run(task: str) -> None:
     try:
         from browser_use import Agent, Browser
 
-        browser = Browser(cdp_url=CDP_URL)
+        browser = Browser(cdp_url=_cdp_url())
         _agent = Agent(
             task=task,
             llm=_llm(),

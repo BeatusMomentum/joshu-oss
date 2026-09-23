@@ -749,6 +749,19 @@ export class HermesApiRunner extends EventEmitter {
     return this.gatewayAutoStart;
   }
 
+  /**
+   * Point Hermes at a replacement CDP websocket (Browser Use recreates the browser).
+   * Config is rewritten and the gateway reloads so navigate/click use the new socket.
+   * The URL is not logged.
+   */
+  async retargetBrowserCdp(cdpUrl: string): Promise<void> {
+    const next = cdpUrl.trim();
+    if (!next || next === (this.opts.cdpUrl || "").trim()) return;
+    this.opts.cdpUrl = next;
+    await this.ensureJoshuHermesConfig();
+    if (this.gatewayAutoStart) this.scheduleGatewayMcpReload("cloud browser CDP");
+  }
+
   getRun(id: string): RunRecord | undefined {
     return this.runs.get(id);
   }
@@ -2239,8 +2252,9 @@ export class HermesApiRunner extends EventEmitter {
       console.log(`[hermes-api] configured Joshu Hermes runtime at ${configPath}`);
     }
     if (changed && cdpUrl) {
+      const where = cdpUrl.startsWith("http://127.0.0.1") || cdpUrl.startsWith("http://localhost") ? cdpUrl : "remote";
       console.log(
-        `[hermes-api] browser CDP ${cdpUrl} (backend off). ` +
+        `[hermes-api] browser CDP ${where} (backend off). ` +
           "Restart the Hermes gateway so navigate/click use the shared Chromium.",
       );
     } else if (changed && browser.camofox) {

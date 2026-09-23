@@ -6,6 +6,7 @@ import type { Request, Response as ExpressResponse, Router } from "express";
 import { browserHandoffLockStub } from "./browserHandoff/lock.js";
 import { isBrowserHandoffLocked } from "./browserHandoff/store.js";
 import { isDirectLocalhostRequest } from "./httpLocalhost.js";
+import { cloudBrowserEnabled, ensureCloudBrowser } from "./cloudBrowser.js";
 
 export type BrowserAgentPhase = "idle" | "running" | "paused" | "done" | "error" | "unreachable";
 
@@ -108,6 +109,7 @@ export function registerBrowserAgentRoutes(router: Router, projectRoot: string):
 
 /** Blocks until the sidecar run finishes, including time spent paused for handoff. */
 export async function runBrowserAgentTask(task: string): Promise<BrowserAgentStatus> {
+  if (cloudBrowserEnabled()) await ensureCloudBrowser();
   noteBrowserAgentPhase("running");
   try {
     const res = await agentFetch(

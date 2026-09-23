@@ -34,13 +34,16 @@ export function registerSafetySettingsRoutes(
       if (body.restartGateway && runner) {
         gateway = await runner.restartGateway(projectRoot);
       }
+      const browserChanged = Boolean(body.browser?.backend);
       res.json({
         ok: true,
         settings,
         gateway,
         note: body.restartGateway
           ? "Saved and Hermes gateway restarted."
-          : "Saved. Restart the Hermes gateway if Slack/Telegram tokens changed.",
+          : browserChanged
+            ? "Saved. Restart joshu-stack for the browser backend change (local Chromium vs Browser Use Cloud)."
+            : "Saved. Restart the Hermes gateway if Slack/Telegram tokens changed.",
       });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });

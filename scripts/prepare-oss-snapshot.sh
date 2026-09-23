@@ -23,6 +23,8 @@ fi
 rsync -a "${RSYNC_DELETE[@]}" \
   --exclude .git \
   --exclude node_modules \
+  --exclude __pycache__ \
+  --exclude '*.pyc' \
   --exclude .next \
   --exclude dist \
   --exclude .local \

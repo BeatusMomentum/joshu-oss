@@ -3,6 +3,7 @@
  */
 
 import type { Request, Response, Router } from "express";
+import { cloudBrowserEnabled } from "./cloudBrowser.js";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -192,7 +193,8 @@ export function registerInstanceHealthRoutes(
 
     const components = {
       joshu: { ok: true },
-      camofox: { ok: camofox.reachable },
+      // Cloud boxes have no local Camofox/Chromium on :9377. The shared browser is Browser Use.
+      camofox: { ok: cloudBrowserEnabled() || camofox.reachable },
       hermes: { ok: hermes.available },
       hindsight: { ok: hindsight.ok },
       gbrain: {

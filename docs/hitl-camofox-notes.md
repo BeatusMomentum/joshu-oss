@@ -2,6 +2,25 @@
 
 Fleet topology: [`vps-sandbox/runtime-topology.md`](vps-sandbox/runtime-topology.md).
 
+## Browser backend (local Chromium vs Browser Use Cloud)
+
+Joshu supports two shared-browser backends. **Default is local Chromium** (OSS self-host, no browser-use.com subscription).
+
+| Backend | When | Live view | Agent / handoff CDP |
+|---------|------|-----------|---------------------|
+| **Local Chromium** | Default; or Safety → **Local Chromium** | noVNC / CDP screencast (`:6080`, `:9222`) | Box `BROWSER_CDP_URL` |
+| **Browser Use Cloud** | Fleet boxes; Safety → **Browser Use Cloud** | Browser Use iframe (`/api/browser/live-frame`) | CP-provisioned `cdpUrl` |
+
+**Precedence:** Safety Settings (`.joshu/safety-settings/local-env.json`, keys `JOSHU_BROWSER_BACKEND` / `JOSHU_CLOUD_BROWSER`) overrides `instance.env`. Then `instance.env` / process env. Then default **local**.
+
+**Toggle:** ArozOS desktop → **Safety** → *Browser backend (jWeb / handoff)*. After saving, **restart `joshu-stack`** so `vps-start.sh` starts the right browser process and Joshu attaches to the correct CDP endpoint.
+
+**OSS self-host:** leave **Local Chromium**. Optional `PROXY_*` (Decodo) for residential egress — see below. Do not set `JOSHU_CLOUD_BROWSER=1` unless the box is enrolled on the Joshu control plane.
+
+**Fleet / Patrick:** may ship with `JOSHU_CLOUD_BROWSER=1` in `instance.env`. Owners can switch back to local Chromium in Safety Settings; the saved choice wins on the next stack restart.
+
+Legacy **Camofox (Firefox)** still boots on very old images without `/opt/browser/entrypoint.sh`; current images use **Chromium** for the local path.
+
 ## Chromium CDP (shared browser)
 
 Local `scripts/ensure-camofox-container.sh` starts **one headed Chromium** (`joshu-chromium-cdp:local`) instead of Camofox. CDP is `http://127.0.0.1:9222` (published on localhost only). Chrome 136+ binds DevTools to container localhost, so the supervisor proxies `0.0.0.0:9222` to that socket. noVNC stays on `:6080`, and the control health port stays `:9377` so jWeb and handoff keep the same URLs.

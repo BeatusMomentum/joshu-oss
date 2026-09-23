@@ -47,10 +47,16 @@ export interface StatusReport {
     /** Camofox websockify, still under /joshu/novnc/websockify. */
     websocketPath: string;
   };
-  /** Chromium boxes use CDP screencast. Camofox boxes stay on noVNC. */
+  /**
+   * Chromium boxes use CDP screencast. Camofox boxes stay on noVNC.
+   * Cloud boxes embed a gated live frame. The live URL is not on this payload.
+   */
   liveView?: {
-    mode: "screencast" | "novnc";
-    websocketPath: string;
+    mode: "screencast" | "novnc" | "cloud";
+    websocketPath?: string;
+  };
+  browserAgent?: {
+    phase: string;
   };
   browserViewport?: {
     width: number;

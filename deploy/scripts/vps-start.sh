@@ -121,6 +121,51 @@ PY
 
 load_box_secrets_env
 
+# Safety Settings browser backend — local-env overrides instance.env (user toggle wins).
+load_safety_settings_browser_env() {
+  local users_root="${AROZ_DATA}/files/users"
+  [[ -d "${users_root}" ]] || return 0
+  local user_dir json backend cloud_flag
+  for user_dir in "${users_root}"/*; do
+    [[ -d "${user_dir}" ]] || continue
+    json="${user_dir}/.joshu/safety-settings/local-env.json"
+    [[ -f "${json}" ]] || continue
+    backend="$(python3 - "${json}" <<'PY' 2>/dev/null || true
+import json, sys
+with open(sys.argv[1]) as f:
+    print((json.load(f).get("JOSHU_BROWSER_BACKEND") or "").strip().lower())
+PY
+)"
+    cloud_flag="$(python3 - "${json}" <<'PY' 2>/dev/null || true
+import json, sys
+with open(sys.argv[1]) as f:
+    print((json.load(f).get("JOSHU_CLOUD_BROWSER") or "").strip())
+PY
+)"
+    if [[ "${backend}" == "local" || "${backend}" == "chromium" ]]; then
+      export JOSHU_CLOUD_BROWSER=0
+      echo "[vps-start] browser backend: local Chromium (Safety Settings)"
+      return 0
+    fi
+    if [[ "${backend}" == "cloud" ]]; then
+      export JOSHU_CLOUD_BROWSER=1
+      echo "[vps-start] browser backend: Browser Use Cloud (Safety Settings)"
+      return 0
+    fi
+    if [[ -n "${cloud_flag}" ]]; then
+      if [[ "${cloud_flag}" =~ ^(1|true|yes)$ ]]; then
+        export JOSHU_CLOUD_BROWSER=1
+      else
+        export JOSHU_CLOUD_BROWSER=0
+      fi
+      echo "[vps-start] browser backend: JOSHU_CLOUD_BROWSER=${JOSHU_CLOUD_BROWSER} (Safety Settings)"
+      return 0
+    fi
+  done
+}
+
+load_safety_settings_browser_env
+
 # gbrain CLI is installed via Bun; the /usr/local/bin/gbrain symlink uses #!/usr/bin/env bun.
 export PATH="${HOME}/.bun/bin:/usr/local/bin:${PATH}"
 export GBRAIN_BIN="${GBRAIN_BIN:-$(command -v gbrain 2>/dev/null || echo "${HOME}/.bun/bin/gbrain")}"
@@ -913,7 +958,11 @@ ensure_shared_chromium() {
 }
 ensure_shared_chromium
 
-if [[ -x /opt/browser/entrypoint.sh ]] && command -v chromium >/dev/null 2>&1; then
+if [[ "${JOSHU_CLOUD_BROWSER:-}" =~ ^(1|true|yes)$ ]]; then
+  # Shared browser is Browser Use Cloud. Joshu attaches over CDP when jWeb, a
+  # handoff, or a browser task opens. Local Chromium stays off.
+  echo "[vps-start] shared browser is Browser Use Cloud (4:3 1024x768)"
+elif [[ -x /opt/browser/entrypoint.sh ]] && command -v chromium >/dev/null 2>&1; then
   export BROWSER_CDP_URL="${BROWSER_CDP_URL:-http://127.0.0.1:9222}"
   echo "[vps-start] Chromium CDP ${BROWSER_CDP_URL}"
   ( bash /opt/browser/entrypoint.sh ) &

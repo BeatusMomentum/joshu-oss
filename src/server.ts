@@ -80,14 +80,28 @@ import { registerVoiceWebRoutes } from "./voiceWebApi.js";
 import { createTwilioUpgradeHandler, registerTwilioVoiceRoutes } from "./twilioPhoneGateway.js";
 import { registerTwilioSmsRoutes } from "./twilioSmsGateway.js";
 import { registerAgUiRoutes } from "./agUiApi.js";
-import { verifyArozosDesktopSession } from "./httpLocalhost.js";
+import { isDirectLocalhostRequest, verifyArozosDesktopSession } from "./httpLocalhost.js";
 import { RealtimeGoalBroker } from "./realtimeGoals/broker.js";
 import { createRealtimeGoalDeliveryHandler } from "./realtimeGoals/delivery.js";
 import { registerRealtimeGoalRoutes } from "./realtimeGoals/routes.js";
 import { registerRealtimeGoalVoiceRoutes } from "./realtimeGoals/voiceCallback.js";
 import { registerAppInvokeRoutes } from "./appInvokeApi.js";
-import { getPendingHandoffPinUrl, registerBrowserHandoffRoutes } from "./browserHandoff/index.js";
-import { readBrowserAgentStatus, registerBrowserAgentRoutes, screencastInputAllowed } from "./browserAgent.js";
+import { browserHandoffViewerAllowed, getPendingHandoffPinUrl, registerBrowserHandoffRoutes } from "./browserHandoff/index.js";
+import { getPendingHandoff } from "./browserHandoff/store.js";
+import { browserAgentPhase, readBrowserAgentStatus, registerBrowserAgentRoutes, screencastInputAllowed } from "./browserAgent.js";
+import {
+  CLOUD_BROWSER_SCREEN,
+  cloudBrowserEnabled,
+  cloudCdpUrl,
+  cloudLiveFrameUrl,
+  cloudBrowserId,
+  cloudBrowserSessionActive,
+  ensureCloudBrowser,
+  noteLiveFramePoll,
+  touchCloudBrowser,
+  fillCloudBrowserWindow,
+  startCloudBrowserLifecycle,
+} from "./cloudBrowser.js";
 import { BrowserScreencastHub, screencastWsPath } from "./browserScreencast.js";
 import { registerHindsightRecallRoute } from "./hindsightRecallApi.js";
 import type { CreateRunRequest, CreateRunResponse, RunRecord, StatusReport } from "./types.js";
@@ -226,7 +240,8 @@ const HINDSIGHT_API_KEY = envOr("HINDSIGHT_API_KEY", "");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
-const CDP_HTTP_URL = (process.env.BROWSER_CDP_URL || "").trim();
+const cloudBrowserActive = () => cloudBrowserEnabled(PROJECT_ROOT);
+const CDP_HTTP_URL = cloudBrowserActive() ? "" : (process.env.BROWSER_CDP_URL || "").trim();
 const SCRENCAST_WS_PATH = screencastWsPath(PUBLIC_BASE_PATH);
 const browserScreencast = CDP_HTTP_URL
   ? new BrowserScreencastHub({
@@ -248,7 +263,7 @@ const normalizedNovncClientPath = withPublicBase(NOVNC_CLIENT_PATH).replace(/\/+
 const runner = new HermesApiRunner({
   binary: HERMES_BIN,
   camofoxUrl: CAMOFOX_URL,
-  cdpUrl: BROWSER_CDP_URL,
+  cdpUrl: cloudBrowserActive() ? "" : BROWSER_CDP_URL,
   apiBaseUrl: HERMES_API_BASE_URL,
   apiKey: HERMES_API_KEY,
   autoStartGateway: HERMES_API_AUTO_START,
@@ -263,13 +278,28 @@ realtimeGoalBroker.start();
 
 const camofoxSession = new CamofoxSessionCoordinator({
   camofoxUrl: CAMOFOX_URL,
-  cdpUrl: BROWSER_CDP_URL,
+  cdpUrl: cloudBrowserActive() ? "" : BROWSER_CDP_URL,
   userId: HITL_CAMOFOX_USER_ID,
   sessionKey: HITL_CAMOFOX_SESSION_KEY,
   singleTab: HITL_CAMOFOX_SINGLE_TAB,
-  viewportWidth: CAMOFOX_VIEWPORT_WIDTH,
-  viewportHeight: CAMOFOX_VIEWPORT_HEIGHT,
+  viewportWidth: cloudBrowserActive() ? CLOUD_BROWSER_SCREEN.width : CAMOFOX_VIEWPORT_WIDTH,
+  viewportHeight: cloudBrowserActive() ? CLOUD_BROWSER_SCREEN.height : CAMOFOX_VIEWPORT_HEIGHT,
+  lockViewport: cloudBrowserActive(),
 });
+if (cloudBrowserActive()) {
+  const idleMs = Number(envOr("BROWSER_IDLE_TIMEOUT_MS", "300000"));
+  startCloudBrowserLifecycle({
+    idleMs: Number.isFinite(idleMs) ? idleMs : 300000,
+    busy: () => browserAgentPhase() === "running" || Boolean(getPendingHandoff(PROJECT_ROOT)),
+    onCdp: async (cdpUrl) => {
+      camofoxSession.useCdpUrl(cdpUrl);
+      await fillCloudBrowserWindow(cdpUrl).catch((err: Error) => {
+        console.warn(`[cloud-browser] window fill skipped: ${err.message}`);
+      });
+      await runner.retargetBrowserCdp(cdpUrl);
+    },
+  });
+}
 
 const dockerSupervisor = new DockerSupervisor({
   dockerBin: DOCKER_BIN,
@@ -649,8 +679,9 @@ function buildAppRouter(): {
     }
 
     const engine = (cam.camofox.health as { engine?: string } | undefined)?.engine;
-    const liveView =
-      engine === "chromium" || Boolean(CDP_HTTP_URL)
+    const liveView = cloudBrowserActive()
+      ? { mode: "cloud" as const }
+      : engine === "chromium" || Boolean(CDP_HTTP_URL)
         ? { mode: "screencast" as const, websocketPath: SCRENCAST_WS_PATH }
         : { mode: "novnc" as const, websocketPath: cam.novnc.websocketPath };
     const report: StatusReport = {
@@ -659,7 +690,10 @@ function buildAppRouter(): {
       docker,
       novnc: cam.novnc,
       liveView,
-      browserViewport: { width: CAMOFOX_VIEWPORT_WIDTH, height: CAMOFOX_VIEWPORT_HEIGHT },
+      browserAgent: { phase: browserAgentPhase() },
+      browserViewport: cloudBrowserActive()
+        ? { width: CLOUD_BROWSER_SCREEN.width, height: CLOUD_BROWSER_SCREEN.height }
+        : { width: CAMOFOX_VIEWPORT_WIDTH, height: CAMOFOX_VIEWPORT_HEIGHT },
       activeSessionId: runner.getActiveSessionId(),
       lastBrowserUrl: runner.getLastBrowserUrl(),
       lastCamofoxUserId: runner.getLastCamofoxUserId() ?? HITL_CAMOFOX_USER_ID,
@@ -699,8 +733,85 @@ function buildAppRouter(): {
     }
   });
 
+  /** Sidecar reads the cloud CDP socket. Localhost only. Do not log the URL. */
+  router.get("/api/browser/cdp", (req: Request, res: Response) => {
+    if (!isDirectLocalhostRequest(req)) {
+      res.status(403).json({ error: "browser cdp is localhost-only" });
+      return;
+    }
+    const cdpUrl = cloudCdpUrl();
+    if (!cdpUrl) {
+      res.status(404).json({ error: "browser_not_running" });
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ cdpUrl });
+  });
+
+  /**
+   * Gated picture URL. jWeb needs a desktop session. The phone needs the
+   * signed handoff link and the box-password cookie. The URL is not on /api/status.
+   */
+  router.get("/api/browser/live-frame", async (req: Request, res: Response) => {
+    const handoffViewer = browserHandoffViewerAllowed(req);
+    const allowed = handoffViewer || (await verifyArozosDesktopSession(req));
+    if (!allowed) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    if (!cloudBrowserActive()) {
+      res.status(404).json({ error: "cloud_browser_off" });
+      return;
+    }
+    try {
+      // Active session: touch only — no control-plane round trip on every 8s poll.
+      if (cloudBrowserSessionActive()) {
+        touchCloudBrowser();
+        const url = cloudLiveFrameUrl();
+        if (!url) {
+          res.status(503).json({ error: "live_frame_unavailable" });
+          return;
+        }
+        res.setHeader("Cache-Control", "no-store");
+        res.json({ url, browserId: cloudBrowserId(), agentDriving: browserAgentPhase() === "running" });
+        return;
+      }
+      // Cold start: debounce desktop jWeb so a one-shot window restore does not spin up
+      // Browser Use while the owner is asleep. Real viewers poll every 8s; handoff skips.
+      const { shouldEnsure } = handoffViewer ? { shouldEnsure: true } : noteLiveFramePoll();
+      if (!shouldEnsure) {
+        res.setHeader("Cache-Control", "no-store");
+        res.json({ url: null, warming: true, agentDriving: false });
+        return;
+      }
+      await ensureCloudBrowser();
+      const url = cloudLiveFrameUrl();
+      if (!url) {
+        res.status(503).json({ error: "live_frame_unavailable" });
+        return;
+      }
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ url, browserId: cloudBrowserId(), agentDriving: browserAgentPhase() === "running" });
+    } catch (err) {
+      res.status(502).json({ error: (err as Error).message });
+    }
+  });
+
   router.post("/api/camofox/fit-viewport", async (_req: Request, res: Response) => {
     try {
+      // Cloud browser starts from debounced live-frame, navigate, warm, or browser_task.
+      if (cloudBrowserActive()) {
+        if (!cloudBrowserSessionActive()) {
+          res.json({
+            ok: true,
+            skipped: true,
+            width: CLOUD_BROWSER_SCREEN.width,
+            height: CLOUD_BROWSER_SCREEN.height,
+          });
+          return;
+        }
+        touchCloudBrowser();
+      }
       // Also the jWeb warm path after Camofox browser idle_shutdown — creates a
       // tab (and Firefox) when health shows browserConnected:false.
       await bootstrapCamofoxStartUrl(true);
@@ -713,8 +824,8 @@ function buildAppRouter(): {
       const metrics = await camofoxSession.readViewportMetrics(tab.tabId);
       res.json({
         ok: true,
-        width: CAMOFOX_VIEWPORT_WIDTH,
-        height: CAMOFOX_VIEWPORT_HEIGHT,
+        width: cloudBrowserActive() ? CLOUD_BROWSER_SCREEN.width : CAMOFOX_VIEWPORT_WIDTH,
+        height: cloudBrowserActive() ? CLOUD_BROWSER_SCREEN.height : CAMOFOX_VIEWPORT_HEIGHT,
         tab,
         metrics,
       });
@@ -726,6 +837,10 @@ function buildAppRouter(): {
   // Agent/kanban warm alias — same bootstrap as fit-viewport without viewport resize.
   router.post("/api/camofox/warm", async (_req: Request, res: Response) => {
     try {
+      if (cloudBrowserActive()) {
+        await ensureCloudBrowser();
+        touchCloudBrowser();
+      }
       await bootstrapCamofoxStartUrl(true);
       let tab = (await alignSharedBrowserTab()).tab;
       if (!tab) {
@@ -748,6 +863,7 @@ function buildAppRouter(): {
     try {
       const body = (req.body ?? {}) as { url?: unknown };
       const raw = typeof body.url === "string" ? body.url.trim() : "";
+      if (cloudBrowserActive()) await ensureCloudBrowser();
       if (!raw) return res.status(400).json({ error: "url is required" });
       let url: string;
       try {

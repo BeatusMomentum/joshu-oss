@@ -5,6 +5,13 @@ import { ownerChannelStatus, readOwnerChannelConfig, writeOwnerChannelConfig } f
 import { isMcpToolPolicyEnabled, loadMcpToolPolicy } from "../mcpToolPolicy.js";
 import { readHermesSlackMessagingConfig } from "../hermesMessagingEnv.js";
 import { twilioSmsGatewayEnabled } from "../twilioSmsSend.js";
+import {
+  browserBackendSource,
+  cloudBrowserEnabled,
+  resolveBrowserBackend,
+  type BrowserBackend,
+} from "../browserBackend.js";
+import { cloudBrowserConfigured } from "../cloudBrowser.js";
 import { readLocalEnvOverrides, writeLocalEnvOverrides } from "./localEnv.js";
 
 export type SettingSource = "env" | "local-env" | "policy-file" | "default";
@@ -52,6 +59,12 @@ export type SafetySettingsPayload = {
     ownerChannelLinked: boolean;
     smsConfigured: boolean;
     gateEnabled: boolean;
+  };
+  browser: {
+    backend: BrowserBackend;
+    backendSource: SettingSource;
+    cloudConfigured: boolean;
+    requiresStackRestart: boolean;
   };
 };
 
@@ -178,6 +191,12 @@ export function readSafetySettings(projectRoot = process.cwd()): SafetySettingsP
       smsConfigured,
       gateEnabled: policy.enabled && owner.linked,
     },
+    browser: {
+      backend: resolveBrowserBackend(projectRoot),
+      backendSource: browserBackendSource(projectRoot),
+      cloudConfigured: cloudBrowserConfigured(),
+      requiresStackRestart: true,
+    },
   };
 }
 
@@ -208,6 +227,9 @@ export type SafetySettingsUpdate = {
     clearHermesTelegramBotToken?: boolean;
     clearSlackBotToken?: boolean;
     clearSlackAppToken?: boolean;
+  };
+  browser?: {
+    backend?: BrowserBackend;
   };
 };
 
@@ -294,6 +316,20 @@ export function writeSafetySettings(update: SafetySettingsUpdate, projectRoot = 
   if (typeof ag?.terminalMailGuardEnabled === "boolean") {
     writeLocalEnvOverrides(
       { JOSHU_TERMINAL_MAIL_GUARD: ag.terminalMailGuardEnabled ? "1" : "0" },
+      projectRoot,
+    );
+  }
+
+  const browser = update.browser;
+  if (browser?.backend === "local" || browser?.backend === "cloud") {
+    if (browser.backend === "cloud" && !cloudBrowserConfigured()) {
+      throw new Error("Browser Use Cloud is not configured on this box (CONTROL_PLANE_URL + INSTANCE_AGENT_TOKEN).");
+    }
+    writeLocalEnvOverrides(
+      {
+        JOSHU_BROWSER_BACKEND: browser.backend,
+        JOSHU_CLOUD_BROWSER: browser.backend === "cloud" ? "1" : "0",
+      },
       projectRoot,
     );
   }

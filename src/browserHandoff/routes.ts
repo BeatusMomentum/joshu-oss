@@ -23,6 +23,8 @@ import {
   tryCompletePendingHandoffFromOwnerConfirm,
 } from "./ownerHandoffConfirm.js";
 import { verifyHandoffToken } from "./token.js";
+import { cloudBrowserEnabled, touchCloudBrowser } from "../cloudBrowser.js";
+import { heuristicOverlayScan } from "./formCatalog.js";
 import { scanCatalogWithLlm } from "./formScan.js";
 import { deliverSmsHandoffContinuation } from "./smsContinue.js";
 import { checkShareChatRateLimit } from "../shareChat/rateLimit.js";
@@ -61,6 +63,13 @@ function verifyHandoffLink(
     return { ok: false, status: 401, error: verified.reason };
   }
   return { ok: true, exp: tokenParts.exp, t: tokenParts.t };
+}
+
+/** Phone picture: signed link plus the box-password cookie. A desktop login is not enough. */
+export function browserHandoffViewerAllowed(req: Request): boolean {
+  const id = readString(req.query.handoffId);
+  if (!id) return false;
+  return verifyHandoffAccess(req, id).ok;
 }
 
 function verifyHandoffAccess(
@@ -133,9 +142,19 @@ function sendHandoffLoginPage(
 </html>`);
 }
 
-async function touchCamofoxKeepalive(camofoxSession: CamofoxSessionCoordinator): Promise<void> {
+/** Keep Camofox/CDP warm and reset cloud-browser idle while the owner is on handoff. */
+async function touchBrowserKeepalive(camofoxSession: CamofoxSessionCoordinator): Promise<void> {
   await camofoxSession.listTabs().catch(() => undefined);
+  if (cloudBrowserEnabled()) touchCloudBrowser();
 }
+
+type HandoffFieldCacheEntry = {
+  pageKey: string;
+  fast?: Record<string, unknown>;
+  full?: Record<string, unknown>;
+};
+
+const handoffFieldCache = new Map<string, HandoffFieldCacheEntry>();
 
 function isHandoffLocatorId(value: string): boolean {
   return /^f\d+-[eb]\d+$/.test(value);
@@ -280,7 +299,7 @@ export function registerBrowserHandoffRoutes(
       return;
     }
     void resumeBrowserAgent();
-    await touchCamofoxKeepalive(camofoxSession);
+    await touchBrowserKeepalive(camofoxSession);
     res.json({ ok: true, handoff: publicHandoffView(record) });
   });
 
@@ -311,7 +330,7 @@ export function registerBrowserHandoffRoutes(
       res.status(409).json({ error: "no_matching_pending_handoff" });
       return;
     }
-    await touchCamofoxKeepalive(camofoxSession);
+    await touchBrowserKeepalive(camofoxSession);
     res.json({ ok: true, handoff: publicHandoffView(record) });
   });
 
@@ -331,7 +350,7 @@ export function registerBrowserHandoffRoutes(
       res.status(409).json({ error: "handoff_not_pending", status: record.status });
       return;
     }
-    await touchCamofoxKeepalive(camofoxSession);
+    await touchBrowserKeepalive(camofoxSession);
     // OAuth popups can drop Playwright tab tracking while Firefox keeps running.
     const tab = await camofoxSession.currentTab().catch(() => undefined);
     if (!tab) {
@@ -358,7 +377,7 @@ export function registerBrowserHandoffRoutes(
       return;
     }
     void resumeBrowserAgent();
-    await touchCamofoxKeepalive(camofoxSession);
+    await touchBrowserKeepalive(camofoxSession);
     res.json({ ok: true, handoff: publicHandoffView(record) });
     void deliverSmsHandoffContinuation(projectRoot, record, runner).catch((err) => {
       console.warn("[browser-handoff] SMS continuation error:", err);
@@ -379,6 +398,7 @@ export function registerBrowserHandoffRoutes(
       return;
     }
     try {
+      await touchBrowserKeepalive(camofoxSession);
       const signature = await camofoxSession.readFormSignature();
       res.json({ ok: true, pageUrl: signature.url, pageTitle: signature.title, pageKey: signature.key });
     } catch (err) {
@@ -401,16 +421,28 @@ export function registerBrowserHandoffRoutes(
       return;
     }
     try {
+      const fast = req.query.fast === "1";
+      const signature = await camofoxSession.readFormSignature().catch(() => undefined);
+      const pageKey = signature?.key ?? "";
+      const cached = handoffFieldCache.get(id);
+      if (cached && pageKey && cached.pageKey === pageKey) {
+        const hit = fast ? cached.fast : cached.full;
+        if (hit) {
+          await touchBrowserKeepalive(camofoxSession);
+          res.json(hit);
+          return;
+        }
+      }
+
       const catalog = await camofoxSession.listFormFields();
-      const overlay = await scanCatalogWithLlm(catalog);
+      const overlay = fast ? heuristicOverlayScan(catalog) : await scanCatalogWithLlm(catalog);
       setHandoffLastScan(projectRoot, id, {
         fieldIds: overlay.fields.map((field) => field.id),
         primaryButtonId: overlay.primaryButtonId,
         scannedAt: new Date().toISOString(),
       });
-      await touchCamofoxKeepalive(camofoxSession);
-      const signature = await camofoxSession.readFormSignature().catch(() => undefined);
-      res.json({
+      await touchBrowserKeepalive(camofoxSession);
+      const body = {
         ok: true,
         fields: overlay.fields,
         primaryButtonId: overlay.primaryButtonId,
@@ -419,7 +451,15 @@ export function registerBrowserHandoffRoutes(
         pageUrl: signature?.url,
         pageTitle: signature?.title,
         pageKey: signature?.key,
-      });
+      };
+      if (pageKey) {
+        const entry = handoffFieldCache.get(id) ?? { pageKey };
+        entry.pageKey = pageKey;
+        if (fast) entry.fast = body;
+        else entry.full = body;
+        handoffFieldCache.set(id, entry);
+      }
+      res.json(body);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(502).json({ error: message });
@@ -475,7 +515,7 @@ export function registerBrowserHandoffRoutes(
     }
     try {
       const result = await camofoxSession.fillForm({ fields, buttonId });
-      await touchCamofoxKeepalive(camofoxSession);
+      await touchBrowserKeepalive(camofoxSession);
       res.json({
         ok: result.ok,
         filled: result.filled,
@@ -583,7 +623,7 @@ export function registerBrowserHandoffRoutes(
 <body>
   <div id="handoff-root"></div>
   <script id="handoff-config" type="application/json">${config}</script>
-  <script type="module" src="handoff.js?v=20260922d"></script>
+  <script type="module" src="handoff.js?v=ui-browser-21"></script>
 </body>
 </html>`);
   });

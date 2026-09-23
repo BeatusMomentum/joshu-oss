@@ -1,4 +1,5 @@
 import { connectScreencast } from "./screencast-client.js";
+import { mountCloudLiveFrame } from "./cloud-live-frame.js?v=ui-browser-21";
 import { attachVncClipboard } from "./vnc-clipboard.js";
 import { configureNovncRfb, loadNovncRfb, preferVncLocalGestures } from "./vnc-client.js";
 import { attachVncLocalGestures } from "./vnc-gestures.js";
@@ -82,6 +83,7 @@ const state = {
   vncGestureDetach: null,
   vncReconnectAfter: 0,
   vncAutoConnectDone: false,
+  cloudFrame: null,
   urlBarEditing: false,
   urlBarDirty: false,
 };
@@ -215,7 +217,7 @@ function layoutFillScreen(screenEl) {
 }
 
 function layoutVncScreen() {
-  if (state.screencast) {
+  if (state.screencast || state.cloudFrame) {
     layoutFillScreen(els.vncScreen);
     return null;
   }
@@ -272,6 +274,7 @@ function camofoxBrowserReady(camofox) {
 
 let lastCamofoxWarmAt = 0;
 async function maybeWarmCamofoxBrowser(data) {
+  if (data?.liveView?.mode === "cloud") return false;
   if (camofoxHandoffOperational(data?.camofox)) return false;
   const now = Date.now();
   if (now - lastCamofoxWarmAt < 15_000) {
@@ -330,7 +333,26 @@ function connectScreencastView(websocketPath) {
   });
 }
 
+function connectCloudView(viewport) {
+  if (state.cloudFrame) return;
+  state.screencast?.close();
+  state.screencast = null;
+  disconnectVnc({ clear: false });
+  layoutFillScreen(els.vncScreen);
+  const label = document.getElementById("chrome-vnc-label");
+  if (label) label.textContent = "Live";
+  state.cloudFrame = mountCloudLiveFrame(els.vncScreen, "api/browser/live-frame", {
+    width: viewport?.width,
+    height: viewport?.height,
+    onStatus: (text) => setVncStatus(text, text.startsWith("connected") ? "ok" : "warn"),
+  });
+}
+
 async function maybeConnectVncFromStatus(data, { force = false } = {}) {
+  if (data?.liveView?.mode === "cloud") {
+    connectCloudView(data.browserViewport);
+    return;
+  }
   if (data?.liveView?.mode === "screencast" && data.liveView.websocketPath) {
     if (!camofoxBrowserReady(data.camofox)) {
       if (!state.screencast) setVncStatus("waiting for browser", "warn");

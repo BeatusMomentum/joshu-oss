@@ -189,7 +189,7 @@ function explainInsertFailure(reason?: string): string {
 }
 
 export class CamofoxSessionCoordinator {
-  private readonly cdp: ChromiumCdpSession | null;
+  private cdp: ChromiumCdpSession | null;
 
   constructor(
     private readonly opts: {
@@ -201,6 +201,8 @@ export class CamofoxSessionCoordinator {
       viewportHeight?: number;
       /** When set, drive the shared Chromium over CDP instead of the Camofox HTTP API. */
       cdpUrl?: string;
+      /** Portrait cloud browser: do not resize the page to the viewer. */
+      lockViewport?: boolean;
     },
   ) {
     const cdpUrl = opts.cdpUrl?.trim();
@@ -212,8 +214,28 @@ export class CamofoxSessionCoordinator {
           singleTab: opts.singleTab,
           viewportWidth: opts.viewportWidth,
           viewportHeight: opts.viewportHeight,
+          lockViewport: opts.lockViewport,
         })
       : null;
+  }
+
+  /** Attach Playwright to a Browser Use Cloud CDP websocket, replacing any previous one. */
+  useCdpUrl(cdpUrl: string): void {
+    const next = cdpUrl.trim();
+    if (!next) return;
+    if (!this.cdp) {
+      this.cdp = new ChromiumCdpSession({
+        cdpUrl: next,
+        controlUrl: this.opts.camofoxUrl,
+        sessionKey: this.opts.sessionKey,
+        singleTab: this.opts.singleTab,
+        viewportWidth: this.opts.viewportWidth,
+        viewportHeight: this.opts.viewportHeight,
+        lockViewport: this.opts.lockViewport,
+      });
+      return;
+    }
+    this.cdp.retarget(next);
   }
 
   /** Resize Playwright viewport and Firefox outer window to match the VNC framebuffer. */

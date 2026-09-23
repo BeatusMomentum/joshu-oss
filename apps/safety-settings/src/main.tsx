@@ -56,6 +56,12 @@ type SafetySettings = {
     smsConfigured: boolean;
     gateEnabled: boolean;
   };
+  browser: {
+    backend: "local" | "cloud";
+    backendSource: SettingSource;
+    cloudConfigured: boolean;
+    requiresStackRestart: boolean;
+  };
 };
 
 function SourceBadge({ source }: { source: SettingSource | "unset" }) {
@@ -100,6 +106,7 @@ function App() {
   const [slackSetupSteps, setSlackSetupSteps] = useState<string[]>([]);
   const [slackManifestText, setSlackManifestText] = useState("");
   const [gatewayRunning, setGatewayRunning] = useState<boolean | null>(null);
+  const [browserBackend, setBrowserBackend] = useState<"local" | "cloud">("local");
 
   const applyToForm = useCallback((s: SafetySettings) => {
     setEnabled(s.actionGuard.enabled);
@@ -117,6 +124,7 @@ function App() {
     setSlackAllowedUsers(s.hermesMessaging.slack.allowedUsers);
     setSlackHomeChannel(s.hermesMessaging.slack.homeChannel);
     setSlackAllowedChannels(s.hermesMessaging.slack.allowedChannels);
+    setBrowserBackend(s.browser.backend);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -199,6 +207,9 @@ function App() {
           slackAllowedUsers: slackAllowedUsers.trim(),
           slackHomeChannel: slackHomeChannel.trim(),
           slackAllowedChannels: slackAllowedChannels.trim(),
+        },
+        browser: {
+          backend: browserBackend,
         },
       };
       if (hermesBotToken.trim()) {
@@ -408,6 +419,35 @@ function App() {
           </div>
         </div>
       )}
+
+      <section className="card">
+        <h2>Browser backend (jWeb / handoff)</h2>
+        <div className="field">
+          <label htmlFor="browserBackend">
+            Shared browser
+            {settings && <SourceBadge source={settings.browser.backendSource} />}
+          </label>
+          <select
+            id="browserBackend"
+            value={browserBackend}
+            onChange={(e) => setBrowserBackend(e.target.value as "local" | "cloud")}
+          >
+            <option value="local">Local Chromium (self-host default — no browser-use.com)</option>
+            <option value="cloud" disabled={settings ? !settings.browser.cloudConfigured : false}>
+              Browser Use Cloud (Joshu-managed hosting)
+            </option>
+          </select>
+          <p className="hint">
+            Local Chromium runs in the box with optional residential proxy (<code>PROXY_*</code> / Decodo).
+            Browser Use Cloud needs <code>CONTROL_PLANE_URL</code> and an instance agent token — not available on
+            standalone OSS boxes.
+          </p>
+          <p className="hint">
+            After changing this, restart <strong>joshu-stack</strong> so the browser process and jWeb live view
+            match.
+          </p>
+        </div>
+      </section>
 
       <section className="card">
         <h2>Action guard (HITL)</h2>

@@ -469,6 +469,12 @@ export class ChromiumCdpSession {
   private seq = 0;
   private proxyRetries = 0;
 
+  private cdpUrl: string;
+  /** Bumps when retarget() runs so an in-flight connect cannot stick to the old browser. */
+  private generation = 0;
+  /** Cloud browsers set the screen once. Do not call setViewportSize after attach. */
+  private readonly lockViewport: boolean;
+
   constructor(
     private readonly opts: {
       cdpUrl: string;
@@ -478,15 +484,38 @@ export class ChromiumCdpSession {
       singleTab: boolean;
       viewportWidth?: number;
       viewportHeight?: number;
+      lockViewport?: boolean;
     },
-  ) {}
+  ) {
+    this.cdpUrl = opts.cdpUrl;
+    this.lockViewport = opts.lockViewport === true;
+  }
+
+  /** Drop the Playwright connection and attach to a replacement browser. */
+  retarget(cdpUrl: string): void {
+    const next = cdpUrl.trim();
+    if (!next || next === this.cdpUrl) return;
+    this.generation += 1;
+    this.cdpUrl = next;
+    const previous = this.browser;
+    this.browser = null;
+    this.connecting = null;
+    // Disconnect only. Browser Use keeps the cloud browser until PATCH stop.
+    void previous?.close().catch(() => undefined);
+  }
 
   private async connect(): Promise<Browser> {
     if (this.browser?.isConnected()) return this.browser;
     if (!this.connecting) {
+      const generation = this.generation;
+      const url = this.cdpUrl;
       this.connecting = chromium
-        .connectOverCDP(this.opts.cdpUrl)
+        .connectOverCDP(url)
         .then((browser) => {
+          if (generation !== this.generation) {
+            void browser.close().catch(() => undefined);
+            throw new Error("browser CDP changed during connect");
+          }
           this.browser = browser;
           browser.on("disconnected", () => {
             if (this.browser === browser) this.browser = null;
@@ -712,7 +741,7 @@ export class ChromiumCdpSession {
 
   async fitViewport(tabId?: string): Promise<void> {
     const page = tabId ? await this.pageById(tabId) : await this.primaryPage();
-    if (!page) return;
+    if (!page || this.lockViewport) return;
     if (isOauthPopupUrl(page.url())) return;
     await page.setViewportSize({
       width: this.opts.viewportWidth ?? 1024,
@@ -760,6 +789,8 @@ export class ChromiumCdpSession {
         this.proxyRetries = 0;
         return;
       }
+      // Cloud egress is Browser Use's proxy. Do not rotate the local Decodo hop.
+      if (this.lockViewport) return;
       if (this.proxyRetries >= 2) return;
       this.proxyRetries += 1;
       const rotate = await fetch(new URL("/rotate-proxy", this.opts.controlUrl), {
