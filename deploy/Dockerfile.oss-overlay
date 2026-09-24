@@ -1,0 +1,68 @@
+# OSS release overlay: rebake AGPL app layers onto a fleet sandbox base when pins
+# are unchanged and a from-scratch build would OOM on a maintainer laptop.
+# Strips fleet branding (/opt/joshu-design) so self-host gets vanilla shell theme.
+#
+#   JOSHU_OVERLAY_BASE=ghcr.io/db-aeon/joshu-sandbox:0.1.45 \
+#   JOSHU_IMAGE_TAG=0.1.45 JOSHU_IMAGE_PUSH=1 \
+#   bash scripts/vps-build-oss-overlay.sh
+
+ARG OVERLAY_BASE=ghcr.io/db-aeon/joshu-sandbox:0.1.45
+FROM ${OVERLAY_BASE}
+
+ARG APP_DIR=/opt/joshu
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR ${APP_DIR}
+
+COPY deploy/runtime/package.json deploy/runtime/package-lock.json ./
+COPY patches ./patches
+COPY dist ./dist
+COPY apps/share-chat ./apps/share-chat
+COPY public ./public
+COPY integrations ./integrations
+COPY .hermes ./.hermes
+COPY templates ./templates
+COPY factory ./factory
+COPY packages/app-sdk/package.json ./packages/app-sdk/
+COPY packages/app-sdk/dist ./packages/app-sdk/dist/
+COPY packages/box-state/package.json ./packages/box-state/
+COPY packages/box-state/dist ./packages/box-state/dist/
+COPY packages/email-signature/package.json ./packages/email-signature/
+COPY packages/email-signature/dist ./packages/email-signature/dist/
+COPY packages/whiteboard-cwm/package.json ./packages/whiteboard-cwm/
+COPY packages/whiteboard-cwm/dist ./packages/whiteboard-cwm/dist/
+COPY arozos/icons ./arozos/icons
+COPY arozos/web-overlays-vanilla ./arozos/web-overlays-vanilla
+COPY arozos/system-setting ./arozos/system-setting
+COPY arozos/locale ./arozos/locale
+COPY scripts ./scripts
+COPY deploy/scripts/vps-start.sh ${APP_DIR}/scripts/vps-start.sh
+COPY deploy/RELEASE.json ${APP_DIR}/RELEASE.json
+COPY browser/chromium/package.json browser/chromium/supervisor.mjs browser/chromium/localProxy.mjs browser/chromium/entrypoint.sh browser/chromium/agent-service.py browser/chromium/requirements.txt /opt/browser/
+
+RUN cd /opt/browser && npm install --omit=dev --no-audit --no-fund \
+    && chmod +x /opt/browser/entrypoint.sh \
+    && cd ${APP_DIR} && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+    && (patch --batch --forward -p1 -i patches/http-proxy+1.18.1.patch || true) \
+    && node scripts/patch-camofox-single-tab.mjs /app/server.js \
+    && bash scripts/patch-camofox-vnc-watcher.sh /app/plugins/vnc/vnc-watcher.sh \
+    && chmod +x ${APP_DIR}/scripts/vps-start.sh \
+    && npm cache clean --force \
+    && rm -rf /root/.cache/pip /tmp/* ${APP_DIR}/patches \
+    && test -f node_modules/@joshu/app-sdk/dist/index.js \
+    && test -f node_modules/@joshu/box-state/dist/index.js \
+    && test -f node_modules/@joshu/email-signature/dist/index.js \
+    && test -f node_modules/@joshu/whiteboard-cwm/dist/index.js
+
+RUN node scripts/copy-runtime-assets.mjs --check \
+    && test -f apps/share-chat/index.html \
+    && test -f integrations/last30days-skill/skills/last30days/scripts/last30days.py
+
+RUN mkdir -p /opt/joshu/.image \
+    && cp -a integrations/last30days-skill /opt/joshu/.image/last30days-skill \
+    && cp -a ${APP_DIR}/scripts /opt/joshu/.image/scripts \
+    && chmod +x /opt/joshu/.image/scripts/vps-start.sh \
+    && test -f /opt/joshu/.image/scripts/vps-start.sh
+
+# Fleet base may bake paper-shell; OSS self-host must use vanilla theme at boot.
+RUN rm -rf /opt/joshu-design && mkdir -p /opt/joshu-design && touch /opt/joshu-design/.no-design-pack

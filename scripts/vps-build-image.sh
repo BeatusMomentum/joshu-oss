@@ -41,7 +41,13 @@ if [[ ! -f dist/excalidraw/errors.js || ! -f dist/excalidraw/service.js ]]; then
   exit 1
 fi
 
+NETWORK_ARGS=()
+if [[ -n "${JOSHU_DOCKER_NETWORK:-}" ]]; then
+  NETWORK_ARGS=(--network "${JOSHU_DOCKER_NETWORK}")
+fi
+
 SANDBOX_BUILD_ARGS=(
+  "${NETWORK_ARGS[@]}"
   --platform linux/amd64
   -f deploy/Dockerfile
   --build-arg "HERMES_AGENT_REF=${HERMES_AGENT_REF}"
@@ -58,6 +64,7 @@ if [[ "${IMAGE_REPO}" == *joshu-sandbox* || "${IMAGE_REF}" == *joshu-sandbox* ||
 fi
 
 VOICE_BUILD_ARGS=(
+  "${NETWORK_ARGS[@]}"
   --platform linux/amd64
   -f deploy/Dockerfile.voice-realtime
   -t "${VOICE_IMAGE_REF}"

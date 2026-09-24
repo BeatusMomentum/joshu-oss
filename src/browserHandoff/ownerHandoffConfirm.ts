@@ -74,7 +74,7 @@ export function tryCompletePendingHandoffFromOwnerConfirm(
 
 /**
  * Complete the pending handoff for this owner session — any inbound message counts as moving on.
- * Used on owner SMS preflight so the browser unlocks before Patrick's turn.
+ * Used on owner SMS preflight so the browser unlocks before the agent's turn.
  */
 export function tryCompletePendingHandoffForOwnerSession(
   projectRoot: string,

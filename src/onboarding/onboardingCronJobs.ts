@@ -16,11 +16,8 @@ function hermesHome(): string {
 }
 
 function resolveOnboardingReconcileScriptSource(projectRoot: string): string | null {
-  const fleet = path.join(projectRoot, "proprietary/scripts", ONBOARDING_RECONCILE_SCRIPT_NAME);
-  if (existsSync(fleet)) return fleet;
-  const oss = path.join(projectRoot, "scripts", ONBOARDING_RECONCILE_SCRIPT_NAME);
-  if (existsSync(oss)) return oss;
-  return null;
+  const script = path.join(projectRoot, "scripts", ONBOARDING_RECONCILE_SCRIPT_NAME);
+  return existsSync(script) ? script : null;
 }
 
 async function installOnboardingReconcileScript(projectRoot: string): Promise<string | null> {
