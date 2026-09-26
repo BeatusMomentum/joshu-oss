@@ -8,6 +8,8 @@
  *   a stubbed `requests` (URL adoption, stale session drop, browser_unavailable).
  * - patch-hermes-terminal-secrets-guard.mjs: Hermes config writes blocked,
  *   reads allowed.
+ * - patch-hermes-factory-skill-background-writes.mjs: background review may
+ *   patch skills under $HERMES_HOME/skills/joshu/; delete stays refused.
  */
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -288,6 +290,81 @@ print(json.dumps({c: json.loads(tt.terminal_tool(c)).get("status") == "blocked" 
 `).trim(),
 );
 assert.deepEqual(Object.values(verdicts), [true, true, true, true, true, false, false, false, true]);
+
+// Factory-skill background writes: allow patch under skills/joshu/, refuse delete
+// and skills outside that tree. Missing needle skips with exit 0.
+const factoryPatch = path.join(root, "scripts/patch-hermes-factory-skill-background-writes.mjs");
+const skillManager = path.join(tmp, "skill_manager_tool.py");
+fs.writeFileSync(
+  path.join(tmp, "skill_usage.py"),
+  `RECORD = {"created_by": None}
+
+def load_usage():
+    return {"skill": RECORD}
+
+def _is_curator_managed_record(record):
+    return isinstance(record, dict) and record.get("created_by") == "agent"
+`,
+);
+fs.writeFileSync(
+  skillManager,
+  `import logging
+import os
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def _background_review_write_guard(name, skill_dir, action):
+    try:
+        import skill_usage
+        usage_data = skill_usage.load_usage()
+        usage_rec = usage_data.get(name)
+        if not skill_usage._is_curator_managed_record(usage_rec):
+            return {"success": False, "error": "not curator-managed"}
+    except Exception:
+        return {"success": False, "error": "ownership unavailable"}
+    return None
+`,
+);
+runPatch(factoryPatch, skillManager);
+const factoryOnce = fs.readFileSync(skillManager, "utf8");
+assert.match(factoryOnce, /_joshu_factory_skill_background_write/);
+runPatch(factoryPatch, skillManager);
+assert.equal(fs.readFileSync(skillManager, "utf8"), factoryOnce, "factory write patch is idempotent");
+assert.equal(pyCompiles(skillManager), true, "patched skill_manager_tool.py compiles");
+
+const hermesHome = path.join(tmp, "hermes-home");
+fs.mkdirSync(path.join(hermesHome, "skills/joshu/proactive/joshu-proactive"), { recursive: true });
+fs.mkdirSync(path.join(hermesHome, "skills/hand-written/my-skill"), { recursive: true });
+const factoryCases = JSON.parse(
+  python(
+    `
+import json, os, sys
+sys.path.insert(0, ".")
+os.environ["HERMES_HOME"] = ${JSON.stringify(hermesHome)}
+import skill_manager_tool as sm
+home = os.environ["HERMES_HOME"]
+joshu = home + "/skills/joshu/proactive/joshu-proactive"
+other = home + "/skills/hand-written/my-skill"
+out = {
+  "patch": sm._background_review_write_guard("skill", joshu, "patch"),
+  "delete": sm._background_review_write_guard("skill", joshu, "delete"),
+  "other": sm._background_review_write_guard("skill", other, "patch"),
+}
+print(json.dumps(out))
+`,
+  ).trim(),
+);
+assert.equal(factoryCases.patch, null, "factory skill patch is allowed");
+assert.equal(factoryCases.delete.success, false, "factory skill delete stays refused");
+assert.equal(factoryCases.other.success, false, "non-factory skill stays refused");
+
+const missingNeedle = path.join(tmp, "skill_manager_old.py");
+fs.writeFileSync(missingNeedle, "def skill_manage():\n    return None\n");
+const skip = runPatch(factoryPatch, missingNeedle);
+assert.match(skip, /skip: created_by guard not present/);
+assert.equal(fs.readFileSync(missingNeedle, "utf8"), "def skill_manage():\n    return None\n");
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("test-hermes-tool-patches — all passed");

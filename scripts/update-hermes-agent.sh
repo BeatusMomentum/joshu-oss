@@ -364,6 +364,13 @@ apply_skill_evolution_patch_if_needed() {
   fi
 }
 
+apply_factory_skill_background_writes_if_needed() {
+  local script="${ROOT_DIR}/scripts/apply-hermes-factory-skill-background-writes.sh"
+  if [[ -f "${script}" ]]; then
+    HERMES_DIR="${HERMES_DIR}" bash "${script}" || true
+  fi
+}
+
 apply_content_filter_patch_if_needed() {
   if [[ -x "${CONTENT_FILTER_PATCH_SCRIPT}" ]]; then
     HERMES_DIR="${HERMES_DIR}" bash "${CONTENT_FILTER_PATCH_SCRIPT}" || true
@@ -520,6 +527,7 @@ cmd_update() {
   apply_hitl_patch_if_needed
   apply_langfuse_system_patch_if_needed
   apply_skill_evolution_patch_if_needed
+  apply_factory_skill_background_writes_if_needed
   apply_content_filter_patch_if_needed
   verify_hermes_checkout
 
