@@ -17,6 +17,9 @@ type TelephoneStatus = {
   ownerCallerDisplay: string;
   ownerCallerConfigured: boolean;
   pstnEnabled: boolean;
+  pinConfigured: boolean;
+  pinLength: number;
+  trustVerifiedCallerId: boolean;
   sources: {
     phoneNumber: "settings-file" | "env" | "unset";
     thinkPassword: "settings-file" | "env" | "unset";
@@ -27,7 +30,8 @@ type TelephoneStatus = {
 function App() {
   const [status, setStatus] = useState<TelephoneStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState<"passphrase" | "owner" | null>(null);
+  const [saving, setSaving] = useState<"passphrase" | "owner" | "pin" | "trust" | null>(null);
+  const [draftPin, setDraftPin] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [showPassphrase, setShowPassphrase] = useState(false);
@@ -56,7 +60,7 @@ function App() {
     void refresh();
   }, [refresh]);
 
-  const putTelephone = async (body: Record<string, string>) => {
+  const putTelephone = async (body: Record<string, string | boolean>) => {
     const res = await fetch(API, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -92,6 +96,33 @@ function App() {
     setMessage("");
     try {
       await putTelephone({ ownerCaller: draftOwnerCaller.trim() });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const savePin = async (pin: string) => {
+    setSaving("pin");
+    setError("");
+    setMessage("");
+    try {
+      await putTelephone({ pin });
+      setDraftPin("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const saveTrust = async (trustVerifiedCallerId: boolean) => {
+    setSaving("trust");
+    setError("");
+    setMessage("");
+    try {
+      await putTelephone({ trustVerifiedCallerId });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -196,8 +227,9 @@ function App() {
       <section className="card">
         <h2>Think passphrase</h2>
         <p className="hint muted" style={{ marginTop: 0 }}>
-          Callers must say this phrase at the start of every call (three wrong tries hang up). Prefer
-          two short English words that are easy to hear (for example <em>harbor comet</em>).
+          Callers must say this phrase at the start of every call (three wrong tries hang up). Use two
+          distinct words of two or more syllables that are easy to hear on a noisy line (for example{" "}
+          <em>harbor lantern</em>) — short or rhyming words get misheard.
         </p>
         {status?.thinkPasswordConfigured ? (
           <div className="passphrase-row" style={{ marginBottom: "0.85rem" }}>
@@ -232,6 +264,67 @@ function App() {
             {saving === "passphrase" ? "Saving…" : "Save passphrase"}
           </button>
         </div>
+      </section>
+
+      <section className="card">
+        <h2>Keypad PIN</h2>
+        <p className="hint muted" style={{ marginTop: 0 }}>
+          Instead of saying the passphrase, you can key in a PIN — handy on a noisy line. Use 6 digits
+          that are not a pattern. Only a scrambled copy is stored on this box.
+        </p>
+        <p className="muted" style={{ marginBottom: "0.85rem" }}>
+          {status?.pinConfigured ? `PIN set (${status.pinLength} digits).` : "No PIN — callers say the passphrase."}
+        </p>
+        <div className="field">
+          <label htmlFor="pin">New PIN</label>
+          <input
+            id="pin"
+            type="password"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={8}
+            value={draftPin}
+            onChange={(e) => setDraftPin(e.target.value.replace(/\D/g, ""))}
+            placeholder="4–8 digits"
+          />
+        </div>
+        <div className="actions">
+          <button
+            type="button"
+            className="primary"
+            disabled={saving !== null || draftPin.length < 4}
+            onClick={() => void savePin(draftPin)}
+          >
+            {saving === "pin" ? "Saving…" : "Save PIN"}
+          </button>
+          {status?.pinConfigured ? (
+            <button type="button" disabled={saving !== null} onClick={() => void savePin("")}>
+              Remove PIN
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>Skip the passphrase from my phone</h2>
+        <p className="hint muted" style={{ marginTop: 0 }}>
+          When you call from your mobile above and your carrier fully verifies the caller ID, Joshu
+          answers without asking for the passphrase. Anyone who can use your unlocked phone gets in
+          too, so leave this off if that worries you. Callbacks from Joshu always ask.
+        </p>
+        <label className="toggle-row">
+          <input
+            type="checkbox"
+            checked={Boolean(status?.trustVerifiedCallerId)}
+            disabled={saving !== null || !status?.ownerCallerConfigured}
+            onChange={(e) => void saveTrust(e.target.checked)}
+          />
+          <span>
+            {status?.ownerCallerConfigured
+              ? "Skip the passphrase for verified calls from my mobile"
+              : "Save your mobile number first"}
+          </span>
+        </label>
       </section>
     </div>
   );

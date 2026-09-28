@@ -5,7 +5,6 @@
  * With tunnel: start ngrok first, or PHONE_VOICE_PUBLIC_HOST=https://….
  */
 
-import { spawnSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -95,7 +94,6 @@ async function ngrokLocalAddr() {
   return null;
 }
 
-check("ffmpeg (legacy path)", spawnSync("ffmpeg", ["-version"], { encoding: "utf8" }).status === 0);
 check("TWILIO_AUTH_TOKEN", Boolean(env.TWILIO_AUTH_TOKEN));
 const streamSecret = (env.TWILIO_MEDIA_STREAM_SECRET || "").trim();
 check("TWILIO_MEDIA_STREAM_SECRET", Boolean(streamSecret));

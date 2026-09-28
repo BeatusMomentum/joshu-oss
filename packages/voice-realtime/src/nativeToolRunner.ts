@@ -10,10 +10,13 @@
 import {
   runJoshuThinkDetailed,
   speakableWithLinksTexted,
+  startPhoneThinkJob,
   startVoiceTask,
+  type DeliveredFact,
   type ThinkParams,
   type VoiceTaskParams,
 } from "./brainThink.js";
+import { VOICE_THINK_BUDGET_MS } from "./config.js";
 
 /** Tools the native runner owns (dictation / open_desktop / app tools stay session-local). */
 export const NATIVE_JOB_TOOL_NAMES: ReadonlySet<string> = new Set(["think", "start_task"]);
@@ -28,7 +31,26 @@ export type NativeToolOutcome = {
   /** Unprocessed answer text (screen transcript, or texting after a phone hang-up). */
   rawText: string;
   source: "hermes" | "broker" | "task" | "error";
+  /** Joshu inline job behind a phone think (detach it if the caller hangs up). */
+  jobId?: string;
+  /** Still running past the budget: the answer arrives later as a late-answer turn. */
+  pending?: boolean;
+  /** Sends Joshu made for this answer — the only basis for "I texted you". */
+  delivered?: DeliveredFact[];
 };
+
+/** Function result while a phone think is still running past its budget. */
+const STILL_WORKING_INSTRUCTION =
+  "Tell the owner in one short sentence that you're still working on it and will tell them as soon as it's ready. Do not guess, and do not give a partial answer. Keep talking with them normally meanwhile.";
+
+/** Only a listed, successful send may be described as done. */
+function deliveredNote(delivered: DeliveredFact[]): string {
+  const ok = delivered.filter((fact) => fact.ok);
+  if (ok.length === 0) {
+    return " Nothing was texted, emailed, or sent for this answer — never say it was.";
+  }
+  return " `delivered` lists what Joshu actually sent; mention only those sends.";
+}
 
 const RELAY_EXACT =
   "Keep every time, price, and name exactly as given. Do not add details that are not in the answer.";
@@ -81,9 +103,41 @@ export async function runNativeVoiceTool(
   }
 
   const params = request.think;
+  const onPhone = params.presentation !== "screen";
+  if (onPhone && !params.appContext) {
+    try {
+      const job = await startPhoneThinkJob(params, VOICE_THINK_BUDGET_MS);
+      if (job.status === "running") {
+        return {
+          result: { status: "working", job_id: job.jobId, instruction: STILL_WORKING_INSTRUCTION },
+          rawText: "",
+          source: "hermes",
+          jobId: job.jobId,
+          pending: true,
+        };
+      }
+      if (job.status === "failed") return { ...errorOutcome(job.error ?? "think failed"), jobId: job.jobId };
+      const source = job.source ?? "hermes";
+      return {
+        result: {
+          status: "done",
+          source,
+          answer: job.answer ?? "",
+          delivered: job.delivered,
+          instruction: `${thinkRelayInstruction(params.presentation, source)}${deliveredNote(job.delivered)}`,
+        },
+        rawText: job.answer ?? "",
+        source,
+        jobId: job.jobId,
+        delivered: job.delivered,
+      };
+    } catch (error) {
+      // Joshu unreachable: fall back to asking Hermes directly (no budget).
+      console.warn(`[voice-think] inline job unavailable, direct think: ${(error as Error).message}`);
+    }
+  }
   try {
     const answer = await runJoshuThinkDetailed(params);
-    const onPhone = params.presentation !== "screen";
     // Links cannot be spoken: Joshu texts them and returns speakable text.
     const spoken =
       onPhone && answer.source === "hermes" && !isDetached()

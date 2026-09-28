@@ -32,24 +32,13 @@ import {
   realtimeGoalCallbackWindow,
 } from "../src/realtimeGoals/callbackWindow.ts";
 import { Temporal } from "@js-temporal/polyfill";
-import {
-  MAX_VOICE_CALLBACK_ATTEMPTS,
-  answeredByOutcome,
-  settleUndeliveredCallback,
-} from "../src/realtimeGoals/voiceDeliveryPolicy.ts";
+import { answeredByOutcome } from "../src/realtimeGoals/voiceDeliveryPolicy.ts";
 import { buildHermesBrokerContextMessage } from "../src/realtimeGoals/brokerContext.ts";
-import {
-  RealtimeGoalStore,
-  realtimeGoalDeliveryContentKey,
-} from "../src/realtimeGoals/store.ts";
+import { RealtimeGoalStore } from "../src/realtimeGoals/store.ts";
 import { SessionThreadStore } from "../src/realtimeGoals/sessionThread.ts";
 import {
   realtimeGoalSessionKey,
 } from "../src/realtimeGoals/types.ts";
-import {
-  realtimeGoalVoiceToken,
-  verifyRealtimeGoalVoiceToken,
-} from "../src/realtimeGoals/voiceCallback.ts";
 import { formatOwnerCompletion } from "../src/realtimeGoals/ownerDelivery.ts";
 import {
   extractLinks,
@@ -100,7 +89,7 @@ try {
   assert.equal((await store.read()).goals.length, 1, "source event must be idempotent");
 
   const session = realtimeGoalSessionKey(goal.origin);
-  assert.equal((await store.listActiveForSession(session)).length, 1);
+  assert.equal((await store.listActiveForOwner()).length, 1);
   await store.update(goal.id, (item) => {
     item.kanbanTaskId = "t_goal";
     item.status = "ready";
@@ -140,21 +129,6 @@ try {
   assert.equal((await store.listStaleInbound(0)).length, 1);
   await store.completeInbound("sms:SM-INBOX");
   assert.equal((await store.listStaleInbound(0)).length, 0);
-
-  await store.update(goal.id, (item) => {
-    item.delivery.state = "pending";
-    item.delivery.attempts = 0;
-    item.delivery.lastDeliveredKey = undefined;
-  });
-  const contentKey = realtimeGoalDeliveryContentKey("completed", "Hotel shortlist ready.");
-  const firstClaim = await store.claimDeliveryAttempt(goal.id, "completed", "Hotel shortlist ready.", 5);
-  assert.equal(firstClaim.claimed, true, "first delivery claim must win");
-  await store.finalizeDeliveryAttempt(goal.id, contentKey, { delivered: true }, 5);
-  const duplicateClaim = await store.claimDeliveryAttempt(goal.id, "completed", "Hotel shortlist ready.", 5);
-  assert.equal(duplicateClaim.claimed, false, "duplicate completion SMS must be suppressed");
-  const concurrentClaim = await store.claimDeliveryAttempt(goal.id, "completed", "Hotel shortlist ready.", 5);
-  assert.equal(duplicateClaim.claimed, false, "delivered content key must block re-send");
-  assert.equal(concurrentClaim.claimed, false, "delivered content key must block re-send");
 
   const hotelMenu =
     "No Loop-area hotel is under $250/night. Holiday Inn ($646), Ohio House ($638). Which one do you want me to hold?";
@@ -281,22 +255,11 @@ try {
   assert.match(recoveryNote, /kanban_complete/);
   assert.match(recoveryNote, /never a generic/);
 
-  // Voice redial policy.
-  assert.equal(answeredByOutcome("machine_start"), "voicemail");
+  // Answering-machine verdicts (the call gate decides on human / unknown).
+  assert.equal(answeredByOutcome("machine_end_beep"), "voicemail");
   assert.equal(answeredByOutcome("fax"), "voicemail");
   assert.equal(answeredByOutcome("human"), undefined);
   assert.equal(answeredByOutcome("unknown"), undefined);
-  assert.equal(settleUndeliveredCallback({ attempts: 1, outcome: "voicemail" }).action, "park");
-  assert.equal(settleUndeliveredCallback({ attempts: 1, outcome: "auth_failed" }).action, "park");
-  const firstRetry = settleUndeliveredCallback({ attempts: 1, twilioStatus: "no-answer", nowMs: 0 });
-  assert.equal(firstRetry.action, "retry");
-  assert.equal(firstRetry.action === "retry" && Date.parse(firstRetry.retryAt), 15 * 60_000);
-  const secondRetry = settleUndeliveredCallback({ attempts: 2, outcome: "no_unlock", nowMs: 0 });
-  assert.equal(secondRetry.action === "retry" && Date.parse(secondRetry.retryAt), 30 * 60_000);
-  assert.equal(
-    settleUndeliveredCallback({ attempts: MAX_VOICE_CALLBACK_ATTEMPTS, twilioStatus: "completed" }).action,
-    "park",
-  );
 
   assert.equal(isQueueCapableChannel("sms"), true);
   assert.equal(isQueueCapableChannel("jchat"), false);
@@ -389,7 +352,7 @@ try {
   assert.equal(isExplicitCancelPhrase("cancel that"), true);
 
   const brokerContext = buildHermesBrokerContextMessage([goal], threadTurns);
-  assert.match(brokerContext ?? "", /Active background goals/);
+  assert.match(brokerContext ?? "", /Open background goals and unheard results/);
   assert.match(brokerContext ?? "", /Recent owner↔box thread/);
 
   await store.update(goal.id, (item) => {
@@ -397,10 +360,7 @@ try {
     item.kanbanTaskId = undefined;
     item.delivery.state = "pending";
   });
-  const broker = new RealtimeGoalBroker(
-    process.cwd(),
-    async () => ({ delivered: true }),
-    async () => ({
+  const broker = new RealtimeGoalBroker(process.cwd(), async () => ({
       decision: "ack",
       confidence: 0.95,
       goalId: goal.id,
@@ -464,10 +424,7 @@ try {
     }
     return { decision: "pass", confidence: 0.78, reason: "would_sync_pass" };
   };
-  const patrickBroker = new RealtimeGoalBroker(
-    process.cwd(),
-    async () => ({ delivered: true }),
-    patrickRouter,
+  const patrickBroker = new RealtimeGoalBroker(process.cwd(), patrickRouter,
   );
 
   const reserve = await patrickBroker.route({
@@ -508,10 +465,7 @@ try {
   await store.insert(clarifyingGoal);
   await threads.setActiveGoal("sms:+15555551000", clarifyingGoal.id);
 
-  const clarifyingBroker = new RealtimeGoalBroker(
-    process.cwd(),
-    async () => ({ delivered: true }),
-    patrickRouter,
+  const clarifyingBroker = new RealtimeGoalBroker(process.cwd(), patrickRouter,
   );
   const rateChoice = await clarifyingBroker.route({
     origin: {
@@ -572,10 +526,7 @@ try {
       reason: "new_long_work",
     };
   };
-  const pivotBroker = new RealtimeGoalBroker(
-    process.cwd(),
-    async () => ({ delivered: true }),
-    pivotRouter,
+  const pivotBroker = new RealtimeGoalBroker(process.cwd(), pivotRouter,
   );
   const pivot = await pivotBroker.route({
     origin: {
@@ -622,10 +573,6 @@ try {
     eaKanbanCreateDefaults(REALTIME_GOALS_KANBAN_BOARD).max_runtime_seconds,
     28_800,
   );
-
-  const token = realtimeGoalVoiceToken(goal.id);
-  assert.equal(verifyRealtimeGoalVoiceToken(goal.id, token), true);
-  assert.equal(verifyRealtimeGoalVoiceToken("other-goal", token), false);
 
   assert.equal(
     await verifyArozosDesktopSession({
@@ -680,7 +627,7 @@ try {
     "utf8",
   );
   assert.match(voiceCallback, /purpose: "result" \| "status"/);
-  assert.match(voiceCallback, /voiceServiceAuthorized/);
+  assert.match(voiceCallback, /batchCallAuthorized/, "callback content needs the batch token and its CallSid");
   assert.match(voiceCallback, /x-joshu-voice-call-sid/);
 
   const phoneSession = await readFile(
@@ -723,7 +670,7 @@ try {
   assert.match(friendly, /^Back /m);
   assert.equal(formatOwnerCompletion(`Done.\n\nFinish and pay here:\n${link}`, [link]).split(link).length, 2);
 
-  // ---- PSTN callbacks: per-owner serialization, voicemail park, pickup ----
+  // ---- Phone goals: an unheard result is picked up by "any updates?" ----
   const pstnOrigin = { channel: "pstn_voice", sessionKey: "pstn:owner-test" };
   const pstnGoal = (id, extra = {}) => ({
     id,
@@ -740,112 +687,45 @@ try {
     lastBlockReason: `Question for ${id}?`,
     messages: [{ at: now, role: "owner", text: id }],
     intakeReply: "Queued.",
-    delivery: { state: "pending", attempts: 0 },
+    delivery: { state: "outbox", attempts: 0 },
     ...extra,
   });
-  await store.insert(pstnGoal("pstn-a"));
-  await store.insert(pstnGoal("pstn-b"));
-  const claimA = await store.claimDeliveryAttempt("pstn-a", "blocked", "Question for pstn-a?", 5);
-  assert.equal(claimA.claimed, true);
-  const claimB = await store.claimDeliveryAttempt("pstn-b", "blocked", "Question for pstn-b?", 5);
-  assert.equal(claimB.claimed, false, "second callback to the same owner must wait (no burst)");
-  assert.equal((await store.get("pstn-b"))?.delivery.attempts, 0, "deferred claim must not spend an attempt");
-  await store.finalizeDeliveryAttempt(
-    "pstn-a",
-    claimA.contentKey,
-    { delivered: false, pending: true, providerId: "CA-a" },
-    5,
-  );
-
-  const parkedNotices = [];
-  const pstnBroker = new RealtimeGoalBroker(
-    process.cwd(),
-    async () => ({ delivered: false, pending: true, providerId: "CA-x" }),
-    undefined,
-    { onCallbacksParked: async (goals, reason) => parkedNotices.push({ goals, reason }) },
-  );
-  // AMD verdict arrives mid-call, then Twilio reports completed.
-  await pstnBroker.recordVoiceCallbackStatus("pstn-a", "", "CA-a", "machine_start");
-  assert.equal((await store.get("pstn-a"))?.delivery.state, "attempting", "outcome alone waits for call end");
-  await pstnBroker.recordVoiceCallbackStatus("pstn-a", "completed", "CA-a");
-  assert.equal((await store.get("pstn-a"))?.delivery.state, "parked", "voicemail must park, not redial");
-  assert.equal((await store.get("pstn-b"))?.delivery.state, "parked", "park is session-wide");
-  assert.equal(parkedNotices.length, 1, "one nudge for the whole session");
-  assert.equal(parkedNotices[0].goals.length, 2);
-  await pstnBroker.recordVoiceCallbackStatus("pstn-a", "completed", "CA-a");
-  assert.equal(parkedNotices.length, 1, "duplicate status webhook must not re-notify");
-  const heldState = await store.read();
-  assert.ok(
-    Date.parse(heldState.callbackCooldowns?.["pstn_voice:pstn:owner-test"] ?? "") > Date.now() + 30 * 60_000,
-    "session callbacks hold after a park",
-  );
-
-  // Hung up before unlock (no voicemail): retry with backoff, and a late
-  // voicemail report upgrades that retry to a park.
-  await store.insert(pstnGoal("pstn-c", { origin: { channel: "pstn_voice", sessionKey: "pstn:owner-c", messageId: "src-c" } }));
-  const claimC = await store.claimDeliveryAttempt("pstn-c", "blocked", "Question for pstn-c?", 5);
-  await store.finalizeDeliveryAttempt("pstn-c", claimC.contentKey, { delivered: false, pending: true, providerId: "CA-c" }, 5);
-  await pstnBroker.recordVoiceCallbackStatus("pstn-c", "completed", "CA-c");
-  const retried = await store.get("pstn-c");
-  assert.equal(retried?.delivery.state, "pending");
-  assert.ok(Date.parse(retried?.delivery.nextAttemptAt ?? "") > Date.now() + 10 * 60_000, "backoff, not 15s");
-  await pstnBroker.recordVoiceCallbackOutcome("pstn-c", "CA-c", "voicemail");
-  assert.equal((await store.get("pstn-c"))?.delivery.state, "parked", "late voicemail outcome parks");
-
-  // Quiet hours: a deferred (not attempted) delivery gives the attempt back.
-  await store.insert(pstnGoal("pstn-d", { origin: { channel: "pstn_voice", sessionKey: "pstn:owner-d", messageId: "src-d" } }));
-  const claimD = await store.claimDeliveryAttempt("pstn-d", "blocked", "Question for pstn-d?", 5);
-  await store.finalizeDeliveryAttempt(
-    "pstn-d",
-    claimD.contentKey,
-    { delivered: false, pending: true, retryAt: new Date(Date.now() + 3_600_000).toISOString() },
-    5,
-  );
-  assert.equal((await store.get("pstn-d"))?.delivery.attempts, 0);
-  assert.equal(
-    (await store.read()).callbackCooldowns?.["pstn_voice:pstn:owner-d"],
-    undefined,
-    "no call placed → session hold released",
-  );
-
-  // Owner calls in and asks for an update: a parked finished result is picked up.
+  // Owner calls in and asks for an update: a finished result they have not heard is picked up.
   await store.insert(
     pstnGoal("pstn-done", {
       status: "done",
       lastKanbanStatus: "done",
       lastBlockReason: undefined,
       resultSummary: "Flights: AA 1234 LAX to XNA Tue 8:05 AM, $412.",
-      delivery: { state: "parked", attempts: 3 },
     }),
   );
-  const pickupBroker = new RealtimeGoalBroker(
-    process.cwd(),
-    async () => ({ delivered: true }),
-    async (input) => {
+  const pickupBroker = new RealtimeGoalBroker(process.cwd(), async (input) => {
       assert.ok(
         input.activeGoals.some((g) => g.id === "pstn-done"),
-        "router must see parked results",
+        "router must see unheard results",
       );
       return { decision: "status", confidence: 0.95, goalId: "pstn-done", reason: "asks_for_update" };
     },
   );
+  await pickupBroker.ownerOutbox.upsertForGoal("pstn-done", "completed", "Flights: AA 1234 LAX to XNA Tue 8:05 AM, $412.");
   const pickup = await pickupBroker.route({
     origin: { ...pstnOrigin, messageId: "job-pickup" },
     text: "Any updates for me?",
   });
   assert.equal(pickup.action, "reply");
   assert.match(pickup.text, /AA 1234/);
-  assert.equal((await store.get("pstn-done"))?.delivery.state, "delivered");
+  const pickedUp = (await store.read()).outbox.find((item) => item.goalId === "pstn-done");
+  assert.equal(pickedUp?.state, "heard", "hearing it on request counts as delivered");
+  assert.equal(pickedUp?.heard?.evidence, "status_request");
 
   // ---- Callback replies are routed, not blindly appended ----
   const flightGoal = pstnGoal("flight-blocked", {
     origin: { channel: "pstn_voice", sessionKey: "pstn:owner-flight", messageId: "src-flight" },
     lastBlockReason: "Nonstop at 6 AM for $389, or one stop at 9 AM for $301?",
-    delivery: { state: "attempting", attempts: 1, providerId: "CA-f" },
   });
   await store.insert(flightGoal);
   const routedReply = (decision) =>
-    new RealtimeGoalBroker(process.cwd(), async () => ({ delivered: true }), async (input) => {
+    new RealtimeGoalBroker(process.cwd(), async (input) => {
       assert.equal(input.activeBranch?.id, "flight-blocked", "callback reply is bound to its goal");
       return decision;
     });
@@ -878,7 +758,6 @@ try {
   const answered = await store.get("flight-blocked");
   assert.equal(answered?.lastOwnerAnswer, "The nonstop");
   assert.equal(answered?.lastBlockedPrompt, flightGoal.lastBlockReason);
-  assert.equal(answered?.delivery.state, "delivered", "answering the question counts as delivery (no redial)");
   assert.doesNotMatch(realAnswer.reply ?? "", /booking/i, "reply must not assume a booking");
 
   // Voice links: a handoff URL is texted, never spoken (canary box 2026-09-24: the

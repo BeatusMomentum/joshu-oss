@@ -19,13 +19,14 @@ import {
   PORT,
   speechToSpeechEnabled,
   speechToSpeechDisableReasons,
-  resolveTwilioThinkPassword,
   VOICE_S2S_PROVIDER,
   webRealtimeEnabled,
   webVoiceDisableReasons,
 } from "./config.js";
 import { voiceS2sProviderLabel } from "./createVoiceS2sClient.js";
 import { ensureLockPromptClips } from "./generateLockPromptClips.js";
+import { createGateRouter, msSinceGateStart } from "./gate/routes.js";
+import { redeemUnlockToken } from "./gate/unlockToken.js";
 import { safeEqualToken } from "./safeEqual.js";
 import { TwilioRealtimeSession } from "./twilioRealtimeSession.js";
 
@@ -54,6 +55,9 @@ const healthHandler = (_req: express.Request, res: express.Response) => {
 };
 
 app.get(["/health", "/voice-rt/health", "/voice/health"], healthHandler);
+
+// Call gate (Twilio <Gather>): authenticates PSTN callers before any model joins.
+app.use(createGateRouter());
 
 const MEDIA_PATH_PREFIXES = ["/media", "/voice-rt/media", "/voice/media"];
 
@@ -217,41 +221,37 @@ server.on("upgrade", (req, socket, head) => {
           }
 
           if (ev === "start") {
-            // Defense in depth: Joshu Express also refuses to register PSTN routes without
-            // TWILIO_THINK_PASSWORD — reject here so a leaked media-stream URL cannot open an ungated call.
-            if (!resolveTwilioThinkPassword()) {
-              console.warn(
-                "[voice-realtime] rejecting Twilio media stream (TWILIO_THINK_PASSWORD unset)",
-              );
-              ws.close(1008, "think password required");
-              return;
-            }
             const start = msg.start as Record<string, unknown> | undefined;
             const streamSid = String(start?.streamSid ?? msg.streamSid ?? "");
             const callSid = String(start?.callSid ?? "");
             const custom = start?.customParameters as Record<string, unknown> | undefined;
-            const caller =
-              typeof custom?.caller === "string" && custom.caller.trim()
-                ? custom.caller.trim()
-                : undefined;
-            const ownerCaller =
-              typeof custom?.ownerCaller === "string" && custom.ownerCaller.trim()
-                ? custom.ownerCaller.trim()
-                : undefined;
-            const realtimeGoalId =
-              typeof custom?.realtimeGoalId === "string" && custom.realtimeGoalId.trim()
-                ? custom.realtimeGoalId.trim()
-                : undefined;
-            const realtimeGoalToken =
-              typeof custom?.realtimeGoalToken === "string" && custom.realtimeGoalToken.trim()
-                ? custom.realtimeGoalToken.trim()
+            // Only a stream carrying the call gate's unlock token for this CallSid
+            // may open. The media-stream URL (and its secret) is in TwiML, so it
+            // alone must never reach a conversation.
+            const unlock = typeof custom?.unlock === "string" ? custom.unlock.trim() : "";
+            const claims = unlock ? redeemUnlockToken(unlock, callSid) : undefined;
+            if (!claims) {
+              console.warn(
+                `[voice-realtime] rejecting Twilio media stream callSid=${callSid} (${unlock ? "invalid or used" : "missing"} unlock token)`,
+              );
+              ws.close(1008, "unlock token required");
+              return;
+            }
+            console.info(
+              `[voice-realtime] callSid=${callSid} gate stream start via=${claims.via} msSinceGateStart=${msSinceGateStart(callSid) ?? "?"}`,
+            );
+            const text = (key: string): string | undefined =>
+              typeof custom?.[key] === "string" && String(custom[key]).trim()
+                ? String(custom[key]).trim()
                 : undefined;
             twilioSession = new TwilioRealtimeSession(ws);
             twilioSession.handleStart(callSid, streamSid, {
-              caller,
-              ownerCaller,
-              realtimeGoalId,
-              realtimeGoalToken,
+              caller: text("caller"),
+              ownerCaller: text("ownerCaller"),
+              realtimeGoalBatchId: text("realtimeGoalBatchId"),
+              realtimeGoalBatchToken: text("realtimeGoalBatchToken"),
+              ownerRequested: text("ownerRequested") === "1",
+              gate: { mode: claims.mode, via: claims.via },
             });
             return;
           }
@@ -315,7 +315,8 @@ server.listen(PORT, HOST, () => {
   }
   if (s2s) {
     console.info("[voice-realtime]   pstn     WSS /voice-rt/media/<secret> (Twilio Media Streams)");
-    // Locked calls are voiced by clips, so render any that are missing or stale.
+    console.info("[voice-realtime]   gate     POST /voice-rt/gate/start (streams need an unlock token)");
+    // The gate plays pre-rendered clips, so render any that are missing or stale.
     // Not awaited: a call arriving mid-render just falls back to the model.
     void ensureLockPromptClips().catch((err: unknown) => {
       console.warn(`[voice-realtime] lock prompt clips unavailable: ${(err as Error).message}`);

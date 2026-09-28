@@ -13,18 +13,19 @@ import {
   PHONE_VAD_MODE,
   PHONE_VAD_SILENCE_MS,
   PHONE_VAD_THRESHOLD,
-  TWILIO_PHONE_SESSION_HANGUP_MS,
-  TWILIO_PHONE_SESSION_WARN_MS,
   resolveTwilioThinkPassword,
   VOICE_S2S_PROVIDER,
 } from "./config.js";
 import {
-  fetchVoiceSessionContext,
+  claimPhoneThinkJob,
+  detachPhoneThinkJob,
   resolveThinkUserQuote,
   runJoshuThinkDetailed,
   speakableWithLinksTexted,
   textAnswerToOwner,
+  waitPhoneThinkJob,
 } from "./brainThink.js";
+import { claimCorrection, detectDeliveryClaim } from "./deliveryClaimGuard.js";
 import {
   NATIVE_JOB_TOOL_NAMES,
   runNativeVoiceTool,
@@ -45,33 +46,23 @@ import {
   type DictationSessionState,
 } from "./dictationSession.js";
 import type { FunctionCallPayload, ResponseSpeechReason, VoiceS2sClient } from "./voiceS2sTypes.js";
-import {
-  isPassphraseOnlyTurn,
-  isPassphraseResidue,
-  looksLikePhoneTaskRequest,
-  looksLikeVoicemailGreeting,
-  matchesThinkPassphrase,
-  redactPassphrase,
-} from "./phonePassphrase.js";
-import {
-  getLockPromptClip,
-  LOCK_PROMPTS,
-  lockPromptsReady,
-  type LockPromptKey,
-} from "./lockPrompts.js";
+import { redactPassphrase } from "./phonePassphrase.js";
+import { getLockPromptClip } from "./lockPrompts.js";
 import { classifyUserTranscript } from "./userInputGate.js";
+import { spokenCovers } from "./deliveryCoverage.js";
+import type { GateMode, UnlockVia } from "./gate/unlockToken.js";
+import { resolveOwnerLanguage } from "./joshuIdentity.js";
+import { detectLanguageMismatch, languageCorrection } from "./languageGuard.js";
+import { buildInboundOpenerTurn, buildOpenerContext, fetchOpener, type OpenerPayload } from "./opener.js";
 import { voiceLog, voiceWarn } from "./voiceLog.js";
 
 const MAX_TRANSCRIPT_TURNS = 12;
-/** Clear utterances that fail passphrase match before the call is hung up. */
-const MAX_PASSPHRASE_ATTEMPTS = 3;
-/**
- * After unlock, STT can deliver trailing fragments of the passphrase as separate
- * turns. Partial passphrase matches are ignored for this long.
- */
-const UNLOCK_GRACE_MS = 10_000;
-/** How a locked goal callback ended (mirrors RealtimeGoalVoiceCallbackOutcome). */
-type GoalCallbackOutcome = "voicemail" | "auth_failed" | "no_unlock";
+/** Owner outbox: how often a live call checks for results that just finished (renews presence too). */
+const PENDING_POLL_MS = 10_000;
+/** An owner reply counts as "heard" only after the result was being spoken this long. */
+const OWNER_REPLY_HEARD_MIN_MS = 5_000;
+/** ...and the model had said at least this much since it was handed over. */
+const OWNER_REPLY_HEARD_MIN_CHARS = 40;
 /** 20 ms of μ-law 8 kHz — the frame size Twilio Media Streams expects. */
 const MULAW_FRAME_BYTES = 160;
 /** μ-law 8 kHz: one byte per sample. */
@@ -100,6 +91,10 @@ const TEXT_OFFER_LINE =
   "This is taking a bit. I'll text you the answer as soon as it's ready, so feel free to hang up.";
 /** A think still running after hang-up is abandoned after this long. */
 const DETACHED_JOB_MAX_MS = 10 * 60_000;
+/** A think answer that outlasted its budget is followed this long (then Joshu delivers it). */
+const LATE_ANSWER_MAX_MS = 10 * 60_000;
+/** Long-poll slice while following a late answer. */
+const LATE_ANSWER_POLL_MS = 20_000;
 /** Wrap-up heard via transcript and via the model's think call count once. */
 const WRAP_UP_DEDUPE_MS = 5_000;
 /** Native end_call: silence after the goodbye before hanging up, and the upper bound. */
@@ -152,9 +147,27 @@ type NativeToolJob = {
 type StartMetadata = {
   caller?: string;
   ownerCaller?: string;
-  realtimeGoalId?: string;
-  realtimeGoalToken?: string;
+  /** Owner outbox callback: one call for a batch of results. */
+  realtimeGoalBatchId?: string;
+  realtimeGoalBatchToken?: string;
+  /** The owner asked to be called back. */
+  ownerRequested?: boolean;
+  /** How the call gate let this caller in (the stream only opens after it). */
+  gate: { mode: GateMode; via: UnlockVia };
 };
+
+/** An owner outbox result handed to this call, until it is confirmed heard. */
+type OfferedItem = {
+  title: string;
+  text: string;
+  offeredAtMs: number;
+  /** What the model said since it was handed over. */
+  spoken: string;
+  /** Handed over as a turn to speak (callback / live update), not just context. */
+  injected: boolean;
+};
+
+type PendingResult = { id: string; kind: string; title: string; text: string };
 
 /**
  * Twilio Media Streams ↔ speech-to-speech upstream (OpenAI Realtime or Gemini Live, μ-law 8 kHz).
@@ -186,31 +199,29 @@ export class TwilioRealtimeSession {
   private nativeTools = false;
   /** Native path: in-flight tool calls by callId (several may run at once). */
   private nativeJobs = new Map<string, NativeToolJob>();
-  private thinkAuthorized = false;
-  private requiresRestatedIntentAfterUnlock = false;
-  /** Failed clear passphrase attempts this call (hang up at MAX_PASSPHRASE_ATTEMPTS). */
-  private passphraseFailures = 0;
-  /** True after too many wrong passphrase attempts — ignore further turns. */
-  private hangingUpForAuth = false;
-  /**
-   * Box has a full set of pre-rendered lock clips, so lock lines are played
-   * verbatim and the model is muted until unlock. False falls back to
-   * instructing the model, which may paraphrase (see lockPrompts.ts).
-   */
-  private deterministicLockPrompts = false;
-  private sessionWarnTimer: ReturnType<typeof setTimeout> | null = null;
-  private sessionHangupTimer: ReturnType<typeof setTimeout> | null = null;
-  /** No warn/hangup timers after successful passphrase unlock. */
-  private sessionTimerDisabled = false;
+  /** The call is ending — ignore further turns. */
+  private hangingUp = false;
   private startMetadata: StartMetadata | undefined;
   private realtimeGoalAwaitingReply = false;
   private realtimeGoalAckPending = false;
   private realtimeGoalResponseDone = false;
-  /** When the passphrase was accepted (starts the residue grace window). */
-  private unlockedAtMs: number | null = null;
-  /** A locked goal callback reports its outcome to Joshu at most once. */
-  private goalCallbackOutcomeReported = false;
-  private greetingSent = false;
+  /** Owner outbox results handed to this call, until confirmed heard. */
+  private offeredItems = new Map<string, OfferedItem>();
+  /** Checks for results that finish while the owner is on the call. */
+  private pendingPollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Owner presence was reported as on this call. */
+  private presenceReported = false;
+  /** Joshu's opening context + unheard results, fetched as the call starts. */
+  private openerPromise: Promise<OpenerPayload | undefined> | null = null;
+  private openerSent = false;
+  /** The owner started talking before the opener went out (skip the greeting). */
+  private callerSpokeBeforeOpener = false;
+  /** One language correction per call (see languageGuard.ts). */
+  private languageCorrected = false;
+  /** Phone think jobs past their budget, followed until the answer lands (jobId → quote). */
+  private lateJobs = new Map<string, { quote?: string }>();
+  /** Sends the model claimed while a think job was still running (deliveryClaimGuard). */
+  private pendingDeliveryClaims: string[] = [];
   private turn = 0;
   private responseNum = 0;
   /** responseNum of the last response that reported done (native end_call waits on it). */
@@ -219,10 +230,6 @@ export class TwilioRealtimeSession {
   private endCallRequested = false;
   /** Set before requestOrganicResponse / injectRepromptMessage; cleared on response.created. */
   private joshuInitiatedResponse = false;
-  /** Gemini PSTN: drop unsolicited organic audio until the caller's first validated turn. */
-  private suppressAssistantAudio = false;
-  /** Caller speech seen (input transcript) — unlocks assistant audio for Gemini PSTN. */
-  private callerInputSeen = false;
   /** Set when caller spoke but the auto-reply may have been muted; nudge once on transcript. */
   private geminiUserTurnNeedsReply = false;
   /** Multi-turn voice capture — buffer until finish_dictation / done phrase. */
@@ -246,7 +253,7 @@ export class TwilioRealtimeSession {
 
   constructor(private readonly ws: WebSocket) {}
 
-  handleStart(callSid: string, streamSid: string, metadata?: StartMetadata): void {
+  handleStart(callSid: string, streamSid: string, metadata: StartMetadata): void {
     this.callSid = callSid;
     this.streamSid = streamSid;
     this.t0 = performance.now();
@@ -255,36 +262,29 @@ export class TwilioRealtimeSession {
     this.responseStartTimestampTwilio = null;
     this.markQueue = [];
     this.modelAudioPlaysUntil = 0;
-    // PSTN requires a passphrase (media stream is rejected if unset). Call starts locked.
-    this.thinkAuthorized = false;
-    this.requiresRestatedIntentAfterUnlock = false;
-    this.passphraseFailures = 0;
-    this.hangingUpForAuth = false;
+    this.hangingUp = false;
     this.startMetadata = metadata;
     this.realtimeGoalAwaitingReply = false;
-    this.unlockedAtMs = null;
-    this.goalCallbackOutcomeReported = false;
-    this.greetingSent = false;
-    this.sessionTimerDisabled = false;
+    this.offeredItems = new Map();
+    this.presenceReported = false;
     this.hangUpAfterSpeech = false;
     this.hangUpOnMarkDrain = false;
     this.lastWrapUpAtMs = 0;
-    this.suppressAssistantAudio = this.geminiPhone;
-    this.deterministicLockPrompts = lockPromptsReady();
-    if (!this.deterministicLockPrompts) {
-      voiceWarn(
-        callSid,
-        "auth",
-        "lock prompt clips missing — falling back to model-spoken lock lines " +
-          "(still rendering, or TTS unavailable)",
-      );
-    }
+    this.openerSent = false;
+    this.callerSpokeBeforeOpener = false;
+    this.languageCorrected = false;
+    // The gate authenticated this caller before the stream opened, so the model
+    // joins an unlocked call and hears nothing stale. Its context is fetched now
+    // and goes into the system instruction at setup.
+    this.openerPromise = fetchOpener(callSid, metadata.gate.mode);
+    voiceLog(callSid, "gate", `stream unlocked by gate via=${metadata.gate.via} mode=${metadata.gate.mode}`);
 
     const provider = voiceS2sProviderLabel();
     this.s2s = createVoiceS2sClient(
       {
         audioFormat: "pcmu",
         systemPrompt: PHONE_SYSTEM_PROMPT,
+        systemPromptExtra: this.openerPromise.then((opener) => buildOpenerContext(metadata.gate.mode, opener)),
         injectPresentation: "voice_only",
         turnDetection: PHONE_VAD,
         // PSTN implements think (+ start_task natively) and dictation; declaring
@@ -297,36 +297,21 @@ export class TwilioRealtimeSession {
       onReady: () => {
         this.metrics.realtimeReadyMs = Math.round(performance.now() - this.t0);
         voiceLog(callSid, provider, `session ready ms=${this.metrics.realtimeReadyMs}`);
-        this.injectGreeting(this.startMetadata);
+        void this.openCall();
       },
       onOutputAudioDelta: ({ deltaB64, itemId }) => this.forwardMulawDelta(deltaB64, itemId),
       onSpeechStarted: () => void this.handleSpeechStarted(),
       onInterrupted: () => {
         voiceLog(this.callSid, "vad", "gemini generation interrupted (local cancel)");
-        this.assistantPartial = "";
+        this.logInterruptedSpeech();
       },
       onInputTranscript: (text) => this.onGeminiInputTranscript(text),
       onSpeechStopped: () => {
         this.lastSpeechStoppedAt = performance.now();
-        // Gemini has no OpenAI speech_stopped — unlock early so auto-reply audio is not muted.
-        // Stay muted until passphrase unlock so Gemini cannot chat while the call is locked.
-        if (this.thinkAuthorized && !this.requiresRestatedIntentAfterUnlock) {
-          this.allowGeminiCallerReply("user speech stopped");
-        }
         voiceLog(this.callSid, "vad", "user speech stopped (awaiting transcript)");
       },
       onTranscriptionComplete: (text) => this.handleUserTranscription(text),
         onAssistantTranscript: (delta) => {
-          // Muted output never reached the caller — keep it out of the spoken
-          // transcript and out of later think context.
-          if (this.modelMutedByLock()) return;
-          if (
-            this.geminiPhone &&
-            this.suppressAssistantAudio &&
-            this.currentResponseReason === "organic"
-          ) {
-            return;
-          }
           this.assistantPartial += delta;
           this.responseHadSpeech = true;
         },
@@ -349,22 +334,6 @@ export class TwilioRealtimeSession {
           return;
         }
         if (
-          this.geminiPhone &&
-          reason === "organic" &&
-          (!this.thinkAuthorized || this.requiresRestatedIntentAfterUnlock) &&
-          // Native with clips: muted, not cancelled — aborting 3.8's generation makes
-          // it tell the caller "a system error occurred".
-          !(this.nativeTools && this.deterministicLockPrompts)
-        ) {
-          voiceLog(this.callSid, "auth", "cancel gemini organic — Joshu owns lock/unlock clips", {
-            seq,
-            locked: !this.thinkAuthorized,
-            awaitingIntent: this.requiresRestatedIntentAfterUnlock,
-          });
-          this.s2s?.cancelActiveResponse();
-          return;
-        }
-        if (
           !this.geminiPhone &&
           reason === "organic" &&
           !this.joshuInitiatedResponse
@@ -374,13 +343,6 @@ export class TwilioRealtimeSession {
           });
           this.s2s?.cancelActiveResponse();
           return;
-        }
-        if (this.geminiPhone && reason === "organic" && this.suppressAssistantAudio) {
-          if (this.callerInputSeen) {
-            this.suppressAssistantAudio = false;
-          } else {
-            voiceLog(this.callSid, "turn", "gemini pre-user organic (muting, not interrupting)", { seq });
-          }
         }
         this.joshuInitiatedResponse = false;
 
@@ -400,13 +362,6 @@ export class TwilioRealtimeSession {
         this.flushAssistantSpeech(this.currentResponseReason);
         if (!this.nativeTools) this.logSpokeBeforeThink(info);
         voiceLog(this.callSid, provider, `resp #${this.responseNum} response.done`, info);
-        if (
-          this.geminiPhone &&
-          this.currentResponseReason === "progress" &&
-          this.greetingSent
-        ) {
-          this.resetAssistantPlaybackState();
-        }
         if (
           this.geminiPhone &&
           this.currentResponseReason === "organic" &&
@@ -446,12 +401,14 @@ export class TwilioRealtimeSession {
       },
     );
     this.nativeTools = this.s2s.nativeAsyncTools;
-    // Native: locked-call muting (clips + lock cancels) already covers pre-user noise.
-    if (this.nativeTools) this.suppressAssistantAudio = false;
     voiceLog(callSid, provider, `tool mode=${this.nativeTools ? "native_async" : "legacy"}`);
 
     this.s2s.connect();
-    this.scheduleSessionDeadline();
+    // "Unlocked." plays while the model session comes up; the opener queues behind it.
+    if (metadata.gate.via !== "trusted") {
+      const clip = getLockPromptClip("unlocked");
+      if (clip) this.playMulawClip(clip.mulawB64);
+    }
     voiceLog(callSid, "twilio", `stream start streamSid=${streamSid}`);
   }
 
@@ -482,74 +439,20 @@ export class TwilioRealtimeSession {
   }
 
   close(): void {
-    // Caller hung up (or we did) before unlock on a goal callback. No-op when
-    // an outcome was already reported or the call unlocked.
-    this.reportGoalCallbackOutcome("no_unlock");
+    if (this.pendingPollTimer) clearInterval(this.pendingPollTimer);
+    this.pendingPollTimer = null;
+    if (this.presenceReported) {
+      void this.postJoshu("/api/realtime-goals/voice/presence", { callSid: this.callSid, event: "ended" });
+    }
     // An answer still being worked on is texted when it lands — hanging up
     // must not throw away work the caller asked for (e.g. "email me that").
     this.detachActiveJob();
     this.detachNativeJobs();
+    this.detachLateJobs();
     this.dictation = null;
-    this.clearSessionDeadline();
     voiceLog(this.callSid, "twilio", "stream close", this.metrics);
     this.s2s?.close();
     this.s2s = null;
-  }
-
-  private normalizePhone(raw: string | undefined): string {
-    return (raw ?? "").replace(/[^\d+]/g, "");
-  }
-
-  /**
-   * While locked, clips are the only voice on the line. The model still hears
-   * the caller (we need its transcription to check the passphrase) but nothing
-   * it generates reaches them — it has been observed answering a rejection with
-   * "Thank you." or "Unlocked.", which reads to the caller as being let in.
-   */
-  private modelMutedByLock(): boolean {
-    if (!this.deterministicLockPrompts) return false;
-    if (!this.thinkAuthorized) return true;
-    // Native: also mute (rather than cancel) until the caller restates after unlock —
-    // leftover passphrase audio must not get a spoken reply.
-    return this.nativeTools && this.requiresRestatedIntentAfterUnlock;
-  }
-
-  private injectGreeting(metadata?: StartMetadata): void {
-    const s2s = this.s2s;
-    if (!s2s || this.greetingSent) return;
-    const caller = this.normalizePhone(metadata?.caller);
-    const owner = this.normalizePhone(metadata?.ownerCaller);
-    const ownerCheckEnabled = Boolean(owner);
-    const isOwner = ownerCheckEnabled && Boolean(caller) && caller === owner;
-    // Always ask for the passphrase — the call stays locked until it matches (3 tries).
-    this.speakLockLine(ownerCheckEnabled && !isOwner ? "greeting_guest" : "greeting");
-    this.greetingSent = true;
-  }
-
-  /**
-   * Say one of the fixed lock lines. Prefers the box's pre-rendered clip so the
-   * wording is guaranteed; falls back to instructing the model, which sounds
-   * natural but may paraphrase (see lockPrompts.ts).
-   *
-   * Returns the clip's playback length in ms, or 0 when the model is speaking.
-   */
-  private speakLockLine(key: LockPromptKey): number {
-    const clip = this.deterministicLockPrompts ? getLockPromptClip(key) : null;
-    if (!clip) {
-      this.joshuInitiatedResponse = true;
-      this.s2s?.injectControlMessage(LOCK_PROMPTS[key]);
-      return 0;
-    }
-    // Take the floor: on unlock the model is no longer muted and Gemini may
-    // already be mid-reply, which would talk over the clip.
-    if (this.assistantIsSpeaking()) {
-      this.s2s?.cancelActiveResponse();
-      this.clearOutbound();
-    }
-    this.resetAssistantPlaybackState();
-    this.playMulawClip(clip.mulawB64);
-    voiceLog(this.callSid, "auth", `spoke "${key}" from clip`, { durationMs: clip.durationMs });
-    return clip.durationMs;
   }
 
   /**
@@ -572,75 +475,10 @@ export class TwilioRealtimeSession {
     this.sendMark();
   }
 
-  /** Speak a lock line, then close the Twilio media stream (hangs up the call). */
-  private hangUpAfterLockLine(key: LockPromptKey, minDelayMs = 2500): void {
-    this.hangingUpForAuth = true;
-    // Clip playback is paced by Twilio, so wait out its full length before closing.
-    const delayMs = Math.max(minDelayMs, this.speakLockLine(key) + 750);
-    setTimeout(() => {
-      try {
-        this.ws.close();
-      } catch {
-        // no-op
-      }
-    }, delayMs);
-  }
-
-  private scheduleSessionDeadline(): void {
-    if (this.sessionTimerDisabled) return;
-    this.clearSessionDeadline();
-
-    const warnMs = Number.isFinite(TWILIO_PHONE_SESSION_WARN_MS) ? TWILIO_PHONE_SESSION_WARN_MS : 60000;
-    const hangupMs = Number.isFinite(TWILIO_PHONE_SESSION_HANGUP_MS)
-      ? TWILIO_PHONE_SESSION_HANGUP_MS
-      : 90000;
-    const effectiveWarn = Math.max(5000, warnMs);
-    const effectiveHangup = Math.max(effectiveWarn + 5000, hangupMs);
-
-    // These only ever fire pre-unlock (unlock disables the timers), so they are
-    // lock lines too — the model is muted by then when clips are available.
-    this.sessionWarnTimer = setTimeout(() => {
-      if (this.sessionTimerDisabled || this.ws.readyState !== 1) return;
-      this.speakLockLine("time_warning");
-    }, effectiveWarn);
-
-    this.sessionHangupTimer = setTimeout(() => {
-      if (this.sessionTimerDisabled || this.ws.readyState !== 1) return;
-      this.reportGoalCallbackOutcome("no_unlock");
-      this.hangUpAfterLockLine("time_up");
-    }, effectiveHangup);
-  }
-
-  private disableSessionTimeLimit(reason: string): void {
-    if (this.sessionTimerDisabled) return;
-    this.sessionTimerDisabled = true;
-    this.clearSessionDeadline();
-    voiceLog(this.callSid, "auth", `session time limit disabled (${reason})`);
-  }
-
-  private clearSessionDeadline(): void {
-    if (this.sessionWarnTimer) {
-      clearTimeout(this.sessionWarnTimer);
-      this.sessionWarnTimer = null;
-    }
-    if (this.sessionHangupTimer) {
-      clearTimeout(this.sessionHangupTimer);
-      this.sessionHangupTimer = null;
-    }
-  }
-
   private forwardMulawDelta(deltaB64: string, itemId?: string): void {
     const sid = this.streamSid;
     if (!sid || this.ws.readyState !== 1 || !deltaB64) return;
-    if (this.modelMutedByLock()) return;
     if (this.activeJob && this.currentResponseReason === "organic") return;
-    if (
-      this.geminiPhone &&
-      this.suppressAssistantAudio &&
-      this.currentResponseReason === "organic"
-    ) {
-      return;
-    }
 
     if (itemId && itemId !== this.lastAssistantItem) {
       this.responseStartTimestampTwilio = this.latestMediaTimestamp;
@@ -682,7 +520,7 @@ export class TwilioRealtimeSession {
     const kind = classifyUserTranscript(text);
     const s2s = this.s2s;
     if (!s2s) return;
-    if (this.hangingUpForAuth) return;
+    if (this.hangingUp) return;
 
     if (kind === "empty") {
       voiceLog(this.callSid, "turn", "empty input (VAD only, no transcript) — ignoring");
@@ -690,64 +528,7 @@ export class TwilioRealtimeSession {
     }
 
     this.turn += 1;
-
-    // Call-level lock: until passphrase matches, do not chat or think — only auth.
-    if (!this.thinkAuthorized) {
-      // An outbound goal callback answered by voicemail: the greeting is not a
-      // wrong passphrase. Hang up without spending attempts; Joshu parks the result.
-      if (this.isGoalCallback() && looksLikeVoicemailGreeting(text)) {
-        voiceWarn(this.callSid, "goal-callback", "voicemail greeting while locked — hanging up", {
-          heardPreview: text.slice(0, 80),
-        });
-        this.reportGoalCallbackOutcome("voicemail");
-        this.hangUpSilently();
-        return;
-      }
-      if (kind === "unclear") {
-        voiceLog(this.callSid, "auth", `#${this.turn} unclear while locked → ${JSON.stringify(text)}`);
-        this.speakLockLine("unclear");
-        return;
-      }
-
-      const justUnlocked = this.updateThinkAuthorization(text, "transcript");
-      if (justUnlocked) {
-        const isGoalCallback = this.isGoalCallback();
-        // Legacy: normal calls wait for a fresh request. Authenticated goal callbacks
-        // disclose the queued result immediately after the unlock line. Native: no
-        // gate — the unlock context tells the model the passphrase was not a request,
-        // and the tool guard still rejects passphrase-only calls.
-        this.requiresRestatedIntentAfterUnlock = !isGoalCallback && !this.nativeTools;
-        const unlockMs = this.speakLockLine(isGoalCallback ? "unlocked_callback" : "unlocked");
-        // Owner context only after authentication — never while the call is locked.
-        const contextSent = this.nativeTools
-          ? this.appendBrokerContext(isGoalCallback)
-          : Promise.resolve();
-        if (isGoalCallback) {
-          // The callback framing must reach the model before the result does.
-          setTimeout(
-            () => void contextSent.then(() => this.deliverRealtimeGoalCallback()),
-            Math.max(750, unlockMs + 250),
-          );
-        }
-        return;
-      }
-
-      this.passphraseFailures += 1;
-      voiceWarn(this.callSid, "auth", "passphrase rejected", {
-        attempt: this.passphraseFailures,
-        maxAttempts: MAX_PASSPHRASE_ATTEMPTS,
-        heardPreview: text.slice(0, 80),
-      });
-      if (this.passphraseFailures >= MAX_PASSPHRASE_ATTEMPTS) {
-        voiceWarn(this.callSid, "auth", "hanging up after passphrase failures");
-        this.reportGoalCallbackOutcome("auth_failed");
-        this.hangUpAfterLockLine("locked_out");
-        return;
-      }
-      const left = MAX_PASSPHRASE_ATTEMPTS - this.passphraseFailures;
-      this.speakLockLine(left === 1 ? "last_try" : "retry");
-      return;
-    }
+    this.noteCallerSpokeBeforeOpener(text);
 
     if (kind === "unclear") {
       if (this.nativeTools) {
@@ -758,29 +539,11 @@ export class TwilioRealtimeSession {
         return;
       }
       voiceLog(this.callSid, "turn", `#${this.turn} USER (unclear) → ${JSON.stringify(text)} — reprompting`);
-      if (this.requiresRestatedIntentAfterUnlock) {
-        this.speakLockLine("restate_intent");
-        return;
-      }
       this.joshuInitiatedResponse = true;
       s2s.injectRepromptMessage();
       return;
     }
 
-    const password = resolveTwilioThinkPassword();
-    if (
-      password &&
-      (isPassphraseOnlyTurn(text, password) ||
-        isPassphraseResidue(text, password, { graceWindow: this.withinUnlockGrace() }))
-    ) {
-      voiceLog(this.callSid, "auth", `#${this.turn} ignoring passphrase residue after unlock`);
-      // Legacy Gemini hears audio directly and may already be answering the fragment.
-      // Native: the model knows it was the passphrase; let it reply (or not) itself.
-      if (this.geminiPhone && !this.nativeTools && this.currentResponseReason === "organic") {
-        this.s2s?.cancelActiveResponse();
-      }
-      return;
-    }
     const transcriptMs =
       this.lastSpeechStoppedAt != null
         ? Math.round(performance.now() - this.lastSpeechStoppedAt)
@@ -801,7 +564,7 @@ export class TwilioRealtimeSession {
     }
     // Native: the model says goodbye itself and ends the call with end_call.
     if (safeText && !this.nativeTools && this.handleWrapUp(safeText)) return;
-    this.continueUnlockedTurn(safeText);
+    this.continueTurn(safeText);
   }
 
   private lastAssistantText(): string | undefined {
@@ -838,32 +601,22 @@ export class TwilioRealtimeSession {
    * to be about the goal. `forceResponse` re-requests a reply the caller's
    * turn already had cancelled.
    */
-  private continueUnlockedTurn(safeText: string, options: { forceResponse?: boolean } = {}): void {
+  private continueTurn(safeText: string, options: { forceResponse?: boolean } = {}): void {
     const s2s = this.s2s;
     if (!s2s) return;
     if (safeText && this.dictation?.active) {
       this.onDictationUserTranscript(safeText);
       // Stay silent while buffering — OpenAI path must not request organic chat.
-      if (this.geminiPhone) {
-        this.geminiUserTurnNeedsReply = false;
-        this.allowGeminiCallerReply("dictation chunk");
-      }
+      if (this.geminiPhone) this.geminiUserTurnNeedsReply = false;
       return;
-    }
-    // First real request after unlock — passphrase echoes never reach here.
-    if (this.requiresRestatedIntentAfterUnlock && safeText) {
-      this.requiresRestatedIntentAfterUnlock = false;
-      voiceLog(this.callSid, "auth", "accepted first post-unlock restated intent");
     }
     if (this.nativeTools) {
       // Native: the model decides whether and how to reply (proactive audio is always
       // on). Only re-request a reply Joshu itself cancelled (goal-callback fallthrough).
-      this.allowGeminiCallerReply("validated transcript");
       if (options.forceResponse) s2s.requestOrganicResponse();
       return;
     }
     if (this.geminiPhone) {
-      this.allowGeminiCallerReply("validated transcript");
       // A think job is answering this turn; a nudged organic reply would only
       // be cancelled, and its trailing audio collides with the filler/result.
       if (this.activeJob && !options.forceResponse) {
@@ -883,46 +636,28 @@ export class TwilioRealtimeSession {
     s2s.requestOrganicResponse();
   }
 
-  /** Try unlock from the caller's STT transcript only — never from Gemini tool args. */
-  private updateThinkAuthorization(text: string, source: string): boolean {
-    const password = resolveTwilioThinkPassword();
-    if (!password || this.thinkAuthorized) return false;
-    if (matchesThinkPassphrase(text, password)) {
-      this.thinkAuthorized = true;
-      this.unlockedAtMs = performance.now();
-      this.passphraseFailures = 0;
-      this.disableSessionTimeLimit("passphrase");
-      voiceLog(this.callSid, "auth", `think password accepted (${source})`);
-      return true;
-    }
-    return false;
-  }
-
-  /** Outbound callback placed by Joshu for one realtime goal (signed start params). */
+  /** Outbound callback Joshu placed for a batch of results (signed start params). */
   private isGoalCallback(): boolean {
     return Boolean(
-      this.startMetadata?.realtimeGoalId?.trim() && this.startMetadata?.realtimeGoalToken?.trim(),
+      this.startMetadata?.realtimeGoalBatchId?.trim() && this.startMetadata?.realtimeGoalBatchToken?.trim(),
     );
   }
 
-  private withinUnlockGrace(): boolean {
-    return this.unlockedAtMs != null && performance.now() - this.unlockedAtMs < UNLOCK_GRACE_MS;
-  }
-
   /**
-   * Authenticated request to Joshu's goal-callback API for this call's goal.
-   * `suffix` is "" (result), "/ack", "/reply", or "/outcome".
+   * Authenticated request to Joshu's callback API for this call's batch.
+   * `suffix` is "" (content), "/ack", or "/reply".
    */
   private realtimeGoalRequest(
-    suffix: "" | "/ack" | "/reply" | "/outcome",
+    suffix: "" | "/ack" | "/reply",
     init: { method?: "GET" | "POST"; body?: unknown; timeoutMs?: number } = {},
   ): Promise<Response> | undefined {
-    const goalId = this.startMetadata?.realtimeGoalId?.trim();
-    const token = this.startMetadata?.realtimeGoalToken?.trim();
-    if (!goalId || !token) return undefined;
+    const batchId = this.startMetadata?.realtimeGoalBatchId?.trim();
+    const batchToken = this.startMetadata?.realtimeGoalBatchToken?.trim();
+    if (!batchId || !batchToken) return undefined;
+    const base = { path: `batch/${encodeURIComponent(batchId)}`, token: batchToken };
     const method = init.method ?? "GET";
     return fetch(
-      `${JOSHU_API_BASE}/api/realtime-goals/voice/result/${encodeURIComponent(goalId)}${suffix}?token=${encodeURIComponent(token)}`,
+      `${JOSHU_API_BASE}/api/realtime-goals/voice/${base.path}${suffix}?token=${encodeURIComponent(base.token)}`,
       {
         method,
         headers: {
@@ -936,28 +671,9 @@ export class TwilioRealtimeSession {
     );
   }
 
-  /**
-   * Tell Joshu how a still-locked goal callback ended so it can park (voicemail,
-   * lockout) or back off (no unlock) instead of redialing every 15 minutes.
-   */
-  private reportGoalCallbackOutcome(outcome: GoalCallbackOutcome): void {
-    if (!this.isGoalCallback() || this.thinkAuthorized || this.goalCallbackOutcomeReported) return;
-    this.goalCallbackOutcomeReported = true;
-    voiceLog(this.callSid, "goal-callback", `reporting outcome=${outcome}`);
-    void this.realtimeGoalRequest("/outcome", {
-      method: "POST",
-      body: { outcome },
-      timeoutMs: 5_000,
-    })?.catch((error) => {
-      voiceWarn(this.callSid, "goal-callback", "outcome report failed", {
-        error: (error as Error).message,
-      });
-    });
-  }
-
-  /** End the call without speaking (voicemail must not record lock prompts). */
+  /** End the call without another word. */
   private hangUpSilently(): void {
-    this.hangingUpForAuth = true;
+    this.hangingUp = true;
     this.clearOutbound();
     setTimeout(() => {
       try {
@@ -969,16 +685,24 @@ export class TwilioRealtimeSession {
   }
 
   private async deliverRealtimeGoalCallback(): Promise<void> {
-    if (!this.isGoalCallback() || !this.thinkAuthorized || !this.s2s) return;
+    if (!this.isGoalCallback() || !this.s2s) return;
     try {
       const response = await this.realtimeGoalRequest("");
       if (!response?.ok) throw new Error(`result HTTP ${response?.status ?? "unavailable"}`);
       const payload = (await response.json()) as {
         text?: string;
         kind?: "blocked" | "completed";
+        ownerRequested?: boolean;
+        items?: PendingResult[];
       };
       const result = payload.text?.trim();
+      if (!result && (payload.ownerRequested || this.startMetadata?.ownerRequested)) {
+        // "Call me back" with nothing new to report.
+        this.s2s.injectAssistantMessage("", "requested_callback");
+        return;
+      }
       if (!result) throw new Error("empty callback result");
+      if (payload.items?.length) this.registerOffered(payload.items, true);
       this.realtimeGoalAwaitingReply = payload.kind === "blocked";
       this.realtimeGoalAckPending = true;
       this.realtimeGoalResponseDone = false;
@@ -1024,7 +748,7 @@ export class TwilioRealtimeSession {
       // Older Joshu builds omit `handled` and always treated the reply as the answer.
       if (payload.handled === false) {
         voiceLog(this.callSid, "goal-callback", "reply not about the goal — normal turn");
-        this.continueUnlockedTurn(text, { forceResponse: true });
+        this.continueTurn(text, { forceResponse: true });
         return;
       }
       this.realtimeGoalAwaitingReply = payload.awaitingReply === true;
@@ -1043,14 +767,6 @@ export class TwilioRealtimeSession {
     }
   }
 
-  /** True when a think `user_quote` is the passphrase (or its leftovers) and nothing else. */
-  private quoteIsOnlyPassphrase(quote: string | undefined): boolean {
-    const password = resolveTwilioThinkPassword().trim();
-    if (!password || !quote?.trim()) return false;
-    if (!this.sanitizeTextForThinkContext(quote)) return true;
-    return isPassphraseResidue(quote, password, { graceWindow: this.withinUnlockGrace() });
-  }
-
   /** Control secret is used only for unlock checks; never forward it to Hermes context. */
   private sanitizeTextForThinkContext(text: string): string {
     const password = resolveTwilioThinkPassword().trim();
@@ -1060,44 +776,9 @@ export class TwilioRealtimeSession {
 
   private onGeminiInputTranscript(text: string): void {
     if (!this.geminiPhone || !text.trim()) return;
-    if (this.nativeTools && this.thinkAuthorized && this.requiresRestatedIntentAfterUnlock) {
-      this.maybeClearRestateGateEarly(text);
-    }
-    if (!this.thinkAuthorized || this.requiresRestatedIntentAfterUnlock) return;
-    this.allowGeminiCallerReply("input transcript");
+    this.noteCallerSpokeBeforeOpener(text);
     // Legacy only: nudge a reply if Gemini's auto-reply stays silent.
     if (!this.nativeTools) this.geminiUserTurnNeedsReply = true;
-  }
-
-  /**
-   * Native: open the post-unlock gate on Gemini's live input transcription instead of
-   * waiting for the end-of-turn transcript — 3.8 starts answering before that lands, and
-   * the muted start of its reply would otherwise be clipped. Passphrase residue and
-   * unclear fragments keep the gate closed.
-   */
-  private maybeClearRestateGateEarly(text: string): void {
-    if (classifyUserTranscript(text) !== "clear") return;
-    const password = resolveTwilioThinkPassword();
-    if (
-      password &&
-      (isPassphraseOnlyTurn(text, password) ||
-        isPassphraseResidue(text, password, { graceWindow: this.withinUnlockGrace() }))
-    ) {
-      return;
-    }
-    this.requiresRestatedIntentAfterUnlock = false;
-    voiceLog(this.callSid, "auth", "restate satisfied", { via: "live_transcript" });
-  }
-
-  private allowGeminiCallerReply(reason: string): void {
-    if (!this.geminiPhone) return;
-    if (!this.thinkAuthorized || this.requiresRestatedIntentAfterUnlock) return;
-    const wasSuppressed = this.suppressAssistantAudio;
-    this.callerInputSeen = true;
-    this.suppressAssistantAudio = false;
-    if (wasSuppressed) {
-      voiceLog(this.callSid, "turn", `gemini phone: ${reason} — allowing assistant audio`);
-    }
   }
 
   /** Audio is on the wire — either model deltas or a lock clip Twilio has not drained. */
@@ -1119,22 +800,8 @@ export class TwilioRealtimeSession {
   }
 
   private handleSpeechStarted(): void {
-    // Gemini PSTN: caller speaking during the greeting should not cancel the greeting.
-    if (
-      this.geminiPhone &&
-      this.currentResponseReason === "progress" &&
-      this.greetingSent
-    ) {
-      if (this.thinkAuthorized && !this.requiresRestatedIntentAfterUnlock) {
-        this.allowGeminiCallerReply("speech during greeting");
-      }
-      voiceLog(this.callSid, "vad", "user speech during greeting (not barge-in)");
-      return;
-    }
-
     // speech_started fires on normal user turns too — only barge-in while assistant is playing.
     if (!this.assistantIsSpeaking()) {
-      this.allowGeminiCallerReply("user speech started");
       voiceLog(this.callSid, "vad", "user speech started (listening — not barge-in)");
       return;
     }
@@ -1149,7 +816,7 @@ export class TwilioRealtimeSession {
     voiceLog(this.callSid, "vad", "user speech started (barge-in, interrupting assistant)");
     this.s2s?.cancelActiveResponse();
     this.joshuInitiatedResponse = false;
-    this.assistantPartial = "";
+    this.logInterruptedSpeech();
 
     if (
       this.lastAssistantItem &&
@@ -1166,16 +833,135 @@ export class TwilioRealtimeSession {
     this.responseStartTimestampTwilio = null;
   }
 
-  private flushAssistantSpeech(source: ResponseSpeechReason): void {
+  private flushAssistantSpeech(source: ResponseSpeechReason, interrupted = false): void {
     const t = this.assistantPartial.trim();
     if (!t) return;
-    voiceLog(this.callSid, "turn", `turn #${this.turn} resp #${this.responseNum} SPEECH OUT source=${source}`, {
-      text: t.slice(0, 400),
-      chars: t.length,
-    });
+    voiceLog(
+      this.callSid,
+      "turn",
+      `turn #${this.turn} resp #${this.responseNum} SPEECH OUT${interrupted ? " (interrupted)" : ""} source=${source}`,
+      {
+        text: t.slice(0, 400),
+        chars: t.length,
+      },
+    );
     this.logSpeechWhileToolPending(t, source);
     this.transcript.push({ role: "assistant", text: t });
     this.assistantPartial = "";
+    this.noteSpokenForDelivery(t);
+    this.checkReplyLanguage(t);
+    this.checkDeliveryClaim(t, source);
+  }
+
+  /** A send claimed while the answer is still being worked on is a guess. */
+  private checkDeliveryClaim(text: string, source: ResponseSpeechReason): void {
+    // Joshu's own relays (late answers, updates) carry real send notes.
+    if (!this.nativeTools || source === "hermes_inject") return;
+    const toolPending = [...this.nativeJobs.values()].some((job) => !job.detached);
+    // A finished result can back a claim — unless the answer is still coming ("working").
+    const pending = this.lateJobs.size > 0 || (toolPending && source !== "function_result");
+    if (!pending) return;
+    const claim = detectDeliveryClaim(text);
+    if (!claim) return;
+    this.pendingDeliveryClaims.push(claim);
+    voiceWarn(this.callSid, "eval", "ANTIPATTERN delivery-claim-before-result", {
+      claim,
+      spoke: text.slice(0, 200),
+    });
+  }
+
+  /** Correction to attach to a result that does not back an earlier claim (clears the claims). */
+  private takeClaimCorrection(answer: string, delivered: import("./brainThink.js").DeliveredFact[] | undefined): string | undefined {
+    const correction = claimCorrection(this.pendingDeliveryClaims, answer, delivered);
+    this.pendingDeliveryClaims = [];
+    return correction;
+  }
+
+  /**
+   * The model answered in a language the owner does not speak (it picks the reply
+   * language from what it hears). Log every time; correct it once per call.
+   */
+  private checkReplyLanguage(text: string): void {
+    const ownerLanguage = resolveOwnerLanguage();
+    const verdict = detectLanguageMismatch(text, ownerLanguage);
+    if (!verdict.mismatch) return;
+    voiceWarn(this.callSid, "turn", "ANTIPATTERN language-mismatch", {
+      detected: verdict.detected,
+      ownerLanguage,
+      preview: text.slice(0, 120),
+    });
+    if (this.languageCorrected) return;
+    this.languageCorrected = true;
+    this.s2s?.appendContext(languageCorrection(ownerLanguage, verdict.detected));
+  }
+
+  /** The owner is already talking — the opener would talk over them. */
+  private noteCallerSpokeBeforeOpener(text: string): void {
+    if (this.openerSent || this.callerSpokeBeforeOpener) return;
+    if (classifyUserTranscript(text) !== "clear") return;
+    this.callerSpokeBeforeOpener = true;
+    voiceLog(this.callSid, "opener", "owner spoke before the opener");
+  }
+
+  /**
+   * Model session ready: add the owner context if setup missed it,
+   * then open the call with exactly one Joshu-written turn — the greeting (with
+   * any unheard results offered by title) or, on a callback, the update itself.
+   */
+  private async openCall(): Promise<void> {
+    const gate = this.startMetadata?.gate;
+    if (!gate || !this.s2s) return;
+    const opener = (await this.openerPromise) ?? undefined;
+    const s2s = this.s2s;
+    if (!s2s) return;
+    if (!opener) {
+      // Joshu did not record the unlock; presence still matters (no callbacks mid-call).
+      await this.postJoshu("/api/realtime-goals/voice/presence", { callSid: this.callSid, event: "unlocked" });
+    }
+    this.presenceReported = true;
+    if (!s2s.systemPromptExtraApplied) s2s.appendContext(buildOpenerContext(gate.mode, opener));
+    const items = opener?.items ?? [];
+    if (gate.mode === "callback") {
+      this.openerSent = true;
+      await this.deliverRealtimeGoalCallback();
+    } else {
+      if (items.length) this.registerOffered(items, false);
+      if (this.callerSpokeBeforeOpener) {
+        voiceLog(this.callSid, "opener", "skipped — the owner is already talking", { unheard: items.length });
+      } else {
+        this.openerSent = true;
+        s2s.injectAssistantMessage(buildInboundOpenerTurn(JOSHU_IDENTITY.owner.displayName, items), "control_turn");
+      }
+      this.openerSent = true;
+    }
+    voiceLog(this.callSid, "opener", `call opened mode=${gate.mode} via=${gate.via}`, {
+      msSinceStreamStart: Math.round(performance.now() - this.t0),
+      unheard: items.length,
+      contextInSetup: s2s.systemPromptExtraApplied === true,
+    });
+    if (!this.s2s || this.pendingPollTimer) return;
+    this.pendingPollTimer = setInterval(() => void this.pollPendingResults(false), PENDING_POLL_MS);
+    this.pendingPollTimer.unref?.();
+  }
+
+  /**
+   * The caller talked over the model (or Joshu superseded its turn). What it had
+   * said was heard — log it (it used to vanish from the logs, so a call could not
+   * be reconstructed) and, on the native path, keep it in the transcript.
+   */
+  private logInterruptedSpeech(): void {
+    const t = this.assistantPartial.trim();
+    if (!t) return;
+    if (this.nativeTools) {
+      this.flushAssistantSpeech(this.currentResponseReason, true);
+      return;
+    }
+    voiceLog(this.callSid, "turn", `turn #${this.turn} resp #${this.responseNum} SPEECH OUT (interrupted) source=${this.currentResponseReason}`, {
+      text: t.slice(0, 400),
+      chars: t.length,
+    });
+    this.assistantPartial = "";
+    this.noteSpokenForDelivery(t);
   }
 
   /**
@@ -1186,10 +972,10 @@ export class TwilioRealtimeSession {
   private logSpeechWhileToolPending(text: string, source: ResponseSpeechReason): void {
     if (!this.nativeTools || source === "function_result") return;
     const pending = [...this.nativeJobs.values()].filter((job) => !job.detached);
-    if (pending.length === 0) return;
+    if (pending.length === 0 && this.lateJobs.size === 0) return;
     voiceLog(this.callSid, "eval", "owner-fact-before-result candidate", {
       spoke: text.slice(0, 300),
-      pendingTools: pending.map((job) => job.tool),
+      pendingTools: [...pending.map((job) => job.tool), ...[...this.lateJobs.keys()].map(() => "think(late)")],
     });
   }
 
@@ -1222,7 +1008,10 @@ export class TwilioRealtimeSession {
   }
 
   private pushTranscript(role: "user" | "assistant", text: string): void {
-    if (role === "user") this.flushAssistantPartial();
+    if (role === "user") {
+      this.flushAssistantPartial();
+      this.noteOwnerSpokeForDelivery();
+    }
     this.transcript.push({ role, text });
     while (this.transcript.length > MAX_TRANSCRIPT_TURNS) {
       this.transcript.shift();
@@ -1357,23 +1146,6 @@ export class TwilioRealtimeSession {
       ),
     });
 
-    // Auth gate is transcript-only. While locked, ignore every tool call — do not
-    // unlock from Gemini wrapping the passphrase in think (that raced clips and
-    // leftover STT on the canary box 2026-08-22).
-    if (!this.thinkAuthorized) {
-      voiceWarn(this.callSid, "auth", `ignored ${toolName} while locked (transcript auth only)`);
-      this.declineToolCall(
-        call.callId,
-        {
-          status: "denied",
-          reason: "missing_passphrase",
-          message: "Call is locked. Stay silent. Joshu will speak the lock prompts.",
-        },
-        "Nothing to look up — the caller was saying their passphrase, not making a request.",
-      );
-      return;
-    }
-
     if (toolName === "start_dictation") {
       this.handleStartDictation(call.callId, args);
       return;
@@ -1407,56 +1179,6 @@ export class TwilioRealtimeSession {
     }
 
     const rawUserQuote = typeof args.user_quote === "string" ? args.user_quote : undefined;
-    // Checked before the restate gate so a passphrase-only call gets the right explanation.
-    if (this.quoteIsOnlyPassphrase(rawUserQuote)) {
-      // The model heard the unlock phrase and turned it into a task ("Save note",
-      // "search red swoosh" on the canary box 2026-09-25).
-      voiceWarn(this.callSid, "auth", "ignored think — quoted request is only the passphrase", {
-        quoteChars: rawUserQuote?.length ?? 0,
-      });
-      this.declineToolCall(
-        call.callId,
-        {
-          status: "ignored",
-          reason: "passphrase_is_not_a_request",
-          message: "The caller only said their passphrase. It is not a request. Do not call think for it; stay silent.",
-        },
-        "Passphrase accepted. It was not a request, so there is nothing to look up.",
-      );
-      return;
-    }
-
-    if (this.requiresRestatedIntentAfterUnlock) {
-      // The model hears audio directly and usually calls the tool before our transcript
-      // of the restated request lands. Its own quote counts as the restatement (passphrase
-      // residue was rejected above). Caller transcript is the fallback; the model's own
-      // `summary` is not — it wrote "checking notes, files…" about the passphrase and
-      // opened the gate on its keywords.
-      const quotedRequest = Boolean(
-        rawUserQuote && this.sanitizeTextForThinkContext(rawUserQuote).trim(),
-      );
-      const hasTaskInContext =
-        quotedRequest ||
-        this.transcript.some((t) => t.role === "user" && looksLikePhoneTaskRequest(t.text));
-      if (hasTaskInContext) {
-        this.requiresRestatedIntentAfterUnlock = false;
-        voiceLog(this.callSid, "auth", "restate satisfied", {
-          via: quotedRequest ? "tool_quote" : "call_context",
-        });
-      } else {
-        voiceLog(this.callSid, "auth", "deferred think until caller restates intent after unlock");
-        this.declineToolCall(
-          call.callId,
-          {
-            status: "deferred",
-            reason: "restate_after_unlock_required",
-            message: "Stay silent. Joshu already asked the caller to repeat their request.",
-          },
-          "Nothing to look up yet — the caller has not made a request since the call was unlocked.",
-        );
-        return;
-      }
-    }
 
     // The model hears audio directly and often calls think before our transcript
     // lands — "No, thank you" must not become a request (or a goal update).
@@ -1482,7 +1204,6 @@ export class TwilioRealtimeSession {
       this.lastUserTranscript(),
     );
     const jobId = randomUUID().slice(0, 8);
-    this.requiresRestatedIntentAfterUnlock = false;
 
     if (nativeJobTool) {
       this.startNativeJob(call.callId, toolName, jobId, { args, intent, summary, userQuote });
@@ -1553,16 +1274,6 @@ export class TwilioRealtimeSession {
   private handleStartDictation(callId: string, args: Record<string, unknown>): void {
     const s2s = this.s2s;
     if (!s2s) return;
-    // Same restated-intent gate as think — leftover pre-unlock STT must not arm the buffer.
-    if (this.requiresRestatedIntentAfterUnlock) {
-      this.rejectStartDictation(
-        callId,
-        "restate_after_unlock_required",
-        "Stay silent. Joshu already asked the caller to repeat their request.",
-        false,
-      );
-      return;
-    }
     if (!recentUserSpeechLooksLikeDictationStart(this.recentUserTexts())) {
       this.rejectStartDictation(
         callId,
@@ -1712,25 +1423,6 @@ export class TwilioRealtimeSession {
   }
 
   /**
-   * Native path, on unlock: the model never hears Joshu's lock clips (they go straight
-   * to Twilio), so tell it the call is open — plus queued / blocked / finished work.
-   */
-  private async appendBrokerContext(goalCallback = false): Promise<void> {
-    const context = await fetchVoiceSessionContext({
-      callSid: this.callSid,
-      jobId: `context-${randomUUID().slice(0, 8)}`,
-      presentation: "phone",
-    }).catch(() => undefined);
-    if (!this.thinkAuthorized) return;
-    const passphraseNote =
-      "What they just said was the passphrase, not a request: do not act on it or search for it. Nothing has failed.";
-    const unlocked = goalCallback
-      ? `[Joshu: passphrase accepted — the owner is authenticated. This is an OUTBOUND call: Joshu called the owner to report on background work they asked for earlier; they did not call you. ${passphraseNote} Joshu hands you the result next — open by saying why you called, then relay it.]`
-      : `[Joshu: passphrase accepted — the call is unlocked and the caller is the authenticated owner. ${passphraseNote} Joshu already told them the call is unlocked and asked for their request, so do not greet them again — wait for their request and respond normally.]`;
-    this.s2s?.appendContext(context ? `${unlocked}\n\n${context}` : unlocked);
-  }
-
-  /**
    * Native path: run think / start_task in the background. The model keeps the
    * conversation going and speaks the function result itself — no wait line,
    * progress ticks, or injected answer.
@@ -1792,11 +1484,31 @@ export class TwilioRealtimeSession {
     const elapsedMs = Math.round(performance.now() - t0);
 
     if (job.detached) {
+      if (outcome.jobId) {
+        // Joshu's inline job: the owner outbox delivers it (texted — the call is over).
+        const handed = await detachPhoneThinkJob(outcome.jobId);
+        voiceLog(this.callSid, "joshu", `detached job=${job.jobId} → Joshu delivers`, { inlineJob: outcome.jobId, handed });
+        return;
+      }
       // Queue confirmations and errors are not worth a text; real answers are.
       if (outcome.source !== "hermes") return;
       const texted = await textAnswerToOwner(outcome.rawText);
       voiceLog(this.callSid, "joshu", `detached job=${job.jobId} finished ms=${elapsedMs}`, { texted });
       return;
+    }
+
+    if (outcome.pending && outcome.jobId) {
+      voiceLog(this.callSid, "turn", `#${this.turn} THINK WORKING job=${job.jobId} ms=${elapsedMs} — past budget, following`, {
+        inlineJob: outcome.jobId,
+      });
+      this.s2s?.sendFunctionResult(job.callId, outcome.result);
+      this.followLateAnswer(outcome.jobId, request.kind === "think" ? request.think.userQuote : undefined);
+      return;
+    }
+
+    if (outcome.result.status === "done") {
+      const correction = this.takeClaimCorrection(outcome.rawText, outcome.delivered);
+      if (correction) outcome.result = { ...outcome.result, correction };
     }
 
     voiceLog(
@@ -1806,6 +1518,61 @@ export class TwilioRealtimeSession {
       { preview: JSON.stringify(outcome.result).slice(0, 200) },
     );
     this.s2s?.sendFunctionResult(job.callId, outcome.result);
+  }
+
+  /**
+   * A phone think outlasted its budget: wait for Joshu's job, then speak the
+   * answer at the next idle moment. If the call cannot take it (ended, or the
+   * job was delivered elsewhere), Joshu's owner outbox has it.
+   */
+  private followLateAnswer(jobId: string, quote?: string): void {
+    this.lateJobs.set(jobId, { quote });
+    const startedAt = Date.now();
+    void (async () => {
+      try {
+        let job = await waitPhoneThinkJob(jobId, LATE_ANSWER_POLL_MS);
+        while (job.status === "running" && this.lateJobs.has(jobId) && Date.now() - startedAt < LATE_ANSWER_MAX_MS) {
+          job = await waitPhoneThinkJob(jobId, LATE_ANSWER_POLL_MS);
+        }
+        if (!this.lateJobs.has(jobId) || !this.s2s) return; // call ended — detached in close()
+        if (job.status === "running") {
+          this.lateJobs.delete(jobId);
+          await detachPhoneThinkJob(jobId);
+          return;
+        }
+        const claimed = await claimPhoneThinkJob(jobId);
+        this.lateJobs.delete(jobId);
+        if (!claimed.claimed || !this.s2s) {
+          voiceLog(this.callSid, "joshu", `late answer job=${jobId} not claimed (delivered elsewhere)`);
+          return;
+        }
+        const answer =
+          claimed.status === "done"
+            ? claimed.answer?.trim() || "I couldn't find an answer to that."
+            : "I couldn't finish that one — ask me again in a moment.";
+        const correction = this.takeClaimCorrection(answer, claimed.delivered);
+        voiceLog(this.callSid, "turn", `#${this.turn} THINK DONE (late) inlineJob=${jobId} ms=${Date.now() - startedAt}`, {
+          preview: answer.slice(0, 200),
+          delivered: claimed.delivered,
+          corrected: Boolean(correction),
+        });
+        this.s2s.injectAssistantMessage(correction ? `${correction}
+
+${answer}` : answer, "late_answer");
+      } catch (error) {
+        voiceWarn(this.callSid, "joshu", `late answer job=${jobId} failed`, { error: (error as Error).message });
+        if (this.lateJobs.delete(jobId)) await detachPhoneThinkJob(jobId);
+      }
+    })();
+  }
+
+  /** Call ended: Joshu delivers every answer still being followed (owner outbox). */
+  private detachLateJobs(): void {
+    for (const jobId of this.lateJobs.keys()) {
+      voiceLog(this.callSid, "joshu", `late answer job=${jobId} — call ended, Joshu delivers`);
+      void detachPhoneThinkJob(jobId);
+    }
+    this.lateJobs.clear();
   }
 
   /** Call ended mid-tool: let native jobs finish and text their answers (bounded). */
@@ -1898,6 +1665,97 @@ export class TwilioRealtimeSession {
         this.activeJob = null;
       }
     }
+  }
+
+  /** POST to Joshu (loopback + service key). Owner outbox bookkeeping never breaks a call. */
+  private async postJoshu(path: string, body: unknown): Promise<Response | undefined> {
+    return fetch(`${JOSHU_API_BASE}${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${HERMES_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5_000),
+    }).catch((error: Error) => {
+      voiceWarn(this.callSid, "owner-outbox", `POST ${path} failed`, { error: error.message });
+      return undefined;
+    });
+  }
+
+  private async pollPendingResults(asContext: boolean): Promise<void> {
+    if (!this.s2s) return;
+    const response = await fetch(
+      `${JOSHU_API_BASE}/api/realtime-goals/voice/pending?callSid=${encodeURIComponent(this.callSid)}`,
+      {
+        headers: { Authorization: `Bearer ${HERMES_API_KEY}` },
+        signal: AbortSignal.timeout(5_000),
+      },
+    ).catch(() => undefined);
+    if (!response?.ok) return;
+    const payload = (await response.json().catch(() => ({}))) as { items?: PendingResult[] };
+    const items = (payload.items ?? []).filter((item) => item.text?.trim());
+    if (items.length === 0 || !this.s2s) return;
+    this.registerOffered(items, !asContext);
+    if (asContext) {
+      const lines = items.map((item) => `- ${item.title}: ${item.text}`).join("\n");
+      this.s2s.appendContext(
+        `[Joshu: results the owner has NOT heard yet. Mention them briefly once ("your ${items[0]!.title} results are ready — want them?") and relay them when asked, keeping every time, price, and name exactly as written.]\n${lines}`,
+      );
+    } else {
+      const text =
+        items.length === 1
+          ? items[0]!.text
+          : items.map((item) => `About “${item.title}”: ${item.text}`).join("\n\n");
+      this.s2s.injectAssistantMessage(text, "live_update");
+    }
+    voiceLog(this.callSid, "owner-outbox", `offered ${items.length} unheard result(s) ${asContext ? "as context" : "live"}`, {
+      titles: items.map((item) => item.title),
+    });
+  }
+
+  private registerOffered(items: PendingResult[], injected: boolean): void {
+    const now = performance.now();
+    for (const item of items) {
+      if (this.offeredItems.has(item.id)) continue;
+      this.offeredItems.set(item.id, {
+        title: item.title,
+        text: item.text,
+        offeredAtMs: now,
+        spoken: "",
+        injected,
+      });
+    }
+  }
+
+  /** The model said something: results whose key facts it covered were heard. */
+  private noteSpokenForDelivery(text: string): void {
+    if (this.offeredItems.size === 0) return;
+    const heard: string[] = [];
+    for (const [id, item] of this.offeredItems) {
+      item.spoken = `${item.spoken} ${text}`.slice(-8_000);
+      if (spokenCovers(item.text, item.spoken)) heard.push(id);
+    }
+    this.reportHeard(heard, "transcript_coverage");
+  }
+
+  /** The owner answered while a handed-over result was being spoken. */
+  private noteOwnerSpokeForDelivery(): void {
+    if (this.offeredItems.size === 0) return;
+    const now = performance.now();
+    const heard = [...this.offeredItems]
+      .filter(
+        ([, item]) =>
+          item.injected &&
+          now - item.offeredAtMs >= OWNER_REPLY_HEARD_MIN_MS &&
+          item.spoken.trim().length >= OWNER_REPLY_HEARD_MIN_CHARS,
+      )
+      .map(([id]) => id);
+    this.reportHeard(heard, "owner_reply");
+  }
+
+  private reportHeard(itemIds: string[], evidence: "transcript_coverage" | "owner_reply"): void {
+    if (itemIds.length === 0) return;
+    for (const id of itemIds) this.offeredItems.delete(id);
+    voiceLog(this.callSid, "owner-outbox", `heard ${itemIds.length} result(s)`, { evidence });
+    void this.postJoshu("/api/realtime-goals/outbox/heard", { callSid: this.callSid, itemIds, evidence });
   }
 
   private clearOutbound(): void {

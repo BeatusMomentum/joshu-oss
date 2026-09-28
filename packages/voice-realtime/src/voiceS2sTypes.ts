@@ -33,6 +33,13 @@ export type VoiceS2sConfig = {
   model?: string;
   /** Gemini 3.8 Live Extended Thinking only: background reasoning level. */
   thinkingLevel?: import("./config.js").GeminiThinkingLevel;
+  /**
+   * Context appended to the system instruction at setup (owner context for a gated
+   * call). Setup waits for it, bounded by `systemPromptExtraWaitMs`; when it misses
+   * the window, `systemPromptExtraApplied` stays false and the session adds it later.
+   */
+  systemPromptExtra?: Promise<string | undefined>;
+  systemPromptExtraWaitMs?: number;
 };
 
 export type FunctionCallPayload = {
@@ -97,6 +104,8 @@ export interface VoiceS2sClient {
    * lines, progress ticks, silent tool acks, and injected results.
    */
   readonly nativeAsyncTools: boolean;
+  /** `systemPromptExtra` made it into the system instruction (providers without support: false). */
+  readonly systemPromptExtraApplied?: boolean;
   connect(): void;
   appendMulaw8kB64(b64: string): void;
   appendPcm24kB64(b64: string): void;

@@ -27,7 +27,11 @@ if (!target) {
 }
 
 const MARKER = "hitl_browser_cdp_guards";
-const ENSURE_MARKER = "joshu_cloud_browser_ensure";
+/** v2: follows the relay `generation` (the endpoint no longer changes when the browser does). */
+const ENSURE_MARKER = "joshu_cloud_browser_ensure_v2";
+/** v1 drop helper, removed on upgrade. */
+const LEGACY_DROP_FN = "_joshu_drop_stale_cdp_sessions";
+const DROP_FN = "_joshu_drop_cdp_sessions";
 /** Name kept from the old touch helper so already-patched call sites stay valid during upgrade. */
 const ENSURE_FN = "_joshu_cloud_browser_touch";
 
@@ -120,7 +124,7 @@ def _joshu_action_guard_browser(kind: str, args: Dict[str, Any]) -> Optional[str
 // Upstream browser_tool.py imports requests lazily inside functions only; the
 // Joshu helpers use the module-level name (a missing import silently disabled
 // the handoff lock: NameError was swallowed by `except Exception`).
-const ensureBlock = `
+const ensurePrelude = `
 try:
     import requests  # Joshu browser helpers (${MARKER} / ${ENSURE_MARKER})
 except Exception:  # pragma: no cover - requests ships with Hermes
@@ -137,17 +141,20 @@ _JOSHU_BROWSER_UNAVAILABLE = {
         "kanban_block with reason 'system: browser unavailable'."
     ),
 }
+`;
 
-
+const ensureFunctions = `
 def ${ENSURE_FN}() -> Optional[str]:
-    """Wake the shared cloud browser and adopt its live CDP URL (${ENSURE_MARKER}).
+    """Wake the shared cloud browser and adopt its CDP endpoint (${ENSURE_MARKER}).
 
     Joshu's /api/browser/ensure re-provisions a Browser Use session that idled
-    out and returns its CDP URL. BROWSER_CDP_URL beats browser.cdp_url in
-    _get_cdp_override_raw(), so long-lived gateway/worker processes must refresh
-    it here or keep dialing the dead browser (CDP 502). Returns a tool-error
-    JSON string when the browser cannot start; None otherwise (local backends
-    return an empty cdpUrl and are left alone).
+    out. Behind Joshu's local CDP relay the endpoint never changes; \`generation\`
+    moves when the browser behind it is replaced, and cached sessions bound to
+    the old browser are dropped. Without the relay the endpoint itself rotates:
+    BROWSER_CDP_URL beats browser.cdp_url in _get_cdp_override_raw(), so
+    long-lived gateway/worker processes adopt it here. Returns a tool-error JSON
+    string when the browser cannot start; None otherwise (local backends return
+    an empty cdpUrl and are left alone).
     """
     if requests is None:
         return None
@@ -177,16 +184,27 @@ def ${ENSURE_FN}() -> Optional[str]:
     if resp.status_code >= 400:
         logger.warning("Joshu browser ensure HTTP %s", resp.status_code)
         return None
+    generation = str(payload.get("generation") or "").strip()
+    previous_generation = os.environ.get("JOSHU_CDP_GENERATION", "").strip()
+    if generation and generation != previous_generation:
+        os.environ["JOSHU_CDP_GENERATION"] = generation
+        if previous_generation:
+            ${DROP_FN}(None)
+            logger.info("Joshu cloud browser replaced behind the CDP relay; dropped cached sessions")
     cdp_url = str(payload.get("cdpUrl") or "").strip()
     if cdp_url and cdp_url != os.environ.get("BROWSER_CDP_URL", "").strip():
         os.environ["BROWSER_CDP_URL"] = cdp_url
-        _joshu_drop_stale_cdp_sessions(cdp_url)
+        ${DROP_FN}(cdp_url)
         logger.info("Joshu cloud browser rotated; adopted new CDP endpoint")
     return None
 
 
-def _joshu_drop_stale_cdp_sessions(cdp_url: str) -> None:
-    """Forget cached CDP sessions bound to a previous cloud browser (${ENSURE_MARKER})."""
+def ${DROP_FN}(cdp_url: Optional[str]) -> None:
+    """Forget cached CDP sessions bound to a previous cloud browser (${ENSURE_MARKER}).
+
+    With a URL, sessions already on that host stay; without one (the relay
+    endpoint did not change), every CDP-override session is dropped.
+    """
     from urllib.parse import urlparse
 
     def _host(url: Any) -> str:
@@ -195,12 +213,13 @@ def _joshu_drop_stale_cdp_sessions(cdp_url: str) -> None:
         except Exception:
             return ""
 
-    new_host = _host(cdp_url)
+    new_host = _host(cdp_url) if cdp_url else None
     with _cleanup_lock:
         stale = [
             key
             for key, info in _active_sessions.items()
-            if (info.get("features") or {}).get("cdp_override") and _host(info.get("cdp_url")) != new_host
+            if (info.get("features") or {}).get("cdp_override")
+            and (new_host is None or _host(info.get("cdp_url")) != new_host)
         ]
         for key in stale:
             # The old browser is gone or being replaced: mark expired so cleanup
@@ -310,14 +329,23 @@ if (!source.includes("def _joshu_browser_handoff_lock_check(")) {
   source = source.replace(loggerAnchor, `${loggerAnchor}\n${lockHelpers}`);
 }
 if (!source.includes(ENSURE_MARKER)) {
-  const legacy = functionSpan(source, ENSURE_FN);
-  if (legacy) {
-    source = source.slice(0, legacy[0]) + ensureBlock.trimStart() + "\n\n" + source.slice(legacy[1]);
+  // Upgrade: drop the v1 ensure/drop helpers (or the older touch helper) and put
+  // the v2 functions where the old ensure helper was.
+  let insertAt = -1;
+  for (const fn of [ENSURE_FN, LEGACY_DROP_FN, DROP_FN]) {
+    const span = functionSpan(source, fn);
+    if (!span) continue;
+    if (insertAt < 0 || span[0] < insertAt) insertAt = span[0];
+    source = source.slice(0, span[0]) + source.slice(span[1]);
+  }
+  const prelude = source.includes("_JOSHU_BROWSER_UNAVAILABLE = {") ? "" : ensurePrelude;
+  if (insertAt >= 0) {
+    source = source.slice(0, insertAt) + prelude + ensureFunctions.trimStart() + "\n\n" + source.slice(insertAt);
   } else {
     // After the lock helpers when present, else right after the logger.
     const anchorFn = functionSpan(source, "_joshu_action_guard_browser");
     const at = anchorFn ? anchorFn[1] : source.indexOf(loggerAnchor) + loggerAnchor.length + 1;
-    source = source.slice(0, at) + ensureBlock + "\n" + source.slice(at);
+    source = source.slice(0, at) + prelude + ensureFunctions + "\n" + source.slice(at);
   }
 }
 

@@ -251,3 +251,38 @@ test("start_task failure becomes an error result, not a fake confirmation", asyn
   const result = await startVoiceTask({ callSid: "CA1", jobId: "j2", objective: "x" });
   assert.deepEqual(result, { ok: false, error: "unavailable" });
 });
+
+/** Open a client with deferred owner context; returns the setup message once sent. */
+async function setupWithExtra(extra, waitMs) {
+  const sockets = [];
+  const client = new GeminiLiveClient(
+    { audioFormat: "pcmu", model: ET_MODEL, systemPrompt: "BASE", systemPromptExtra: extra, systemPromptExtraWaitMs: waitMs },
+    { sessionId: "test" },
+  );
+  client.createSocket = () => {
+    const socket = new FakeSocket();
+    sockets.push(socket);
+    return socket;
+  };
+  client.connect();
+  sockets[0].emit("open");
+  assert.equal(sockets[0].sent.length, 0, "setup waits for the owner context");
+  for (let i = 0; i < 50 && sockets[0].sent.length === 0; i += 1) await new Promise((r) => setTimeout(r, 5));
+  const text = sockets[0].sent[0]?.setup?.systemInstruction?.parts?.[0]?.text;
+  return { client, text };
+}
+
+test("gated call: owner context resolved in time goes into the system instruction", async () => {
+  const { client, text } = await setupWithExtra(Promise.resolve("OWNER CONTEXT"), 500);
+  assert.equal(text, "BASE\n\nOWNER CONTEXT");
+  assert.equal(client.systemPromptExtraApplied, true);
+  client.close();
+});
+
+test("gated call: slow owner context does not hold up setup", async () => {
+  const late = new Promise((resolve) => setTimeout(() => resolve("LATE"), 200));
+  const { client, text } = await setupWithExtra(late, 20);
+  assert.equal(text, "BASE");
+  assert.equal(client.systemPromptExtraApplied, false, "the session appends it as context instead");
+  client.close();
+});

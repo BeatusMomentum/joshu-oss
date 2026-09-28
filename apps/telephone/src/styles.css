@@ -164,3 +164,14 @@ button:disabled {
   border-radius: 8px;
   word-break: break-word;
 }
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  width: auto;
+}

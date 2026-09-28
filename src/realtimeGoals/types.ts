@@ -86,8 +86,9 @@ export type RealtimeGoalDelivery = {
   /**
    * `parked` — channel delivery stopped (e.g. owner unreachable by phone). The
    * result waits for the owner to ask for it; no automatic retries.
+   * `outbox` — handed to the owner outbox, which owns delivery from here.
    */
-  state: "pending" | "attempting" | "delivered" | "suppressed" | "parked";
+  state: "pending" | "attempting" | "delivered" | "suppressed" | "parked" | "outbox";
   attempts: number;
   nextAttemptAt?: string;
   lastAttemptAt?: string;
@@ -101,8 +102,6 @@ export type RealtimeGoalDelivery = {
   callbackOutcome?: RealtimeGoalVoiceCallbackOutcome;
   parkedAt?: string;
   parkedReason?: string;
-  /** When the owner was texted that this callback waits for their call hours (sent once). */
-  deferNoticeAt?: string;
 };
 
 export type RealtimeGoalSurfaceEvent = {
@@ -168,23 +167,153 @@ export type RealtimeGoalRecord = {
   sourceReceipts?: Array<{
     sourceId: string;
     reply: string;
-    outcome: "clarify" | "queued" | "updated" | "cancelled" | "status" | "ack";
+    outcome: "clarify" | "queued" | "updated" | "cancelled" | "status" | "ack" | "delivery";
     at: string;
   }>;
   delivery: RealtimeGoalDelivery;
   surfaceEvents?: RealtimeGoalSurfaceEvent[];
+  /** Owner told us how to deliver this goal ("don't call me back, just text"). */
+  deliveryRouteOverride?: { route: OwnerRoute; reason: string; at: string };
 };
 
 export type RealtimeGoalState = {
   version: 1;
   goals: RealtimeGoalRecord[];
   inbox?: RealtimeGoalInboxRecord[];
-  /**
-   * Per-session hold on outbound callbacks (key: realtimeGoalSessionKey). Set
-   * after an unanswered/voicemail callback so other goals do not dial in a burst.
-   */
-  callbackCooldowns?: Record<string, string>;
+  /** Owner outbox: every result or question the owner still has to hear. */
+  outbox?: OwnerOutboxItem[];
+  /** Where the owner is reachable and how they want results (owner outbox path). */
+  owner?: OwnerDeliveryState;
 };
+
+/**
+ * Where an outbox item is delivered. `surface` is the per-session event queue
+ * that jChat, AG-UI, and browser voice poll.
+ */
+export type OwnerRoute = "voice" | "sms" | "slack" | "telegram" | "surface";
+
+export type OwnerOutboxItemKind = "completed" | "blocked" | "failed" | "answer";
+
+/**
+ * `ready` — waiting to be delivered. `offered` — handed to a live phone call
+ * (spoken or about to be). `heard` — the owner got it. `superseded` — replaced
+ * by newer content for the same goal. `cancelled` — the goal was cancelled.
+ */
+export type OwnerOutboxItemState = "ready" | "offered" | "heard" | "superseded" | "cancelled";
+
+export type OwnerOutboxAttemptOutcome =
+  | "delivered"
+  | "pending"
+  | "no_answer"
+  | "busy"
+  | "voicemail_left"
+  | "hung_up_locked"
+  | "gate_failed"
+  | "not_heard"
+  | "failed";
+
+export type OwnerHeardEvidence =
+  | "channel_delivered"
+  | "transcript_coverage"
+  | "owner_reply"
+  | "playback_complete"
+  | "status_request"
+  | "surface_consumed";
+
+export type OwnerOutboxAttempt = {
+  at: string;
+  route: OwnerRoute;
+  outcome: OwnerOutboxAttemptOutcome;
+  providerId?: string;
+  batchId?: string;
+  detail?: string;
+};
+
+export type OwnerOutboxItem = {
+  id: string;
+  ownerKey: string;
+  goalId?: string;
+  jobId?: string;
+  kind: OwnerOutboxItemKind;
+  title: string;
+  /** Owner-facing text (already formatted for the owner). */
+  text: string;
+  /** Hash of kind+text; the same content is never enqueued twice for a goal. */
+  contentKey: string;
+  /** Where the request came from — the default reply route and address. */
+  origin: RealtimeGoalOrigin;
+  createdAt: string;
+  updatedAt: string;
+  state: OwnerOutboxItemState;
+  /** Owner said how they want this one ("don't call, text me"). */
+  routeOverride?: { route: OwnerRoute; reason: string; at: string };
+  attempts: OwnerOutboxAttempt[];
+  /** After a failed send: do not retry before this. */
+  retryAt?: string;
+  /** Consecutive failed sends (drives retryAt backoff). */
+  failures?: number;
+  /** In-flight delivery claim; expires so a crash cannot strand the item. */
+  lease?: { route: OwnerRoute; until: string; batchId?: string; providerId?: string };
+  offered?: { at: string; via: OwnerRoute; callSid?: string };
+  heard?: { at: string; via: OwnerRoute; evidence: OwnerHeardEvidence; callSid?: string };
+};
+
+/** Channel origin the owner last used, kept so a reply can go back to the same place. */
+export type OwnerActivity = {
+  channel: RealtimeGoalChannel;
+  at: string;
+  origin: RealtimeGoalOrigin;
+};
+
+export type OwnerPresence = {
+  lastActivity?: OwnerActivity;
+  /** Per text-capable channel: the owner's most recent activity there. */
+  lastByChannel?: Partial<Record<RealtimeGoalChannel, OwnerActivity>>;
+  /** Owner is on an unlocked phone call right now (lease renewed by the voice service). */
+  activeCall?: { callSid: string; unlockedAt: string; leaseUntil: string };
+  /** An outbound callback is ringing or live; no second one until it ends. */
+  callInFlight?: {
+    callSid: string;
+    batchId: string;
+    since: string;
+    leaseUntil: string;
+    itemIds: string[];
+    ownerRequested?: boolean;
+    /** How the call went, reported before Twilio's terminal status (voicemail, lockout). */
+    outcome?: RealtimeGoalVoiceCallbackOutcome;
+    /** The owner passed the passphrase on this call. */
+    unlockedAt?: string;
+  };
+  /** Undelivered callbacks since the owner last made contact. */
+  consecutiveMisses: number;
+  backoffUntil?: string;
+  lastMissAt?: string;
+  /** Owner asked to be called ("call me back"); dial as soon as possible. */
+  callRequestedAt?: string;
+};
+
+export type OwnerDeliveryPrefs = {
+  /** After a missed callback, text the full result (owner decision 2026-09-26). */
+  textResultAfterMissedCall: boolean;
+  /** Outside call hours (but within civil hours), text instead of waiting to call. */
+  textOutsideCallHours: boolean;
+  /** Owner-wide override ("don't call me, text me") with an expiry. */
+  defaultRoute?: { route: OwnerRoute; reason: string; at: string; until: string };
+};
+
+export type OwnerDeliveryState = {
+  presence: OwnerPresence;
+  prefs?: Partial<OwnerDeliveryPrefs>;
+  /** When per-goal legacy deliveries were moved into the outbox. */
+  migratedAt?: string;
+};
+
+/** Every realtime channel on a box belongs to its one owner. */
+export const OWNER_KEY = "owner";
+
+export function realtimeGoalOwnerKey(_origin?: RealtimeGoalOrigin): string {
+  return OWNER_KEY;
+}
 
 export type RealtimeGoalInboxRecord = {
   id: string;
@@ -212,24 +341,11 @@ export type RealtimeGoalRouteResult =
         | "updated"
         | "cancelled"
         | "status"
-        | "ack";
+        | "ack"
+        | "delivery";
     };
 
 export type RealtimeGoalDeliveryKind = "blocked" | "completed" | "failed";
-
-export type RealtimeGoalDeliveryHandler = (
-  goal: RealtimeGoalRecord,
-  text: string,
-  kind: RealtimeGoalDeliveryKind,
-) => Promise<{
-  delivered: boolean;
-  pending?: boolean;
-  providerId?: string;
-  retryAt?: string;
-  error?: string;
-  /** Deferred callback: the owner was texted when it will ring. */
-  deferNoticeSent?: boolean;
-}>;
 
 export function realtimeGoalSessionKey(origin: RealtimeGoalOrigin): string {
   return `${origin.channel}:${origin.sessionKey}`;

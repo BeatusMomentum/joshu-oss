@@ -76,6 +76,10 @@ export type TelephoneStatus = {
   ownerCallerDisplay: string;
   ownerCallerConfigured: boolean;
   pstnEnabled: boolean;
+  /** Keypad PIN set for the call gate (the PIN itself is never returned). */
+  pinConfigured: boolean;
+  pinLength: number;
+  trustVerifiedCallerId: boolean;
   sources: {
     phoneNumber: "settings-file" | "env" | "unset";
     thinkPassword: "settings-file" | "env" | "unset";
@@ -125,6 +129,9 @@ export function readTelephoneStatus(projectRoot = process.cwd()): TelephoneStatu
     ownerCallerDisplay: ownerCaller ? formatPhoneDisplay(ownerCaller) : "",
     ownerCallerConfigured: Boolean(ownerCaller),
     pstnEnabled: Boolean(auth && media && webhook && thinkPassword),
+    pinConfigured: Boolean(file.pinHash),
+    pinLength: file.pinHash ? file.pinLength ?? 0 : 0,
+    trustVerifiedCallerId: file.trustVerifiedCallerId === true,
     sources: { phoneNumber: phoneSource, thinkPassword: passSource, ownerCaller: ownerSource },
   };
 }

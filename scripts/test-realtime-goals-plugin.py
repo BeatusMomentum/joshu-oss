@@ -78,6 +78,27 @@ async def main() -> None:
     gateway._is_user_authorized = lambda _source: True
     assert MODULE.pre_gateway_dispatch(event, gateway)["action"] == "allow"
 
+    # Slack/Telegram turns get the owner's background-work snapshot (SMS and voice do).
+    calls: list[tuple[str, dict]] = []
+
+    def fake_post(path, payload, timeout=10.0):
+        calls.append((path, payload))
+        return {"context": "Background work context: Cancun flights (done; owner heard it by phone)"}
+
+    MODULE._post = fake_post
+    injected = MODULE.pre_llm_call(session_id="agent:main:slack:dm:D1", platform="slack")
+    assert injected == {"context": "Background work context: Cancun flights (done; owner heard it by phone)"}
+    assert calls[-1][0] == "/api/realtime-goals/context"
+    assert calls[-1][1]["origin"]["channel"] == "slack"
+    assert MODULE.pre_llm_call(session_id="sess-1", platform="api_server") is None
+    assert MODULE.pre_llm_call(session_id="sess-2", platform="telegram")["context"].startswith("Background")
+
+    def failing_post(*_args, **_kwargs):
+        raise RuntimeError("broker warming")
+
+    MODULE._post = failing_post
+    assert MODULE.pre_llm_call(session_id="agent:main:slack:dm:D1", platform="slack") is None
+
     print("test-realtime-goals-plugin: ok")
 
 

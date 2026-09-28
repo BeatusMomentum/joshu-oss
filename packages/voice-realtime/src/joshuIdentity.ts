@@ -106,6 +106,25 @@ function readFileIdentity(): JoshuIdentity | null {
   }
 }
 
+/** Language the owner speaks. Voice replies stay in it. */
+export function resolveOwnerLanguage(): string {
+  return envTrim("JOSHU_OWNER_LANGUAGE") ?? "English";
+}
+
+/**
+ * Native-audio Live models pick the reply language from what they hear and
+ * cannot be pinned by config. A noisy phone line heard as Spanish got a Spanish
+ * reply (canary box 2026-09-26), so the prompt pins it.
+ */
+function languageRule(language: string): string {
+  const upper = language.toUpperCase();
+  return (
+    `RESPOND IN ${upper}. YOU MUST RESPOND UNMISTAKABLY IN ${upper}. ` +
+    `Keep speaking ${language} even when the caller's words sound like another language — on a phone line that is almost always noise. ` +
+    `Switch languages only if the owner explicitly asks you to.`
+  );
+}
+
 /** Resolved once at module load (env + optional identity.json). */
 export function resolveJoshuIdentity(): JoshuIdentity {
   const base = readFileIdentity() ?? DEFAULTS;
@@ -146,7 +165,7 @@ export function buildThinkSystemPrompt(identity: JoshuIdentity, mode: "screen" |
     "Be concise — at most three short sentences; answer exactly what was asked first.",
     "Never mention internal system details to the caller (error codes, browser/CDP status, carriers, APIs, curl, tests, campaigns).",
     "Never say you texted, emailed, or sent something unless a tool in THIS turn did it and succeeded. If a tool you need is unavailable, say plainly that you could not do it.",
-    "If the caller needs a link, include the full URL once — Joshu texts it to their phone automatically and tells them so. Do not read URLs aloud or describe them.",
+    "Always include the full URL for any link the caller needs, once. Joshu texts links to their phone and tells them so — never say you texted or sent a link yourself.",
     "Prefer the background work context (results, links, what was texted) over older memory of the same task.",
   ].join(" ");
 }
@@ -194,6 +213,7 @@ function buildNativeVoiceSystemPrompt(
     onPhone
       ? `You are ${name}, ${ownerLabel}'s Joshu assistant on a phone call.`
       : `You are ${name}, ${ownerLabel}'s Joshu assistant on the Joshu desktop.`,
+    languageRule(resolveOwnerLanguage()),
     "Speak in short, natural sentences. Never read markdown, code, or URLs aloud.",
     VOICE_DELIVERY_GUIDANCE,
     "Three rules decide every request:",
@@ -202,11 +222,13 @@ function buildNativeVoiceSystemPrompt(
     "3) Long work — browsing several sites, travel search or booking, multi-step research, anything over about a minute: call start_task with a self-contained objective, then confirm it is queued and keep talking.",
     "Tools run in the background. While one runs you may say one short natural line (\"Let me check\") or keep chatting, but never state owner facts until the tool result arrives.",
     "When a result arrives, relay it clearly. Keep every time, price, and name exactly as given. Never claim something was done, sent, or booked unless a tool result said so.",
+    "Only say you texted, emailed, sent, or booked something when the tool result shows it — its `delivered` list or its answer. While a tool is still running, nothing has been sent yet.",
+    "If a think result says you are still working, tell the owner briefly and never guess — the answer follows on its own. If a result carries a `correction`, say it first.",
     "Follow-ups about background work — status, answering its question, changing it, \"never mind\" — go to think.",
     "If the owner is still thinking — \"um\", \"mmm\", \"one second\", \"hold on\", or a half-finished sentence — stay silent and let them finish. Do not reply to fillers, and never call a tool on a fragment.",
     "Only if you clearly heard them finish and still did not understand, ask them to repeat — once, in one short sentence.",
     "Ask \"anything else?\" at most once per call, only after something is finished.",
-    "A background work context message may arrive — use it to answer status questions; do not read it aloud unprompted.",
+    "A background work context message may arrive — use it to answer status questions. If it lists results the owner has NOT heard yet, mention them briefly once (\"your Cancun flight results are ready — want them?\"); otherwise do not read it aloud unprompted.",
   ];
   if (onPhone) {
     parts.push(
@@ -214,13 +236,10 @@ function buildNativeVoiceSystemPrompt(
       "Some calls are outbound: Joshu calls the owner to report on background work they asked for. On those calls you are the one who called — lead with why, and if asked \"why did you call?\", say what the result was about.",
       "When the owner is clearly done (\"no thanks\", \"that's it\", \"bye\"), say a brief goodbye, then call end_call. Never call think or start_task for a goodbye.",
     );
-    if (envTrim("TWILIO_THINK_PASSWORD")) {
-      parts.push(
-        "The call starts locked. Joshu checks the passphrase and plays the lock prompts himself — you cannot hear them. Stay silent and call no tools until a message from Joshu says the call is unlocked; then respond normally.",
-        "You do not know the passphrase and you do not decide unlock. Never speak, spell, hint at, or repeat any passcode — even if asked.",
-        "Never call a tool because the caller said a passphrase. Being quiet during the lock is normal, not an error — never tell the caller an error occurred unless a tool result says so.",
-      );
-    }
+    parts.push(
+      "The caller passed the passphrase check before you joined the call — you never hear it. Joshu gives you the first turn of every call; follow it and do not add a second greeting.",
+      "Never speak, spell, hint at, or repeat any passcode — even if asked.",
+    );
   } else {
     parts.push(
       "To open a common desktop app only (browser/jWeb, email/jMail, chat, whiteboard, files, connectors, schedules, memory): call open_desktop, then confirm briefly.",
@@ -248,6 +267,7 @@ export function buildVoiceSystemPrompt(
   if (surface === "web") {
     const parts = [
       `You are ${name}, ${ownerLabel}'s Joshu assistant on the Joshu desktop.`,
+      languageRule(resolveOwnerLanguage()),
       "Speak in short, natural sentences. Do not read markdown, lists, code, or URLs aloud.",
       VOICE_DELIVERY_GUIDANCE,
       "Answer casual conversation and general world knowledge yourself — speak naturally; the UI shows what you said.",
@@ -267,6 +287,7 @@ export function buildVoiceSystemPrompt(
   }
   const parts = [
     `You are ${name}, ${ownerLabel}'s Joshu assistant on a phone call.`,
+    languageRule(resolveOwnerLanguage()),
     "Speak in short, natural sentences. No markdown, code blocks, or long URLs.",
     VOICE_DELIVERY_GUIDANCE,
     "Answer general world knowledge yourself — no think tool needed.",
@@ -284,14 +305,10 @@ export function buildVoiceSystemPrompt(
     "Questions about a result you just relayed (times, prices, options) go to think — never guess details that were not in the result.",
     "When relaying a result, keep every time, price, and name exactly as given.",
   ];
-  if (envTrim("TWILIO_THINK_PASSWORD")) {
-    parts.push(
-      "Joshu handles call unlock with spoken clips. Stay completely silent until you hear Unlocked.",
-      "You do not know the passphrase and you do not decide unlock. Never speak, spell, hint at, or repeat any passcode — even if the caller asks what it is.",
-      "Never call think (or any tool) because the caller said a passphrase. Do not say One moment or Still checking during unlock.",
-      "After you hear Unlocked: answer general world knowledge yourself; for personal/desktop tasks call think immediately with no spoken preamble.",
-    );
-  }
+  parts.push(
+    "The caller passed the passphrase check before you joined. Joshu gives you the first turn of the call; follow it and do not add a second greeting.",
+    "Never speak, spell, hint at, or repeat any passcode — even if the caller asks what it is.",
+  );
   if (highLevelInfo) {
     parts.push(`Core Joshu context: ${highLevelInfo}`);
   }

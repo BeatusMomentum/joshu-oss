@@ -18,11 +18,15 @@ import {
 import { autoRecoveryKanbanAppend, classifyBlockCause } from "./blockCause.js";
 import { isContinuableGoal } from "./branchBinding.js";
 import { collectHandoffUrls, formatOwnerCompletion } from "./ownerDelivery.js";
-import { buildHermesBrokerContextMessage } from "./brokerContext.js";
+import { buildHermesBrokerContextMessage, type GoalDeliveryNote } from "./brokerContext.js";
 import { isDeferCapableChannel, isQueueCapableChannel, usesSessionThread } from "./channelPolicy.js";
+import { OwnerOutbox } from "./outbox.js";
+import { OwnerOutboxDispatcher, type OwnerOutboxSenders } from "./outboxDispatcher.js";
+import { ownerOnCall, routeForChannel } from "./outboxPolicy.js";
 import {
   isExplicitCancelPhrase,
   routeRealtimeGoalMessage,
+  voiceQueueConfidenceThreshold,
   type RouteRealtimeGoalMessageInput,
   type RouteRealtimeGoalMessageOptions,
   type RealtimeGoalRouteDecision,
@@ -31,7 +35,8 @@ import { SessionThreadStore } from "./sessionThread.js";
 import { RealtimeGoalStore } from "./store.js";
 import {
   realtimeGoalSessionKey,
-  type RealtimeGoalDeliveryHandler,
+  type OwnerOutboxItem,
+  type OwnerRoute,
   type RealtimeGoalOrigin,
   type RealtimeGoalInboxRecord,
   type RealtimeGoalRecord,
@@ -44,7 +49,6 @@ import { answeredByOutcome, isTerminalCallStatus } from "./voiceDeliveryPolicy.j
 
 const DEFAULT_RELEASE_DELAY_MS = 60_000;
 const DEFAULT_POLL_MS = 5_000;
-const MAX_DELIVERY_ATTEMPTS = 5;
 /** How far back finished goals stay in Hermes' context for follow-up questions. */
 const RECENT_RESULT_CONTEXT_MS = 6 * 60 * 60_000;
 /**
@@ -54,12 +58,14 @@ const RECENT_RESULT_CONTEXT_MS = 6 * 60 * 60_000;
 const MAX_AUTO_RECOVERIES = 2;
 
 export type RealtimeGoalBrokerOptions = {
-  /**
-   * Called once when callbacks are parked (owner unreachable by phone), so the
-   * owner can be nudged on another channel. Must not disclose results.
-   */
-  onCallbacksParked?: (goals: RealtimeGoalRecord[], reason: string) => Promise<void>;
+  /** Owner outbox senders (SMS, Slack, Telegram, surfaces, callbacks). */
+  outboxSenders?: (broker: RealtimeGoalBroker) => OwnerOutboxSenders;
+  /** Kanban bridge override (tests). */
+  kanbanBridge?: typeof callKanbanBridge;
 };
+
+/** "Don't call me today" style owner-wide overrides expire after a day. */
+const DEFAULT_ROUTE_TTL_MS = 24 * 60 * 60_000;
 
 /** Result of routing an owner utterance heard during a goal callback. */
 export type RealtimeGoalCallbackReplyResult = {
@@ -78,6 +84,17 @@ function releaseDelayMs(): number {
   const raw = Number.parseInt(process.env.JOSHU_REALTIME_GOALS_RELEASE_SECONDS ?? "", 10);
   const seconds = Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_RELEASE_DELAY_MS / 1000;
   return seconds * 1000;
+}
+
+/**
+ * Commit window for work the owner explicitly started (voice `start_task`,
+ * agent defer). The 60 s window exists so a classifier guess can be taken back;
+ * an explicit request only needs a moment for "never mind".
+ */
+function explicitReleaseDelayMs(): number {
+  const raw = Number.parseInt(process.env.JOSHU_REALTIME_GOALS_EXPLICIT_RELEASE_SECONDS ?? "", 10);
+  if (Number.isFinite(raw) && raw >= 0) return raw * 1000;
+  return Math.min(releaseDelayMs(), 10_000);
 }
 
 function shortTitle(text: string): string {
@@ -145,7 +162,7 @@ function markSourceHandled(
   goal: RealtimeGoalRecord,
   sourceId: string,
   reply: string,
-  outcome: "clarify" | "queued" | "updated" | "cancelled" | "status" | "ack",
+  outcome: "clarify" | "queued" | "updated" | "cancelled" | "status" | "ack" | "delivery",
 ): void {
   goal.handledSourceIds ??= [goal.sourceMessageId];
   if (!goal.handledSourceIds.includes(sourceId)) {
@@ -192,13 +209,15 @@ function taskBody(goal: RealtimeGoalRecord): string {
 export class RealtimeGoalBroker {
   readonly store: RealtimeGoalStore;
   readonly threads: SessionThreadStore;
+  /** Owner-level delivery: every result, question, and answer reaches the owner through it. */
+  readonly ownerOutbox: OwnerOutbox;
+  private dispatcher: OwnerOutboxDispatcher | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
   private tickRunning = false;
   private boardReady = false;
 
   constructor(
     readonly projectRoot: string,
-    private readonly deliver: RealtimeGoalDeliveryHandler,
     private readonly routeMessage: (
       input: RouteRealtimeGoalMessageInput,
       options?: RouteRealtimeGoalMessageOptions,
@@ -207,6 +226,30 @@ export class RealtimeGoalBroker {
   ) {
     this.store = new RealtimeGoalStore(projectRoot);
     this.threads = new SessionThreadStore(projectRoot);
+    this.ownerOutbox = new OwnerOutbox(this.store);
+  }
+
+  private callKanban(payload: Parameters<typeof callKanbanBridge>[0]): ReturnType<typeof callKanbanBridge> {
+    return (this.options.kanbanBridge ?? callKanbanBridge)(payload);
+  }
+
+  private outboxDispatcher(): OwnerOutboxDispatcher | undefined {
+    if (!this.options.outboxSenders) return undefined;
+    this.dispatcher ??= new OwnerOutboxDispatcher(this.ownerOutbox, this.options.outboxSenders(this));
+    return this.dispatcher;
+  }
+
+  /** Run a delivery pass soon (owner activity, new result, call ended). */
+  kickOutbox(): void {
+    this.outboxDispatcher()?.kick();
+  }
+
+  /** Deliver pending owner results now (tests / tick). */
+  async dispatchOutbox(): Promise<void> {
+    const dispatcher = this.outboxDispatcher();
+    if (!dispatcher) return;
+    await this.ownerOutbox.ensureMigrated();
+    await dispatcher.dispatch();
   }
 
   private threadKey(origin: RealtimeGoalOrigin): string {
@@ -214,6 +257,12 @@ export class RealtimeGoalBroker {
   }
 
   async recordOwnerTurn(origin: RealtimeGoalOrigin, text: string): Promise<void> {
+    // Any owner message means they are reachable now: stop backing off and
+    // let pending results find them (on this channel, if it is a text one).
+    await this.ownerOutbox.noteOwnerActivity(origin).catch((error) => {
+      console.warn(`[owner-outbox] presence update failed: ${(error as Error).message}`);
+    });
+    this.kickOutbox();
     if (!usesSessionThread(origin.channel)) return;
     await this.threads.recordOwnerTurn(
       this.threadKey(origin),
@@ -235,18 +284,7 @@ export class RealtimeGoalBroker {
   /** Compact broker snapshot for Hermes pass turns on queue-capable channels. */
   async buildHermesContextSnapshot(origin: RealtimeGoalOrigin): Promise<string | undefined> {
     if (!isQueueCapableChannel(origin.channel)) return undefined;
-    const session = realtimeGoalSessionKey(origin);
-    const active = await this.store.listActiveForSession(session);
-    const parked = await this.store.listParkedResultsForSession(session);
-    const listed = new Set([...active, ...parked].map((goal) => goal.id));
-    // Results the owner already heard still matter for follow-ups ("where did you
-    // send the link?") — without them Hermes answers from stale memory.
-    const recent = (
-      await this.store.listRecentFinishedForSession(session, Date.now() - RECENT_RESULT_CONTEXT_MS)
-    ).filter((goal) => !listed.has(goal.id));
-    const threadTurns = await this.threads.getTurns(this.threadKey(origin));
-    const activeBranch = await this.resolveActiveGoal(session, this.threadKey(origin));
-    return buildHermesBrokerContextMessage([...active, ...parked], threadTurns, activeBranch, recent);
+    return this.buildOwnerContextSnapshot(origin);
   }
 
   start(): void {
@@ -296,7 +334,7 @@ export class RealtimeGoalBroker {
       };
     }
 
-    const active = await this.store.listActiveForSession(session);
+    const active = await this.store.listActiveForOwner();
     if (active.length > 1 && isExplicitCancelPhrase(text)) {
       const choices = active
         .slice(0, 4)
@@ -314,10 +352,12 @@ export class RealtimeGoalBroker {
     const threadKey = this.threadKey(input.origin);
     const activeBranch = await this.resolveActiveGoal(session, threadKey);
     const queueCapable = isQueueCapableChannel(input.origin.channel);
-    // Finished results the owner has not heard yet (parked callbacks). Visible to
-    // the router so "any updates?" can pick them up; only status acts on them.
-    const parkedResults = await this.store.listParkedResultsForSession(session);
-    const routable = [...active, ...parkedResults];
+    // Finished results the owner has not heard yet. Visible to the router so
+    // "any updates?" can pick them up; only status acts on them.
+    const unheardResults = await this.listUnheardResultGoals();
+    const routable = [...active, ...unheardResults];
+    // Phone think has a time budget: slow answers go to the background on their own.
+    const queueThreshold = input.origin.channel === "pstn_voice" ? voiceQueueConfidenceThreshold() : undefined;
 
     const admission = activeBranch
       ? await this.routeMessage({
@@ -326,12 +366,16 @@ export class RealtimeGoalBroker {
           threadTurns,
           queueCapable,
           activeBranch,
+          deliveryCommands: true,
+          ...(queueThreshold !== undefined ? { queueThreshold } : {}),
         })
       : await this.routeMessage({
           text,
           activeGoals: routable,
           threadTurns,
           queueCapable,
+          deliveryCommands: true,
+          ...(queueThreshold !== undefined ? { queueThreshold } : {}),
         });
     console.info(
       `[realtime-goals] decision=${admission.decision} confidence=${admission.confidence.toFixed(2)} channel=${input.origin.channel} bound=${Boolean(activeBranch)} reason=${admission.reason}`,
@@ -355,6 +399,10 @@ export class RealtimeGoalBroker {
     }
 
     if (admission.decision === "pass") return { action: "pass" };
+
+    if (admission.decision === "delivery") {
+      return this.applyDeliveryCommand(input.origin, admission, activeBranch, routable, text, src);
+    }
 
     if (admission.decision === "ack" && admission.reply) {
       const anchor = admission.goalId
@@ -401,15 +449,21 @@ export class RealtimeGoalBroker {
       ? active.find((goal) => goal.id === admission.goalId)
       : undefined;
     const statusTarget =
-      target ?? parkedResults.find((goal) => goal.id === admission.goalId);
+      target ?? unheardResults.find((goal) => goal.id === admission.goalId);
 
     if (admission.decision === "status" && statusTarget) {
       const reply = statusReply(statusTarget);
       await this.store.update(statusTarget.id, (goal) =>
         markSourceHandled(goal, src, reply, "status"),
       );
-      // Hearing a parked result on an authenticated channel is delivery.
-      await this.store.markParkedResultDelivered(statusTarget.id);
+      if (statusTarget.status === "done" || statusTarget.status === "failed") {
+        await this.ownerOutbox.markHeardForGoal(
+          statusTarget.id,
+          routeForChannel(input.origin.channel),
+          "status_request",
+          ["completed", "failed"],
+        );
+      }
       await this.recordBoxTurn(input.origin, reply, "broker", statusTarget.id);
       return {
         action: "reply",
@@ -541,12 +595,14 @@ export class RealtimeGoalBroker {
       title,
       status: "queued",
       intakeReply: queuedReply(input.origin.channel),
+      explicit: true,
     });
     await this.recordBoxTurn(input.origin, goal.intakeReply, "broker", goal.id);
     return goal;
   }
 
   async cancel(goalId: string, reason = "Owner cancelled"): Promise<RealtimeGoalRecord | undefined> {
+    await this.ownerOutbox.cancelForGoal(goalId);
     const goal = await this.store.update(goalId, (item) => {
       item.status = item.kanbanTaskId ? "cancelling" : "cancelled";
       if (!item.kanbanTaskId) item.cancelledAt = isoNow();
@@ -578,7 +634,7 @@ export class RealtimeGoalBroker {
         item.cancelledAt ??= isoNow();
       });
     }
-    const result = await callKanbanBridge({
+    const result = await this.callKanban({
       action: "cancel",
       board: REALTIME_GOALS_KANBAN_BOARD,
       task_id: goal.kanbanTaskId,
@@ -603,71 +659,6 @@ export class RealtimeGoalBroker {
       item.cancelledAt = isoNow();
       item.delivery.state = "suppressed";
       item.intakeReply = `Cancelled “${item.title}.”`;
-    });
-  }
-
-  /**
-   * Twilio status / async-AMD webhook for an outbound goal callback.
-   *
-   * "completed" is not proof of delivery — only the authenticated result ack
-   * marks delivery. How an undelivered call is retried (or parked) is decided by
-   * voiceDeliveryPolicy from the call's outcome.
-   */
-  async recordVoiceCallbackStatus(
-    goalId: string,
-    status: string,
-    callSid: string,
-    answeredBy?: string,
-  ): Promise<void> {
-    const machine = answeredByOutcome(answeredBy);
-    if (machine) await this.recordVoiceCallbackOutcome(goalId, callSid, machine);
-    const normalized = status.trim().toLowerCase();
-    if (!isTerminalCallStatus(normalized)) return;
-    const { settlement, parked } = await this.store.settleVoiceCallback({
-      goalId,
-      callSid,
-      twilioStatus: normalized,
-    });
-    if (settlement) {
-      console.info(
-        `[realtime-goals] callback goal=${goalId} call=${callSid} status=${normalized} → ${settlement.action} (${settlement.reason})`,
-      );
-    }
-    await this.notifyParked(parked, settlement?.reason);
-  }
-
-  /** voice-realtime (or AMD) reports how a callback went before/as it ends. */
-  async recordVoiceCallbackOutcome(
-    goalId: string,
-    callSid: string,
-    outcome: RealtimeGoalVoiceCallbackOutcome,
-  ): Promise<void> {
-    const { settlement, parked } = await this.store.settleVoiceCallback({
-      goalId,
-      callSid,
-      outcome,
-    });
-    console.info(
-      `[realtime-goals] callback goal=${goalId} call=${callSid} outcome=${outcome}` +
-        (settlement ? ` → ${settlement.action}` : ""),
-    );
-    await this.notifyParked(parked, settlement?.reason);
-  }
-
-  private async notifyParked(parked: RealtimeGoalRecord[], reason?: string): Promise<void> {
-    if (parked.length === 0 || !this.options.onCallbacksParked) return;
-    await this.options.onCallbacksParked(parked, reason ?? "owner unreachable").catch((error) => {
-      console.warn(`[realtime-goals] parked-callback notice failed: ${(error as Error).message}`);
-    });
-  }
-
-  async markVoiceDelivered(goalId: string): Promise<void> {
-    await this.store.update(goalId, (goal) => {
-      goal.delivery.state = "delivered";
-      goal.delivery.deliveredAt = isoNow();
-      goal.delivery.nextAttemptAt = undefined;
-      goal.delivery.attemptLeaseUntil = undefined;
-      goal.delivery.lastError = undefined;
     });
   }
 
@@ -741,6 +732,209 @@ export class RealtimeGoalBroker {
     return result;
   }
 
+  /** Put a goal's result or question in the owner outbox (idempotent by content). */
+  private async publishOwnerItem(
+    goalId: string,
+    kind: "completed" | "blocked" | "failed",
+    text: string,
+  ): Promise<void> {
+    const { item, created } = await this.ownerOutbox.upsertForGoal(goalId, kind, text);
+    if (created && item) {
+      console.info(`[owner-outbox] ${kind} ready goal=${goalId} item=${item.id} origin=${item.origin.channel}`);
+      this.kickOutbox();
+    }
+  }
+
+  /** Goals whose finished result is still in the outbox, not yet heard. */
+  private async listUnheardResultGoals(): Promise<RealtimeGoalRecord[]> {
+    const state = await this.store.read();
+    const ids = new Set(
+      (state.outbox ?? [])
+        .filter((item) => item.state === "ready" || item.state === "offered")
+        .filter((item) => item.kind === "completed" || item.kind === "failed")
+        .map((item) => item.goalId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    return state.goals.filter((goal) => ids.has(goal.id));
+  }
+
+  /**
+   * "Call me back" / "don't call, text me". A route change on a bound, still
+   * running goal also reaches its worker as an owner update ("just email me the
+   * link" changes the task too).
+   */
+  private async applyDeliveryCommand(
+    origin: RealtimeGoalOrigin,
+    admission: RealtimeGoalRouteDecision,
+    activeBranch: RealtimeGoalRecord | undefined,
+    routable: RealtimeGoalRecord[],
+    text: string,
+    src: string,
+  ): Promise<RealtimeGoalRouteResult> {
+    let reply: string;
+    let goalId: string | undefined;
+    if (admission.deliveryAction === "call_now") {
+      await this.ownerOutbox.requestCall();
+      reply = "Calling you now.";
+    } else {
+      const route: OwnerRoute = admission.deliveryRoute ?? "sms";
+      const target =
+        (admission.goalId ? routable.find((goal) => goal.id === admission.goalId) : undefined) ??
+        activeBranch;
+      if (target) {
+        goalId = target.id;
+        await this.ownerOutbox.setRouteOverrideForGoal(target.id, route, `owner via ${origin.channel}`);
+        const running = !["done", "failed", "cancelled", "cancelling"].includes(target.status);
+        if (running) {
+          const updated =
+            target.status === "blocked"
+              ? (await this.answerBlockedGoal(target.id, text, src)) ?? target
+              : await this.appendOwnerUpdate(target, text, src);
+          reply =
+            route === "voice"
+              ? `${updated.intakeReply} I'll call you when it's done.`
+              : `Got it — I won't call. I added that to “${target.title}” and I'll text you when it's done.`;
+        } else {
+          reply =
+            route === "voice"
+              ? `Got it — I'll call you about “${target.title}.”`
+              : `Got it — I'll text you about “${target.title}” instead of calling.`;
+        }
+      } else {
+        await this.ownerOutbox.setDefaultRoute(route, `owner via ${origin.channel}`, DEFAULT_ROUTE_TTL_MS);
+        reply =
+          route === "voice"
+            ? "Got it — I'll call you with updates."
+            : "Got it — I'll text you updates instead of calling.";
+      }
+    }
+    if (goalId) {
+      await this.store.update(goalId, (goal) => markSourceHandled(goal, src, reply, "delivery"));
+    }
+    await this.recordBoxTurn(origin, reply, "broker", goalId);
+    console.info(
+      `[owner-outbox] owner delivery command ${admission.deliveryAction ?? "set_route"} route=${admission.deliveryRoute ?? "-"} goal=${goalId ?? "-"} via=${origin.channel}`,
+    );
+    this.kickOutbox();
+    return { action: "reply", text: reply, ...(goalId ? { goalId } : {}), outcome: "delivery" };
+  }
+
+  /** A result reached the owner by text: keep that thread's routing context truthful. */
+  async recordOutboxTextDelivered(
+    item: OwnerOutboxItem,
+    address: RealtimeGoalOrigin,
+    text: string,
+  ): Promise<void> {
+    await this.recordBoxTurn(address, text, "delivery", item.goalId);
+    // A question texted to the owner: their text reply answers it.
+    if (item.kind === "blocked" && item.goalId) await this.setActiveGoalPointer(address, item.goalId);
+  }
+
+  /** Twilio status / async AMD for an owner-outbox callback batch. */
+  async recordBatchCallStatus(
+    batchId: string,
+    status: string,
+    callSid: string,
+    answeredBy?: string,
+  ): Promise<void> {
+    const machine = answeredByOutcome(answeredBy);
+    if (machine) await this.ownerOutbox.recordCallOutcome(batchId, callSid, machine);
+    const normalized = status.trim().toLowerCase();
+    if (!isTerminalCallStatus(normalized)) return;
+    const result = await this.ownerOutbox.finishCall(batchId, callSid, normalized);
+    if (result.settled) {
+      console.info(
+        `[owner-outbox] callback ended batch=${batchId} call=${callSid} status=${normalized} ` +
+          `reachedOwner=${!result.missed} notHeard=${result.notHeard.length}`,
+      );
+    }
+    this.kickOutbox();
+  }
+
+  /** voice-realtime reports how a locked batch callback went (voicemail, lockout, no unlock). */
+  async recordBatchCallOutcome(
+    batchId: string,
+    callSid: string,
+    outcome: RealtimeGoalVoiceCallbackOutcome,
+  ): Promise<void> {
+    await this.ownerOutbox.recordCallOutcome(batchId, callSid, outcome);
+    console.info(`[owner-outbox] callback batch=${batchId} call=${callSid} outcome=${outcome}`);
+  }
+
+  /** Owner's reply on a batch callback: routes to the batch's open question, if any. */
+  async answerFromBatch(
+    batchId: string,
+    text: string,
+    sourceId: string,
+  ): Promise<RealtimeGoalCallbackReplyResult> {
+    const batch = await this.ownerOutbox.batch(batchId);
+    const question = batch?.items.find((item) => item.kind === "blocked" && item.goalId);
+    if (!question?.goalId) return { handled: false };
+    return this.answerFromCallback(question.goalId, text, sourceId);
+  }
+
+  /**
+   * Why the Hermes gateway must not restart right now, if anything: the owner
+   * is on a live call (its think turns go straight to the gateway).
+   */
+  async gatewayBusyReason(): Promise<string | undefined> {
+    const { presence } = await this.ownerOutbox.snapshot();
+    return ownerOnCall(presence, Date.now()) ? "owner is on a live call" : undefined;
+  }
+
+  /** The owner unlocked a call / the call ended. */
+  async recordVoicePresence(callSid: string, event: "unlocked" | "ended"): Promise<void> {
+    if (event === "unlocked") await this.ownerOutbox.setActiveCall(callSid);
+    else await this.ownerOutbox.endActiveCall(callSid);
+    this.kickOutbox();
+  }
+
+  /** Delivery state per goal for the owner-scoped context snapshot. */
+  private async deliveryNotes(goalIds: string[]): Promise<Map<string, GoalDeliveryNote>> {
+    const wanted = new Set(goalIds);
+    const notes = new Map<string, GoalDeliveryNote>();
+    for (const item of await this.ownerOutbox.list()) {
+      if (!item.goalId || !wanted.has(item.goalId) || notes.has(item.goalId)) continue;
+      if (item.state === "superseded" || item.state === "cancelled") continue;
+      const lastVoice = [...item.attempts].reverse().find((attempt) => attempt.route === "voice");
+      notes.set(item.goalId, {
+        heard: item.state === "heard",
+        ...(item.heard ? { heardVia: item.heard.via, heardAt: item.heard.at } : {}),
+        ...(item.routeOverride ? { route: item.routeOverride.route } : {}),
+        ...(lastVoice ? { lastCall: `${lastVoice.outcome} at ${lastVoice.at}` } : {}),
+      });
+    }
+    return notes;
+  }
+
+  private async buildOwnerContextSnapshot(origin: RealtimeGoalOrigin): Promise<string | undefined> {
+    const active = await this.store.listActiveForOwner();
+    const unheard = await this.listUnheardResultGoals();
+    const listed = new Set([...active, ...unheard].map((goal) => goal.id));
+    const recent = (
+      await this.store.listRecentFinishedForOwner(Date.now() - RECENT_RESULT_CONTEXT_MS)
+    ).filter((goal) => !listed.has(goal.id));
+    const threadTurns = await this.threads.getTurns(this.threadKey(origin));
+    const activeBranch = await this.resolveActiveGoal(realtimeGoalSessionKey(origin), this.threadKey(origin));
+    const notes = await this.deliveryNotes([...active, ...unheard, ...recent].map((goal) => goal.id));
+    const presence = (await this.ownerOutbox.snapshot()).presence;
+    return buildHermesBrokerContextMessage([...active, ...unheard], threadTurns, activeBranch, recent, {
+      notes,
+      callbacksAvailable: this.options.outboxSenders
+        ? this.outboxSendersCapabilities()?.voice ?? false
+        : false,
+      callbackBackoffUntil: presence.backoffUntil,
+    });
+  }
+
+  private sendersForCapabilities: OwnerOutboxSenders | undefined;
+
+  private outboxSendersCapabilities(): { voice: boolean; sms: boolean } | undefined {
+    if (!this.options.outboxSenders) return undefined;
+    this.sendersForCapabilities ??= this.options.outboxSenders(this);
+    return this.sendersForCapabilities.capabilities();
+  }
+
   async listSurfaceEvents(sessionKey: string): Promise<RealtimeGoalSurfaceEvent[]> {
     const state = await this.store.read();
     return state.goals
@@ -787,7 +981,9 @@ export class RealtimeGoalBroker {
     if (!pointer) return undefined;
 
     const goal = await this.store.get(pointer.goalId);
-    if (goal && realtimeGoalSessionKey(goal.origin) === session) {
+    // One owner trunk across channels — a phone goal's question texted to the
+    // owner binds their SMS reply to that goal.
+    if (goal) {
       if (isContinuableGoal(goal, pointer.setAt)) {
         return goal;
       }
@@ -865,7 +1061,7 @@ export class RealtimeGoalBroker {
     const replyText = receipt?.reply ?? updated.intakeReply;
 
     if (applied && updated.kanbanTaskId) {
-      await callKanbanBridge({
+      await this.callKanban({
         action: "reopen",
         board: REALTIME_GOALS_KANBAN_BOARD,
         task_id: updated.kanbanTaskId,
@@ -911,6 +1107,8 @@ export class RealtimeGoalBroker {
     status: "clarifying" | "queued";
     intakeReply: string;
     clarificationQuestion?: string;
+    /** The owner explicitly asked for background work (short commit window). */
+    explicit?: boolean;
   }): Promise<RealtimeGoalRecord> {
     const now = isoNow();
     const src = sourceMessageId(input.origin);
@@ -928,7 +1126,11 @@ export class RealtimeGoalBroker {
       updatedAt: now,
       ownerInteractedAt: now,
       ...(input.status === "queued"
-        ? { releaseAt: new Date(Date.now() + releaseDelayMs()).toISOString() }
+        ? {
+            releaseAt: new Date(
+              Date.now() + (input.explicit ? explicitReleaseDelayMs() : releaseDelayMs()),
+            ).toISOString(),
+          }
         : {}),
       ...(input.clarificationQuestion
         ? { clarificationQuestion: input.clarificationQuestion }
@@ -1017,18 +1219,19 @@ export class RealtimeGoalBroker {
         goal.status = goal.kanbanTaskId ? "ready" : "queued";
         goal.lastKanbanStatus = goal.kanbanTaskId ? "ready" : undefined;
         goal.lastBlockReason = undefined;
-        // The owner heard the question and answered it: that is delivery, even
-        // if the callback's playback ack never arrived. Stops redials of it.
-        if (goal.delivery.state !== "suppressed") {
-          goal.delivery.state = "delivered";
-          goal.delivery.deliveredAt ??= now;
-          goal.delivery.nextAttemptAt = undefined;
-          goal.delivery.attemptLeaseUntil = undefined;
-        }
       }
     });
     if (!updated) return target;
     if (!applied) return updated;
+    if (wasBlocked) {
+      // They answered the question, so they heard it — never re-ask it.
+      await this.ownerOutbox.markHeardForGoal(
+        updated.id,
+        routeForChannel(updated.origin.channel),
+        "owner_reply",
+        ["blocked"],
+      );
+    }
     if (updated.kanbanTaskId) {
       const flushed = await this.flushOwnerUpdates(updated.id, wasBlocked).catch(() => false);
       if (!flushed) {
@@ -1058,7 +1261,7 @@ export class RealtimeGoalBroker {
             question: update.answeredQuestion,
           })
         : ownerUpdateKanbanAppend(update.text, update.at, update.sourceId);
-      const appended = await callKanbanBridge({
+      const appended = await this.callKanban({
         action: "append_body",
         board: REALTIME_GOALS_KANBAN_BOARD,
         task_id: goal.kanbanTaskId,
@@ -1069,7 +1272,7 @@ export class RealtimeGoalBroker {
     }
     const shouldUnblock = forceUnblock || goal.lastKanbanStatus === "blocked";
     if (shouldUnblock) {
-      const unblocked = await callKanbanBridge({
+      const unblocked = await this.callKanban({
         action: "unblock",
         board: REALTIME_GOALS_KANBAN_BOARD,
         task_id: goal.kanbanTaskId,
@@ -1102,8 +1305,7 @@ export class RealtimeGoalBroker {
     try {
       await this.recoverStaleInbound();
       const outstanding = await this.store.listOutstanding();
-      if (outstanding.length === 0) return;
-      await this.ensureBoard();
+      if (outstanding.length > 0) await this.ensureBoard();
       for (const goal of outstanding) {
         if (goal.status === "cancelled") {
           await this.reconcileCancelledTombstone(goal);
@@ -1130,6 +1332,13 @@ export class RealtimeGoalBroker {
       }
     } catch (error) {
       console.warn(`[realtime-goals] lifecycle tick failed: ${(error as Error).message}`);
+    }
+    try {
+      // Owner outbox: deliveries, backoff expiry, and callbacks run every tick,
+      // even when no goal needs Kanban reconciliation.
+      await this.dispatchOutbox();
+    } catch (error) {
+      console.warn(`[owner-outbox] tick dispatch failed: ${(error as Error).message}`);
     } finally {
       this.tickRunning = false;
     }
@@ -1137,7 +1346,7 @@ export class RealtimeGoalBroker {
 
   private async reconcileCancelledTombstone(goal: RealtimeGoalRecord): Promise<void> {
     if (goal.kanbanTaskId || goal.cancellationReconciledAt) return;
-    const found = await callKanbanBridge({
+    const found = await this.callKanban({
       action: "find_by_idempotency",
       board: REALTIME_GOALS_KANBAN_BOARD,
       idempotency_key: goal.idempotencyKey,
@@ -1163,35 +1372,25 @@ export class RealtimeGoalBroker {
       // Twilio was ACKed only after this reservation. If the process died
       // before handling it, make the loss visible and ask for a safe replay.
       if (inbound.origin.channel !== "sms") continue;
-      const now = isoNow();
-      const synthetic: RealtimeGoalRecord = {
-        id: inbound.id,
-        version: 1,
-        title: "Interrupted SMS",
-        objective: inbound.text,
-        status: "failed",
-        origin: inbound.origin,
-        sourceMessageId: inbound.origin.messageId || inbound.id,
-        idempotencyKey: `recovery:${inbound.id}`,
-        createdAt: inbound.receivedAt,
-        updatedAt: now,
-        ownerInteractedAt: inbound.receivedAt,
-        messages: [{ at: inbound.receivedAt, role: "owner", text: inbound.text }],
-        intakeReply: "",
-        delivery: { state: "pending", attempts: 0 },
-      };
       const preview = inbound.text.replace(/\s+/g, " ").slice(0, 160);
-      const result = await this.deliver(
-        synthetic,
-        `I restarted before I could finish processing this text: “${preview}”. Please resend it.`,
-        "failed",
-      ).catch(() => ({ delivered: false }));
-      if (result.delivered) await this.store.markInboundRecoveryNotified(inbound.id);
+      await this.ownerOutbox.addAnswer({
+        jobId: `recovery:${inbound.id}`,
+        origin: inbound.origin,
+        title: "Interrupted SMS",
+        text: `I restarted before I could finish processing this text: “${preview}”. Please resend it.`,
+      });
+      await this.store.markInboundRecoveryNotified(inbound.id);
+      this.kickOutbox();
     }
   }
 
   private async ensureBoard(): Promise<void> {
     if (this.boardReady) return;
+    if (this.options.kanbanBridge) {
+      // An injected bridge (tests) owns its board.
+      this.boardReady = true;
+      return;
+    }
     const filesRoot = resolveJoshuFilesPaths(this.projectRoot)?.filesRoot;
     if (!filesRoot) throw new Error("JOSHU_FILES_ROOT unavailable");
     const result = await ensureRealtimeGoalsBoard(filesRoot);
@@ -1207,7 +1406,7 @@ export class RealtimeGoalBroker {
     const filesRoot = resolveJoshuFilesPaths(this.projectRoot)?.filesRoot;
     if (!filesRoot) return;
 
-    const result = await callKanbanBridge({
+    const result = await this.callKanban({
       action: "create",
       board: REALTIME_GOALS_KANBAN_BOARD,
       title: claimed.title,
@@ -1246,7 +1445,7 @@ export class RealtimeGoalBroker {
   }
 
   private async reconcileTask(goal: RealtimeGoalRecord): Promise<void> {
-    const result = await callKanbanBridge({
+    const result = await this.callKanban({
       action: "show",
       board: REALTIME_GOALS_KANBAN_BOARD,
       task_id: goal.kanbanTaskId,
@@ -1294,7 +1493,6 @@ export class RealtimeGoalBroker {
 
     if (status === "done") {
       if (goal.status === "cancelled" || goal.delivery.state === "suppressed") return;
-      const newCompletion = goal.lastKanbanStatus !== "done";
       const run = task.latest_run;
       const rawSummary =
         run?.summary?.trim() ||
@@ -1309,18 +1507,8 @@ export class RealtimeGoalBroker {
         item.status = "done";
         item.lastKanbanStatus = "done";
         item.resultSummary = summary;
-        if (newCompletion) {
-          item.delivery.state = "pending";
-          item.delivery.attempts = 0;
-          item.delivery.nextAttemptAt = undefined;
-        }
       });
-      const shouldDeliver =
-        newCompletion ||
-        (goal.delivery.state !== "delivered" && goal.delivery.state !== "parked");
-      if (shouldDeliver) {
-        await this.deliverAndRecord(goal.id, summary, "completed");
-      }
+      await this.publishOwnerItem(goal.id, "completed", summary);
       await this.clearActiveGoalPointer(goal.origin);
       return;
     }
@@ -1331,23 +1519,12 @@ export class RealtimeGoalBroker {
         task.latest_run?.error?.trim() ||
         task.latest_run?.summary?.trim() ||
         `I couldn't finish “${goal.title}.”`;
-      const newFailure = goal.lastKanbanStatus !== "archived";
       await this.store.update(goal.id, (item) => {
         item.status = "failed";
         item.lastKanbanStatus = "archived";
         item.resultSummary = message;
-        if (newFailure) {
-          item.delivery.state = "pending";
-          item.delivery.attempts = 0;
-          item.delivery.nextAttemptAt = undefined;
-        }
       });
-      const shouldDeliver =
-        newFailure ||
-        (goal.delivery.state !== "delivered" && goal.delivery.state !== "parked");
-      if (shouldDeliver) {
-        await this.deliverAndRecord(goal.id, message, "failed");
-      }
+      await this.publishOwnerItem(goal.id, "failed", message);
       await this.clearActiveGoalPointer(goal.origin);
       return;
     }
@@ -1358,7 +1535,7 @@ export class RealtimeGoalBroker {
     });
   }
 
-  /** Deliver a blocked question once per distinct question (retries until delivered). */
+  /** Hand a blocked question to the owner outbox (once per distinct question). */
   private async deliverBlockedPrompt(goal: RealtimeGoalRecord, question: string): Promise<void> {
     const questionChanged =
       goal.lastKanbanStatus !== "blocked" || goal.lastBlockReason !== question;
@@ -1367,18 +1544,10 @@ export class RealtimeGoalBroker {
         item.status = "blocked";
         item.lastKanbanStatus = "blocked";
         item.lastBlockReason = question;
-        item.delivery.state = "pending";
-        item.delivery.attempts = 0;
-        item.delivery.nextAttemptAt = undefined;
-        item.delivery.lastDeliveredKey = undefined;
       });
       await this.setActiveGoalPointer(goal.origin, goal.id);
-      await this.deliverAndRecord(goal.id, question, "blocked");
-      return;
     }
-    if (goal.delivery.state === "pending" || goal.delivery.state === "attempting") {
-      await this.deliverAndRecord(goal.id, question, "blocked");
-    }
+    await this.publishOwnerItem(goal.id, "blocked", question);
   }
 
   /**
@@ -1411,7 +1580,7 @@ export class RealtimeGoalBroker {
       success: false,
       error: (error as Error).message,
     });
-    const appended = await callKanbanBridge({
+    const appended = await this.callKanban({
       action: "append_body",
       board: REALTIME_GOALS_KANBAN_BOARD,
       task_id: goal.kanbanTaskId,
@@ -1421,7 +1590,7 @@ export class RealtimeGoalBroker {
       console.warn(`[realtime-goals] auto-recovery append failed goal=${goal.id}: ${appended.error}`);
       return true;
     }
-    const unblocked = await callKanbanBridge({
+    const unblocked = await this.callKanban({
       action: "unblock",
       board: REALTIME_GOALS_KANBAN_BOARD,
       task_id: goal.kanbanTaskId,
@@ -1441,57 +1610,4 @@ export class RealtimeGoalBroker {
     return true;
   }
 
-  private async deliverAndRecord(
-    goalId: string,
-    text: string,
-    kind: "blocked" | "completed" | "failed",
-  ): Promise<void> {
-    const claim = await this.store.claimDeliveryAttempt(
-      goalId,
-      kind,
-      text,
-      MAX_DELIVERY_ATTEMPTS,
-    );
-    if (!claim.claimed || !claim.goal) return;
-
-    const goal = claim.goal;
-    if (
-      goal.origin.channel === "jchat" ||
-      goal.origin.channel === "agui" ||
-      goal.origin.channel === "browser_voice"
-    ) {
-      const alreadyQueued = goal.surfaceEvents?.some(
-        (event) => event.kind === kind && event.text === text && !event.consumedAt,
-      );
-      if (!alreadyQueued) {
-        await this.store.update(goalId, (item) => {
-          item.surfaceEvents ??= [];
-          item.surfaceEvents.push({
-            id: randomUUID(),
-            kind,
-            text,
-            createdAt: isoNow(),
-          });
-        });
-      }
-    }
-
-    const result: Awaited<ReturnType<RealtimeGoalDeliveryHandler>> = await this.deliver(
-      goal,
-      text,
-      kind,
-    ).catch((error) => ({
-      delivered: false,
-      error: (error as Error).message,
-    }));
-    await this.store.finalizeDeliveryAttempt(
-      goalId,
-      claim.contentKey,
-      result,
-      MAX_DELIVERY_ATTEMPTS,
-    );
-    if (result.delivered) {
-      await this.recordBoxTurn(goal.origin, text, "delivery", goal.id);
-    }
-  }
 }

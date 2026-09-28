@@ -210,45 +210,22 @@ flights?”) gets a status reply, cancel cancels, and an unrelated request falls
 through to a normal voice turn. Only a real answer is written to the card. If
 the router is unavailable, the reply is treated as the answer.
 
-### PSTN callback delivery (2026-09-24)
+### PSTN callbacks
 
-A callback is delivered only after passphrase unlock and playback ack (or an
-owner answer). Undelivered calls follow
-[`voiceDeliveryPolicy.ts`](../src/realtimeGoals/voiceDeliveryPolicy.ts):
-
-| How the call ended | Detected by | Result |
-| --- | --- | --- |
-| Voicemail | Twilio async AMD (`AnsweredBy=machine_*`/`fax`, call hung up), or a voicemail greeting transcript while locked | **Park** |
-| Passphrase lockout | voice-realtime `auth_failed` | **Park** |
-| No answer / busy / hung up before unlock | Twilio status, voice-realtime `no_unlock` | Retry at 15m, then 30m; park after 3 calls |
-
-**Park** is session-wide: every pending PSTN result for that owner stops
-dialing, the owner gets one SMS naming the task(s) (no results; the passphrase
-still gates content), and callbacks for the session hold for 60 minutes. A
-parked result is picked up when the owner calls in and asks for an update (the
-router sees parked results for `status`), and a new question or result on that
-goal starts delivery again.
-
-Callbacks are **serialized per owner session**: one call in flight at a time
-and a 2-minute gap after a call ends, so several blocked goals no longer ring in
-a burst. Deliveries deferred by working hours no longer spend an attempt.
+Callbacks are placed by the [owner outbox](#owner-outbox-2026-09-27): one call
+carries every ready result, it is answered at the call gate, and a missed call
+texts the full results instead of redialing.
 
 **When a callback may ring** ([`callbackWindow.ts`](../src/realtimeGoals/callbackWindow.ts)):
 the owner's proactive window (weekdays, working hours, plus evenings/weekends
 if they opted in) — or, for up to **6 hours after the owner's last message on
 the goal**, any day **07:00–22:00** owner-local. "I'll call you back when it's
 done" is a promise, not a nudge: an 8 PM request is called back at 8:15 PM,
-not at 9 AM tomorrow. When a finished callback must wait anyway, the owner gets
-**one** SMS with the task title and when Joshu will call (no result — the
-passphrase still gates content); `delivery.deferNoticeAt` records it.
+not at 9 AM tomorrow. Outside call hours (07:00–22:00 owner-local) the result
+is texted instead of waiting for tomorrow's call.
 
 Set `JOSHU_REALTIME_GOALS_CALLBACK_AMD=0` to disable answering-machine
-detection (the transcript check and outcome reports still apply).
-
-Voice-realtime also drops **passphrase residue** after unlock (the passphrase
-plus at most one other word, and partial matches for 10 s), refuses a `think`
-whose quoted request is only the passphrase, and says “Unlocked. I have an update
-for you.” on callbacks instead of asking the owner to repeat their request.
+detection (the gate still recognizes a voicemail greeting).
 
 **Links on voice.** A callback result or blocked question that contains URLs is
 spoken without them; Joshu texts the links to the owner (once per result,
@@ -283,6 +260,120 @@ Privileged browser entry points validate the presented cookie against ArozOS
 issuance. Internal plugin/voice broker calls require both proxy-safe direct
 localhost and `HERMES_API_KEY`; Caddy-proxied requests cannot masquerade as
 local services.
+
+## Owner outbox (2026-09-27)
+
+Every result, question, and late answer reaches the owner through one
+owner-level outbox (it replaced per-goal, per-channel delivery). On the canary box (2026-09-26) one voicemail verdict parked
+every phone result for an hour while the owner was calling in and texting;
+finished flight results reached him 51–52 minutes after he asked, one twice.
+
+**Owner-scoped trunk.** The box has one owner. Goals, results, and delivery
+state are visible from every channel: SMS, Slack, Telegram, and voice `think`
+all get the same snapshot (`buildHermesContextSnapshot` →
+[`brokerContext.ts`](../src/realtimeGoals/brokerContext.ts)), with where each
+goal was asked, whether the owner heard the result, and that Joshu can call the
+owner. The per-thread active pointer still binds follow-ups, and a phone goal's
+question texted to the owner binds their SMS reply. `channel:sessionKey` stays
+only for transport idempotency.
+
+**Items.** Every result, blocked question, or failure becomes an outbox item
+(`ready → offered → heard`, or `superseded` / `cancelled`). The same content is
+never enqueued twice for a goal, and new content supersedes anything unheard.
+
+**Delivery policy** ([`outboxPolicy.ts`](../src/realtimeGoals/outboxPolicy.ts), pure):
+
+| Situation | What happens |
+| --- | --- |
+| Owner on an unlocked call | No dialing; the live call offers the result |
+| Owner said how ("don't call, text me") | That route, for that goal (or owner-wide for 24h) |
+| Owner texted in the last 10 min | The result goes to that text thread |
+| SMS / Slack / Telegram / surface request | Its own channel (unchanged) |
+| Phone request | One batched callback after a 60 s settle (no call in flight, callback window, no backoff) |
+| Callback missed (no answer, busy, voicemail, hang-up before unlock) | Full result by SMS now; backoff 10 min → 30 min → no calls until the owner makes contact |
+| Outside call hours (07:00–22:00 owner-local) | Text instead of calling tomorrow |
+| Owner says "call me back" (any channel) | Dial now, whatever the backoff or window |
+
+Any owner message on any channel, or unlocking a call, clears the backoff.
+
+**Delivery commands.** The router has a `delivery` decision: "call me back",
+"please call", "I'm asking you to call back" → call now; "don't call, text me",
+"no need to call me back" → route override; "call me when it's done" → phone.
+Clear phrasings are deterministic
+([`deterministicDeliveryCommand`](../src/realtimeGoals/router.ts)); the model
+classifies the rest. A route change on a running goal also reaches its worker
+as an owner update ("just email me the link").
+
+**Heard.** Text routes count as heard on send. A phone result counts as heard
+when the voice service sees its key facts in what the model actually said
+([`deliveryCoverage.ts`](../packages/voice-realtime/src/deliveryCoverage.ts)),
+when the owner answers while it is being spoken, when the batch playback ack
+drains, or when the owner asks for its status. A result relayed from context
+counts too. Offered-but-unheard results go back to `ready` when the call ends,
+so the policy texts them.
+
+**Live calls.** On unlock, voice-realtime reports presence, adds unheard phone
+results to the model's context ("mention them briefly once"), and polls every
+10 s for results that finish mid-call (`live_update` turn at the next idle
+moment). Callbacks carry one **batch** (`realtimeGoalBatchId` + token): every
+ready result in one call, blocked questions first.
+
+| Route | Caller | Purpose |
+| --- | --- | --- |
+| `GET /api/realtime-goals/voice/batch/:batchId` | voice (callback CallSid) | Batch content; marks it offered |
+| `POST /api/realtime-goals/voice/batch/:batchId/{outcome,reply,ack}` | voice (callback CallSid) | Voicemail/lockout, blocked answer, playback drained |
+| `GET /api/realtime-goals/voice/pending?callSid=` | voice (loopback + key) | Unheard phone results to offer now; renews the call's presence lease |
+| `POST /api/realtime-goals/voice/presence` | voice (loopback + key) | `unlocked` / `ended` |
+| `POST /api/realtime-goals/outbox/heard` | voice (loopback + key) | Coverage / owner-reply evidence |
+| `POST /api/realtime-goals/voice/opener` | voice (loopback + key) | Call opened: presence `unlocked`, owner context, unheard results (offered) |
+
+**Call gate.** Callbacks are placed with TwiML that redirects to the voice-realtime gate (passphrase or PIN via Twilio
+`<Gather>`), and answering-machine detection switches to `DetectMessageEnd`:
+after the beep, Joshu redirects a still-locked call to the gate's voicemail
+notice ("I've sent the details by text"), records `voicemail`, and the policy
+texts the full results. A call that already got through is never touched by
+AMD. Inbound gated calls open with one turn that offers unheard results by
+title ([voice-realtime.md — Call gate](vps-sandbox/voice-realtime.md#call-gate-passphrase--pin)).
+
+The first run migrates pending, attempting, and parked per-goal deliveries into
+the outbox, once, after copying `state.json` to `state.json.bak-owner-outbox`.
+
+Implementation: [`outbox.ts`](../src/realtimeGoals/outbox.ts),
+[`outboxDispatcher.ts`](../src/realtimeGoals/outboxDispatcher.ts),
+[`ownerOutboxSenders.ts`](../src/realtimeGoals/ownerOutboxSenders.ts).
+Tests, including a replay of the 2026-09-26 session: `npm run test:owner-outbox`.
+
+## Inline jobs (phone `think` with a time budget)
+
+A cheap classifier used to pick sync vs. background up front: on the canary box
+(2026-09-26) a 59 s sync turn held the caller while "email me the link" became a
+background goal. Now phone `think` always starts inline as a Joshu job
+([`inlineJobs.ts`](../src/realtimeGoals/inlineJobs.ts)) and only the budget
+decides: answered within 10 s → spoken; slower →
+"still working", then spoken when it lands; caller gone → owner outbox `answer`
+item (texted — the promise on the line). Unclaimed answers reach the outbox after
+45 s; jobs persist in `inline-jobs.json`, and one that was running when Joshu
+restarted becomes "I restarted before I could finish …".
+
+| Route (loopback + service key) | Purpose |
+| --- | --- |
+| `POST /api/realtime-goals/jobs` | Broker `route`, then Hermes; waits up to `budgetMs` (≤25 s). Done → claimed and returned speakable (links texted, `delivered` facts) |
+| `GET /api/realtime-goals/jobs/:id?waitMs=` | Long-poll a running job |
+| `POST /api/realtime-goals/jobs/:id/claim` | The call will speak it now; `claimed: false` once delivered elsewhere |
+| `POST /api/realtime-goals/jobs/:id/detach` | Caller hung up — deliver through the outbox when done |
+
+Because slow answers no longer hold anyone, phone admission queues only on
+clear long work: `JOSHU_REALTIME_GOALS_VOICE_QUEUE_CONFIDENCE` (default 0.85;
+other channels keep 0.7). Explicit `start_task` / defer commits after
+`JOSHU_REALTIME_GOALS_EXPLICIT_RELEASE_SECONDS` (default 10) instead of the
+60 s classifier window. SMS turns send one "Working on it — I'll text you when
+it's done." after `JOSHU_SMS_INTERIM_SECONDS` (default 25; 0 = off).
+
+Browser handoff links minted during a job
+([`collectHandoffUrlsForSession`](../src/realtimeGoals/inlineJobs.ts)) are
+texted with the answer even when Hermes forgot to paste them.
+
+Tests: `npm run test:inline-jobs`, voice `test/lateAnswer.test.mjs`.
 
 ## Cancellation
 
@@ -361,6 +452,7 @@ See also: [`realtime-goals-theory-of-operation.md`](realtime-goals-theory-of-ope
 
 ```bash
 npm run test:realtime-goals
+npm run test:owner-outbox
 npm run test:realtime-goals-plugin
 npm run test:kanban-bridge-max-runtime
 npm run test:sms-send

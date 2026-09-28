@@ -206,6 +206,30 @@ def pre_gateway_dispatch(event, gateway, **_kwargs):
         return {"action": "allow"}
 
 
+def pre_llm_call(session_id: str = "", platform: str = "", **_kwargs):
+    """Give Slack/Telegram owner turns the owner's background-work snapshot.
+
+    SMS and voice already pass it to Hermes; without it a chat turn can deny a
+    job the owner started by phone ("nothing's running on Cancun").
+    """
+    if platform not in ("slack", "telegram"):
+        return None
+    origin = _origin_from_session(session_id or "") or {
+        "channel": platform,
+        "sessionKey": session_id or platform,
+        **({"sessionId": session_id} if session_id else {}),
+    }
+    try:
+        result = _post("/api/realtime-goals/context", {"origin": origin}, timeout=3.0)
+    except Exception as error:
+        print(f"[joshu-realtime-goals] context fetch failed: {error}", file=sys.stderr)
+        return None
+    context = result.get("context")
+    if isinstance(context, str) and context.strip():
+        return {"context": context}
+    return None
+
+
 def register(ctx) -> None:
     ctx.register_tool(
         name="realtime_goal_defer",
@@ -215,3 +239,4 @@ def register(ctx) -> None:
         emoji="⏳",
     )
     ctx.register_hook("pre_gateway_dispatch", pre_gateway_dispatch)
+    ctx.register_hook("pre_llm_call", pre_llm_call)

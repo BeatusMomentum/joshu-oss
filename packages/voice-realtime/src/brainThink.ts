@@ -132,7 +132,7 @@ async function fetchBrokerContext(origin: VoiceThreadOrigin): Promise<string | u
 export async function fetchVoiceSessionContext(ref: VoiceSurfaceRef): Promise<string | undefined> {
   const context = await fetchBrokerContext(buildVoiceOrigin(ref));
   if (!context) return undefined;
-  return `[Background work context — for your awareness; do not read aloud unless the owner asks]\n${context}`;
+  return `[Background work context — for your awareness. Mention results marked NOT yet heard briefly once; read the rest only if the owner asks]\n${context}`;
 }
 
 async function recordVoiceThreadBox(origin: VoiceThreadOrigin, text: string): Promise<void> {
@@ -428,4 +428,84 @@ export async function textAnswerToOwner(text: string): Promise<boolean> {
     mode: "full",
   });
   return result?.texted === true;
+}
+
+/** Something Joshu actually sent for the owner (see Joshu realtimeGoals/inlineJobs.ts). */
+export type DeliveredFact = {
+  what: "link" | "answer";
+  via: "sms";
+  ok: boolean;
+  at: string;
+  count?: number;
+};
+
+/** A phone think run by Joshu as an inline job (time-budgeted, survives hang-up). */
+export type PhoneThinkJob = {
+  jobId: string;
+  status: "running" | "done" | "failed";
+  source?: "broker" | "hermes";
+  /** Speakable answer (links already texted) once claimed; raw while unclaimed. */
+  answer?: string;
+  error?: string;
+  delivered: DeliveredFact[];
+  /** Delivered by the owner outbox instead (the call could not take it). */
+  deliveredElsewhere?: boolean;
+  claimed?: boolean;
+};
+
+async function jobsRequest(path: string, init: { method?: "GET" | "POST"; body?: unknown; timeoutMs: number }): Promise<PhoneThinkJob> {
+  const method = init.method ?? "GET";
+  const res = await fetch(`${JOSHU_API_BASE}/api/realtime-goals/jobs${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${HERMES_API_KEY}`,
+      ...(method === "POST" ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(method === "POST" ? { body: JSON.stringify(init.body ?? {}) } : {}),
+    signal: AbortSignal.timeout(init.timeoutMs),
+  });
+  if (!res.ok) throw new Error(`jobs${path || ""} HTTP ${res.status}`);
+  const json = (await res.json()) as Partial<PhoneThinkJob>;
+  if (!json.jobId || !json.status) throw new Error("malformed job response");
+  return { delivered: [], ...json } as PhoneThinkJob;
+}
+
+/**
+ * Phone think through Joshu's inline jobs: routed by the goal broker, run by
+ * Hermes, answered within `budgetMs` or reported as still running.
+ */
+export async function startPhoneThinkJob(params: ThinkParams, budgetMs: number): Promise<PhoneThinkJob> {
+  return jobsRequest("", {
+    method: "POST",
+    timeoutMs: budgetMs + 15_000,
+    body: {
+      origin: buildVoiceOrigin(params),
+      text: buildThinkUserMessage({ intent: params.intent, summary: params.summary, userQuote: params.userQuote }),
+      title: resolveThinkUserQuote(params.userQuote)?.slice(0, 100) || params.intent,
+      systemPrompt: buildThinkSystemPrompt(identity, "phone"),
+      hermesSessionId: params.callSid,
+      hermesSessionKey: `joshu-hermes-chat:${params.callSid}`,
+      presentation: "phone",
+      budgetMs,
+    },
+  });
+}
+
+export function waitPhoneThinkJob(jobId: string, waitMs: number): Promise<PhoneThinkJob> {
+  return jobsRequest(`/${encodeURIComponent(jobId)}?waitMs=${waitMs}`, { timeoutMs: waitMs + 10_000 });
+}
+
+/** The call is about to speak this answer (Joshu texts its links now). */
+export function claimPhoneThinkJob(jobId: string): Promise<PhoneThinkJob> {
+  return jobsRequest(`/${encodeURIComponent(jobId)}/claim`, { method: "POST", timeoutMs: 20_000, body: { presentation: "phone" } });
+}
+
+/** The caller hung up: Joshu delivers the answer through the owner outbox. */
+export async function detachPhoneThinkJob(jobId: string): Promise<boolean> {
+  try {
+    await jobsRequest(`/${encodeURIComponent(jobId)}/detach`, { method: "POST", timeoutMs: 10_000 });
+    return true;
+  } catch {
+    return false;
+  }
 }

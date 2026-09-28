@@ -1,6 +1,6 @@
 import type { Request, Response, Router } from "express";
 import { normalizeE164, normalizeOwnerMobile, readTelephoneStatus } from "./resolve.js";
-import { writeTelephoneSettingsFile } from "./store.js";
+import { writeTelephoneSettingsFile, type TelephoneSettingsUpdate } from "./store.js";
 
 /** Two spoken English words (or a short phrase) — keep STT-friendly. */
 function validateThinkPassword(raw: string): string {
@@ -15,6 +15,17 @@ function validateThinkPassword(raw: string): string {
   if (!/^[\w\s'-]+$/u.test(value)) {
     throw new Error("Passphrase may only use letters, numbers, spaces, apostrophes, and hyphens");
   }
+  return value;
+}
+
+/** Weak PINs are the first thing anyone tries. */
+const WEAK_PINS = /^(\d)\1+$|^(0123|1234|2345|3456|4567|5678|6789|123456|234567|345678|456789|12345678|0000|1111|4321|654321|87654321)$/;
+
+function validatePin(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  if (!/^\d{4,8}$/.test(value)) throw new Error("PIN must be 4 to 8 digits");
+  if (WEAK_PINS.test(value)) throw new Error("That PIN is too easy to guess — avoid repeated or sequential digits");
   return value;
 }
 
@@ -37,9 +48,15 @@ export function registerTelephoneRoutes(
       thinkPassword?: string;
       phoneNumber?: string;
       ownerCaller?: string;
+      pin?: string;
+      trustVerifiedCallerId?: boolean;
     };
     try {
-      const updates: { thinkPassword?: string; phoneNumber?: string; ownerCaller?: string } = {};
+      const updates: TelephoneSettingsUpdate = {};
+      if (typeof body.pin === "string") updates.pin = validatePin(body.pin);
+      if (typeof body.trustVerifiedCallerId === "boolean") {
+        updates.trustVerifiedCallerId = body.trustVerifiedCallerId;
+      }
       if (typeof body.thinkPassword === "string") {
         updates.thinkPassword = validateThinkPassword(body.thinkPassword);
       }
@@ -58,7 +75,9 @@ export function registerTelephoneRoutes(
         updates.ownerCaller = n;
       }
       if (!Object.keys(updates).length) {
-        res.status(400).json({ error: "Provide thinkPassword, phoneNumber, and/or ownerCaller" });
+        res.status(400).json({
+          error: "Provide thinkPassword, phoneNumber, ownerCaller, pin, and/or trustVerifiedCallerId",
+        });
         return;
       }
       writeTelephoneSettingsFile(updates, projectRoot);
@@ -72,6 +91,16 @@ export function registerTelephoneRoutes(
       const notes: string[] = [];
       if (updates.thinkPassword !== undefined) {
         notes.push("Passphrase saved. New inbound calls will use it immediately.");
+      }
+      if (updates.pin !== undefined) {
+        notes.push(updates.pin ? "PIN saved. Callers can key it in instead of saying the passphrase." : "PIN removed.");
+      }
+      if (updates.trustVerifiedCallerId !== undefined) {
+        notes.push(
+          updates.trustVerifiedCallerId
+            ? "Calls from your verified mobile number skip the passphrase."
+            : "Every call asks for the passphrase again.",
+        );
       }
       if (updates.ownerCaller !== undefined) {
         notes.push(

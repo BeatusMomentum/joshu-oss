@@ -56,16 +56,12 @@ twilio_local_media_wss_url() {
   origin="${origin#http://}"
 
   case "${mode}" in
-    realtime_s2s)
-      echo "wss://${origin}/voice-rt/media/${secret}"
-      ;;
     realtime)
       echo "wss://${origin}/voice/media/${secret}"
       ;;
     *)
-      local base
-      base="$(twilio_local_base_path)"
-      echo "wss://${origin}${base}/api/twilio/media-stream/${secret}"
+      # Joshu no longer serves /api/twilio/media-stream; calls go through voice-realtime.
+      echo "wss://${origin}/voice-rt/media/${secret}"
       ;;
   esac
 }

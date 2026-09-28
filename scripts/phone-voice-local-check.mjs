@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /**
- * Preflight for local Twilio + Hermes phone voice (legacy path).
+ * Preflight for local Twilio phone voice (webhook → call gate → voice-realtime).
  * Usage: PHONE_VOICE_PUBLIC_HOST=https://your-tunnel.ngrok.app npm run phone-voice:check
  */
 
-import { spawnSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -47,7 +46,6 @@ function check(name, pass, detail) {
   else issues.push(`✗ ${name}${detail ? `: ${detail}` : ""}`);
 }
 
-check("ffmpeg", spawnSync("ffmpeg", ["-version"], { encoding: "utf8" }).status === 0);
 check("TWILIO_AUTH_TOKEN", Boolean(env.TWILIO_AUTH_TOKEN));
 const streamSecret = (env.TWILIO_MEDIA_STREAM_SECRET || "").trim();
 check("TWILIO_MEDIA_STREAM_SECRET", Boolean(streamSecret));

@@ -77,17 +77,15 @@ import { isJoshuMcpSupervisorEnabled, startJoshuMcpSupervisor } from "./mcpSuper
 import { startConnectorScheduler } from "./connectors/scheduler.js";
 import { isComposioEnabled, syncComposioHermesMcp } from "./composioApi.js";
 import { registerVoiceWebRoutes } from "./voiceWebApi.js";
-import { createTwilioUpgradeHandler, registerTwilioVoiceRoutes } from "./twilioPhoneGateway.js";
+import { registerTwilioVoiceRoutes } from "./twilioPhoneGateway.js";
 import { registerTwilioSmsRoutes } from "./twilioSmsGateway.js";
 import { registerAgUiRoutes } from "./agUiApi.js";
 import { isDirectLocalhostRequest, verifyArozosDesktopSession } from "./httpLocalhost.js";
 import { RealtimeGoalBroker } from "./realtimeGoals/broker.js";
-import { createRealtimeGoalDeliveryHandler } from "./realtimeGoals/delivery.js";
+import { createOwnerOutboxSenders } from "./realtimeGoals/ownerOutboxSenders.js";
 import { registerRealtimeGoalRoutes } from "./realtimeGoals/routes.js";
-import {
-  registerRealtimeGoalVoiceRoutes,
-  sendParkedCallbackNotice,
-} from "./realtimeGoals/voiceCallback.js";
+import { InlineJobs, registerInlineJobRoutes } from "./realtimeGoals/inlineJobs.js";
+import { registerRealtimeGoalVoiceRoutes } from "./realtimeGoals/voiceCallback.js";
 import { registerAppInvokeRoutes } from "./appInvokeApi.js";
 import { browserHandoffViewerAllowed, getPendingHandoffPinUrl, registerBrowserHandoffRoutes } from "./browserHandoff/index.js";
 import { pendingHandoffBlocksCloudBrowser } from "./browserHandoff/store.js";
@@ -111,6 +109,7 @@ import {
   startCloudBrowserLifecycle,
 } from "./cloudBrowser.js";
 import { BrowserScreencastHub, screencastWsPath } from "./browserScreencast.js";
+import { CdpRelay, cdpRelayPort } from "./cdpRelay.js";
 import { registerHindsightRecallRoute } from "./hindsightRecallApi.js";
 import type { CreateRunRequest, CreateRunResponse, RunRecord, StatusReport } from "./types.js";
 
@@ -268,25 +267,44 @@ const PUBLIC_DIR = path.resolve(PROJECT_ROOT, "public");
 const normalizedNovncProxyPath = (NOVNC_CLIENT_PATH.startsWith("/") ? NOVNC_CLIENT_PATH : `/${NOVNC_CLIENT_PATH}`).replace(/\/+$/, "") || "/";
 const normalizedNovncClientPath = withPublicBase(NOVNC_CLIENT_PATH).replace(/\/+$/, "") || "/";
 
+/**
+ * Cloud browser: Hermes talks to a fixed local CDP relay, so a new Browser Use
+ * session no longer rewrites Hermes config and restarts the gateway.
+ */
+const cdpRelay =
+  cloudBrowserActive()
+    ? new CdpRelay({
+        port: cdpRelayPort(),
+        resolveUpstream: async () => (await ensureLiveCloudBrowser()).cdpUrl,
+      })
+    : undefined;
+if (cdpRelay) {
+  void cdpRelay.start().catch((err: Error) => {
+    console.warn(`[cdp-relay] failed to start: ${err.message}`);
+  });
+}
+
 const runner = new HermesApiRunner({
   binary: HERMES_BIN,
   camofoxUrl: CAMOFOX_URL,
-  cdpUrl: cloudBrowserActive() ? "" : BROWSER_CDP_URL,
+  cdpUrl: cloudBrowserActive() ? (cdpRelay?.url ?? "") : BROWSER_CDP_URL,
   apiBaseUrl: HERMES_API_BASE_URL,
   apiKey: HERMES_API_KEY,
   autoStartGateway: HERMES_API_AUTO_START,
   hitlCamofoxUserId: HITL_CAMOFOX_USER_ID,
   hitlCamofoxSessionKey: HITL_CAMOFOX_SESSION_KEY,
 });
-const realtimeGoalBroker = new RealtimeGoalBroker(
-  PROJECT_ROOT,
-  createRealtimeGoalDeliveryHandler(PROJECT_ROOT),
-  undefined,
-  {
-    onCallbacksParked: (goals, reason) => sendParkedCallbackNotice(PROJECT_ROOT, goals, reason),
-  },
-);
+const realtimeGoalBroker = new RealtimeGoalBroker(PROJECT_ROOT, undefined, {
+  outboxSenders: (broker) => createOwnerOutboxSenders(PROJECT_ROOT, broker),
+});
 realtimeGoalBroker.start();
+// No gateway restarts (MCP reload, env sync) while the owner is on a live call.
+runner.addGatewayBusyProbe(() => realtimeGoalBroker.gatewayBusyReason());
+// Voice think turns with a time budget; answers nobody heard go to the owner outbox.
+const inlineJobs = new InlineJobs(runner, realtimeGoalBroker, PROJECT_ROOT, realtimeGoalBroker.store.directory);
+void inlineJobs.recover().catch((error: unknown) => {
+  console.warn(`[inline-jobs] recovery failed: ${(error as Error).message}`);
+});
 
 const camofoxSession = new CamofoxSessionCoordinator({
   camofoxUrl: CAMOFOX_URL,
@@ -311,7 +329,8 @@ if (cloudBrowserActive()) {
       await fillCloudBrowserWindow(cdpUrl).catch((err: Error) => {
         console.warn(`[cloud-browser] window fill skipped: ${err.message}`);
       });
-      await runner.retargetBrowserCdp(cdpUrl);
+      // Same endpoint for Hermes; the new generation tells it to reconnect.
+      cdpRelay?.rotate();
     },
   });
 }
@@ -459,6 +478,7 @@ function buildAppRouter(): {
 
   registerTwilioVoiceRoutes(router, runner, PUBLIC_BASE_PATH);
   registerRealtimeGoalVoiceRoutes(router, realtimeGoalBroker, PUBLIC_BASE_PATH);
+  registerInlineJobRoutes(router, inlineJobs);
   registerTwilioSmsRoutes(router, runner, PUBLIC_BASE_PATH, realtimeGoalBroker);
   setProactiveHermesRunner(runner);
 
@@ -776,7 +796,11 @@ function buildAppRouter(): {
     }
     try {
       const live = await ensureLiveCloudBrowser();
-      res.json({ ok: true, backend: "cloud", cdpUrl: live.cdpUrl });
+      res.json(
+        cdpRelay
+          ? { ok: true, backend: "cloud", cdpUrl: cdpRelay.url, generation: cdpRelay.generation }
+          : { ok: true, backend: "cloud", cdpUrl: live.cdpUrl },
+      );
     } catch (err) {
       console.warn(`[cloud-browser] ensure for Hermes failed: ${(err as Error).message}`);
       res.status(502).json({ ok: false, backend: "cloud", error: "browser_unavailable" });
@@ -1609,14 +1633,13 @@ const server = app.listen(PORT, HOST, () => {
   }
 });
 
-// WebSocket upgrades: voice-realtime (/voice-rt), Twilio media, noVNC, Hermes dashboard.
-const twilioUpgrade = createTwilioUpgradeHandler(PUBLIC_BASE_PATH, runner);
+// WebSocket upgrades: voice-realtime (/voice-rt, incl. Twilio media), noVNC, Hermes dashboard.
 const hermesDashboardUpgradePrefixesList = hermesDashboardUpgradePrefixes(
   hermesDashboardProxyPath(PUBLIC_BASE_PATH),
   PUBLIC_BASE_PATH,
 );
 
-if (twilioUpgrade || voiceRealtimeProxy.upgrade || novncProxy || hermesDashboardProxy?.upgrade || browserScreencast) {
+if (voiceRealtimeProxy.upgrade || novncProxy || hermesDashboardProxy?.upgrade || browserScreencast) {
   server.on("upgrade", (req, socket, head) => {
     const pathOnly = (req.url ?? "").split("?")[0] ?? "";
     if (browserScreencast && (pathOnly === SCRENCAST_WS_PATH || pathOnly.endsWith("/api/browser/screencast"))) {
@@ -1637,7 +1660,6 @@ if (twilioUpgrade || voiceRealtimeProxy.upgrade || novncProxy || hermesDashboard
       voiceRealtimeProxy.upgrade(req, socket, head);
       return;
     }
-    if (twilioUpgrade?.(req, socket as Duplex, head)) return;
     if (handleNovncUpgrade(req, socket as Duplex, head as Buffer, novncWsProxy, normalizedNovncClientPath, normalizedNovncProxyPath)) {
       return;
     }

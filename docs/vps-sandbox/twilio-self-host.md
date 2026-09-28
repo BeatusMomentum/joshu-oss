@@ -87,7 +87,7 @@ Inbound routes stay **disabled** until all of these are set:
 | `TWILIO_AUTH_TOKEN` | Signature check on inbound webhook |
 | `TWILIO_MEDIA_STREAM_SECRET` | Auth for `wss://…/voice-rt/media/<secret>` |
 | `TWILIO_VOICE_WEBHOOK_URL` | Exact console Voice URL |
-| `TWILIO_THINK_PASSWORD` | Spoken unlock passphrase (every call starts locked) |
+| `TWILIO_THINK_PASSWORD` | Spoken unlock passphrase (every call is checked at the call gate) |
 
 Without a passphrase, Joshu logs `[twilio-phone] disabled … TWILIO_THINK_PASSWORD` and does not register routes.
 
@@ -101,11 +101,17 @@ wss://mybox.example.com/voice-rt/media/<TWILIO_MEDIA_STREAM_SECRET>
 
 - Secret in the **path**, not `?token=` (many proxies strip query strings on WebSocket upgrades).
 - Path is `/voice-rt/media/…` on the **hostname root** — not under `/joshu`.
-- Set `TWILIO_MEDIA_STREAM_WSS_URL` explicitly to that URL (recommended). If omitted, Joshu may derive a **legacy** `/joshu/api/twilio/media-stream/…` URL, which is the wrong path for S2S.
+- Set `TWILIO_MEDIA_STREAM_WSS_URL` explicitly to that URL (recommended). If omitted, Joshu derives a legacy `/joshu/api/twilio/media-stream/…` URL that nothing serves anymore; the call gate then falls back to `/voice-rt/gate` on the webhook host.
 
 ### Passphrase tips
 
 Prefer **two clear, multi-syllable words** (`harbor lantern`, `copper canyon`). Short words blur on phone ASR. You can change the phrase later in the **Telephone** desktop app without recreating containers — see [`telephone-arozos-app.md`](../telephone-arozos-app.md).
+
+### Call gate
+
+Twilio `<Gather>` checks the passphrase (or keypad PIN) before the voice model joins the call. No Twilio console change is needed: Joshu redirects calls to `/voice-rt/gate/*`, which Caddy already proxies. voice-realtime must see `TWILIO_AUTH_TOKEN` and `TWILIO_ACCOUNT_SID` (same `instance.env`).
+
+By default the passphrase words are sent to Twilio as speech-recognition **hints**, so they appear in the TwiML shown in Twilio's request inspector (and `SpeechResult` shows what the caller said). If others can see your Twilio console, set `JOSHU_VOICE_GATE_HINTS=0`, or use a keypad PIN. Details: [voice-realtime.md — Call gate](voice-realtime.md#call-gate-passphrase--pin).
 
 ### Voice provider keys
 
@@ -195,7 +201,7 @@ Desktop: open **Telephone** to confirm the displayed number and view/change the 
 | `ws rejected bad token` / `tokenLen=0` | Query token stripped or secret mismatch | Path token; same hex in env and WSS URL |
 | voice-realtime not running | Profile / image | `--profile voice-rt`; `JOSHU_VOICE_IMAGE_REF` set; pull + recreate |
 | Passphrase never unlocks | Hard-to-hear phrase / STT drift | Multi-syllable words; grep `auth passphrase rejected` / `heardPreview` |
-| Silent or paraphrased lock lines | Clips missing | [`voice-realtime.md` — lock prompts](voice-realtime.md#deterministic-lock-prompts) |
+| Gate lines in a different (Twilio) voice | Clips missing | [`voice-realtime.md` — Gate clips](voice-realtime.md#gate-clips) |
 
 More runtime symptoms: [`voice-realtime.md` — Troubleshooting](voice-realtime.md#troubleshooting).
 

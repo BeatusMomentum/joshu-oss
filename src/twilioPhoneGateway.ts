@@ -1,42 +1,20 @@
 /**
- * Twilio PSTN gateway: inbound voice webhook + bidirectional Media Streams WebSocket.
- * Reuses Hermes STT/TTS subprocesses and HermesApiRunner.streamHermesChat (Hermes Chat parity).
+ * Twilio PSTN voice webhook. Inbound calls are validated here and redirected to
+ * the voice-realtime call gate (see voiceGate.ts); Joshu no longer terminates
+ * Media Streams itself.
  */
 
-import { timingSafeEqual } from "node:crypto";
-import type { Duplex } from "node:stream";
-import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import twilio from "twilio";
-import type { IncomingMessage } from "node:http";
 import type { Request, Router } from "express";
 import express from "express";
-import { WebSocketServer, WebSocket, type RawData } from "ws";
-import YAML from "yaml";
 
-import { decodeMulawToPcm16, encodePcm16ToMulaw } from "./audioMulawCodec.js";
-import type { HermesApiRunner, HermesChatMessage } from "./hermesApi.js";
-import { buildOwnerTimeSystemMessage } from "./ownerLocalTime.js";
-import { getHermesHomeDir, spawnHermesPython } from "./hermesVoiceRuntime.js";
-import {
-  encodeWavMono16,
-  HermesVoiceVad,
-  rmsInt16,
-} from "./hermesVoiceVad.js";
-import { markdownSpeechPlaintext } from "./markdownSpeechPlaintext.js";
+import type { HermesApiRunner } from "./hermesApi.js";
 import { resolveOwnerCaller, resolveThinkPassword } from "./telephoneSettings/resolve.js";
-
-const SAMPLE_RATE = 8000;
-/** Twilio frames near 20ms; encode outbound similarly */
-const MULAW_CHUNK_SAMPLES = 160;
+import { readTelephoneSettingsFile } from "./telephoneSettings/store.js";
+import { callerTrustedForGate, gateRedirectTwiml, voiceGateUrl } from "./voiceGate.js";
 
 function envTrim(name: string): string {
   return process.env[name]?.trim() ?? "";
-}
-
-function normalizePhone(raw: string): string {
-  return raw.replace(/[^\d+]/g, "");
 }
 
 function normalizePublicBasePath(raw: string): string {
@@ -171,335 +149,6 @@ export function validateTwilioVoiceSignature(
   return { ok: false, tried };
 }
 
-/** Twilio/WSS clients sometimes deliver '+' as space when the query was not fully percent-encoded. */
-function normalizeStreamToken(token: string): string {
-  return token.trim().replace(/ /g, "+");
-}
-
-function extractMediaStreamToken(reqUrl: URL, streamPath: string): string {
-  const fromQuery = normalizeStreamToken(reqUrl.searchParams.get("token") ?? "");
-  if (fromQuery) return fromQuery;
-  const prefix = `${streamPath}/`;
-  const pathname = reqUrl.pathname;
-  if (!pathname.startsWith(prefix)) return "";
-  const segment = pathname.slice(prefix.length).split("/")[0] ?? "";
-  if (!segment) return "";
-  try {
-    return normalizeStreamToken(decodeURIComponent(segment));
-  } catch {
-    return normalizeStreamToken(segment);
-  }
-}
-
-function isMediaStreamUpgradePath(pathname: string, streamPath: string): boolean {
-  return pathname === streamPath || pathname.startsWith(`${streamPath}/`);
-}
-
-function safeEqualToken(a: string, b: string): boolean {
-  const na = normalizeStreamToken(a);
-  const nb = normalizeStreamToken(b);
-  try {
-    const ba = Buffer.from(na);
-    const bb = Buffer.from(nb);
-    if (ba.length !== bb.length) return false;
-    return timingSafeEqual(ba, bb);
-  } catch {
-    return false;
-  }
-}
-
-async function loadVoiceYamlSettings(): Promise<{ silenceThreshold: number; silenceDurationSec: number }> {
-  let silenceThreshold = 200;
-  let silenceDurationSec = 3;
-  const cfgPath = path.join(getHermesHomeDir(), "config.yaml");
-  const raw = await readFile(cfgPath, "utf8").catch(() => "");
-  if (raw.trim()) {
-    try {
-      const doc = YAML.parse(raw) as Record<string, unknown> | null | undefined;
-      const voice = doc?.voice;
-      if (voice && typeof voice === "object" && !Array.isArray(voice)) {
-        const v = voice as Record<string, unknown>;
-        const st = v.silence_threshold;
-        const sd = v.silence_duration;
-        if (typeof st === "number" && !Number.isNaN(st)) silenceThreshold = st;
-        if (typeof sd === "number" && !Number.isNaN(sd)) silenceDurationSec = sd;
-      }
-    } catch {
-      /* ignore malformed YAML */
-    }
-  }
-  return { silenceThreshold, silenceDurationSec };
-}
-
-async function transcribeWav(wav: Buffer): Promise<{ ok: boolean; transcript: string; error?: string }> {
-  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  let tmpDir: string | undefined;
-  try {
-    tmpDir = await mkdtemp(path.join(tmpdir(), "joshu-phone-stt-"));
-    const wavPath = path.join(tmpDir, "clip.wav");
-    await writeFile(wavPath, wav);
-    const { stdout, stderr, code } = await spawnHermesPython("hermes-chat-transcribe.py", [wavPath]);
-    const trimmed = stdout.trim();
-    const lastLine = trimmed.split("\n").pop() ?? trimmed;
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(lastLine) as Record<string, unknown>;
-    } catch {
-      return {
-        ok: false,
-        transcript: "",
-        error: `Hermes transcribe invalid JSON: ${stderr.slice(0, 500)} code=${code}`,
-      };
-    }
-    if (!parsed.success) {
-      return {
-        ok: false,
-        transcript: "",
-        error: typeof parsed.error === "string" ? parsed.error : "Transcription failed",
-      };
-    }
-    return { ok: true, transcript: typeof parsed.transcript === "string" ? parsed.transcript : "" };
-  } catch (e) {
-    return { ok: false, transcript: "", error: e instanceof Error ? e.message : String(e) };
-  } finally {
-    if (tmpDir) await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
-  }
-}
-
-async function ttsToBuffer(text: string): Promise<{ ok: boolean; audio?: Buffer; error?: string }> {
-  const { readFile: rf, rm } = await import("node:fs/promises");
-  const payloadText = text.replace(/[\u200B-\u200D\u2060\uFEFF]/g, "").trim();
-  if (!payloadText) return { ok: false, error: "empty TTS text" };
-  try {
-    const { stdout, stderr, code } = await spawnHermesPython("hermes-chat-tts.py", [], payloadText);
-    const trimmed = stdout.trim();
-    const lastLine = trimmed.split("\n").pop() ?? trimmed;
-    let meta: { success?: boolean; file_path?: string; error?: string };
-    try {
-      meta = JSON.parse(lastLine) as { success?: boolean; file_path?: string; error?: string };
-    } catch {
-      return { ok: false, error: `Hermes TTS invalid JSON: ${stderr.slice(0, 500)} code=${code}` };
-    }
-    if (!meta.success || !meta.file_path) {
-      return { ok: false, error: meta.error || "TTS generation failed" };
-    }
-    const audioBuf = await rf(meta.file_path);
-    await rm(meta.file_path, { force: true }).catch(() => undefined);
-    return { ok: true, audio: audioBuf };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-/** Decode Hermes MP3 (or other ffmpeg-supported audio) to mono s16le @ 8 kHz via ffmpeg stdin/stdout. */
-async function ffmpegAudioToPcm8kMono(input: Buffer): Promise<Int16Array> {
-  return await new Promise((resolve, reject) => {
-    const ff = spawn("ffmpeg", [
-      "-hide_banner",
-      "-loglevel",
-      "error",
-      "-i",
-      "pipe:0",
-      "-f",
-      "s16le",
-      "-ac",
-      "1",
-      "-ar",
-      String(SAMPLE_RATE),
-      "pipe:1",
-    ]);
-    const chunks: Buffer[] = [];
-    ff.stdout.on("data", (c: Buffer) => chunks.push(c));
-    ff.stderr.on("data", () => undefined);
-    ff.on("error", (err) => reject(err));
-    ff.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`ffmpeg exited ${code}; install ffmpeg for phone TTS (see docs).`));
-        return;
-      }
-      const buf = Buffer.concat(chunks);
-      resolve(new Int16Array(buf.buffer, buf.byteOffset, buf.length / 2));
-    });
-    ff.stdin.end(input);
-  });
-}
-
-function concatInt16(chunks: Int16Array[]): Int16Array {
-  const n = chunks.reduce((a, c) => a + c.length, 0);
-  const out = new Int16Array(n);
-  let o = 0;
-  for (const c of chunks) {
-    out.set(c, o);
-    o += c.length;
-  }
-  return out;
-}
-
-class TwilioMediaStreamSession {
-  private streamSid: string | null = null;
-  private callSid = "";
-  private vad: HermesVoiceVad;
-  private segmentChunks: Int16Array[] = [];
-  /** Ignore inbound audio while sending TTS (simple echo avoidance). */
-  private outboundBusy = false;
-  private dialogBusy = false;
-  private history: HermesChatMessage[] = [];
-  private readonly systemPrompt: string;
-  private readonly hermesModel?: string;
-
-  constructor(
-    private readonly ws: WebSocket,
-    vadOpts: { silenceThreshold: number; silenceDurationSec: number },
-    private readonly runner: HermesApiRunner,
-  ) {
-    this.vad = new HermesVoiceVad(vadOpts);
-    this.vad.beginSegment(performance.now() / 1000);
-    this.systemPrompt =
-      envTrim("TWILIO_PHONE_SYSTEM_PROMPT") ||
-      "You are Hermes on a phone call. Reply in concise, spoken-friendly language. Avoid markdown tables, code fences, and long URLs.";
-    const m = envTrim("TWILIO_HERMES_MODEL");
-    this.hermesModel = m || undefined;
-  }
-
-  async handleStart(callSid: string, streamSid: string): Promise<void> {
-    this.callSid = callSid;
-    this.streamSid = streamSid;
-    const vs = await loadVoiceYamlSettings();
-    this.vad = new HermesVoiceVad(vs);
-    this.vad.beginSegment(performance.now() / 1000);
-    this.segmentChunks = [];
-    this.history = [];
-    console.info(`[twilio-phone] stream start callSid=${callSid} streamSid=${streamSid}`);
-  }
-
-  handleInboundMulawPayload(b64: string): void {
-    if (this.outboundBusy || this.dialogBusy || !this.streamSid) return;
-    const raw = Buffer.from(b64, "base64");
-    const frame = decodeMulawToPcm16(new Uint8Array(raw));
-    const rms = rmsInt16(frame);
-    const t = performance.now() / 1000;
-    const endUtterance = this.vad.process(rms, t);
-    this.segmentChunks.push(frame);
-    if (endUtterance) {
-      void this.onUtteranceEnd();
-    }
-  }
-
-  private async onUtteranceEnd(): Promise<void> {
-    const chunks = this.segmentChunks;
-    this.segmentChunks = [];
-    this.vad.beginSegment(performance.now() / 1000);
-
-    if (this.dialogBusy || !this.streamSid) return;
-
-    const flat = concatInt16(chunks);
-    const minSamples = Math.floor(SAMPLE_RATE * 0.35);
-    if (flat.length < minSamples) return;
-
-    const wavBuf = Buffer.from(new Uint8Array(encodeWavMono16([flat], SAMPLE_RATE)));
-
-    this.dialogBusy = true;
-    try {
-      await this.runner.ensureGatewayReady();
-      const st = await transcribeWav(wavBuf);
-      if (!st.ok || !st.transcript.trim()) {
-        if (!st.ok) console.warn("[twilio-phone] transcribe:", st.error);
-        return;
-      }
-
-      const userText = st.transcript.trim();
-      console.info(`[twilio-phone] transcript (${this.callSid}):`, userText.slice(0, 200));
-
-      const messages: HermesChatMessage[] = [
-        buildOwnerTimeSystemMessage(process.cwd()),
-        { role: "system", content: this.systemPrompt },
-        ...this.history.slice(-24),
-        { role: "user", content: userText },
-      ];
-
-      const sessionKey = `phone:${this.callSid}`;
-      const { finalText } = await this.runner.streamHermesChat(
-        {
-          sessionId: sessionKey,
-          model: this.hermesModel,
-          messages,
-          signal: AbortSignal.timeout(180_000),
-        },
-        {},
-      );
-
-      const spoken = markdownSpeechPlaintext(finalText);
-      if (!spoken) {
-        console.warn("[twilio-phone] empty assistant speech after markdown strip");
-        return;
-      }
-
-      this.history.push({ role: "user", content: userText });
-      this.history.push({ role: "assistant", content: finalText });
-
-      const tts = await ttsToBuffer(spoken);
-      if (!tts.ok || !tts.audio) {
-        console.warn("[twilio-phone] TTS:", tts.error);
-        return;
-      }
-
-      let pcm8k: Int16Array;
-      try {
-        pcm8k = await ffmpegAudioToPcm8kMono(tts.audio);
-      } catch (e) {
-        console.warn("[twilio-phone] ffmpeg decode TTS failed:", e);
-        return;
-      }
-
-      await this.playPcmMulaw(pcm8k);
-    } catch (e) {
-      console.warn("[twilio-phone] dialog error:", e);
-    } finally {
-      this.dialogBusy = false;
-    }
-  }
-
-  /** Send mulaw at ~real-time pace so Twilio buffer doesn't overrun; clears outbound buffer first. */
-  private async playPcmMulaw(pcm: Int16Array): Promise<void> {
-    const sid = this.streamSid;
-    if (!sid || this.ws.readyState !== WebSocket.OPEN) return;
-
-    this.outboundBusy = true;
-    try {
-      this.ws.send(JSON.stringify({ event: "clear", streamSid: sid }));
-
-      for (let i = 0; i < pcm.length; i += MULAW_CHUNK_SAMPLES) {
-        if (this.ws.readyState !== WebSocket.OPEN) break;
-        const slice = pcm.subarray(i, Math.min(i + MULAW_CHUNK_SAMPLES, pcm.length));
-        const padded =
-          slice.length === MULAW_CHUNK_SAMPLES
-            ? slice
-            : Int16Array.from({ length: MULAW_CHUNK_SAMPLES }, (_, j) => (j < slice.length ? slice[j]! : 0));
-        const mulawBytes = encodePcm16ToMulaw(padded);
-        const payload = Buffer.from(mulawBytes).toString("base64");
-        this.ws.send(
-          JSON.stringify({
-            event: "media",
-            streamSid: sid,
-            media: { payload },
-          }),
-        );
-        this.ws.send(
-          JSON.stringify({
-            event: "mark",
-            streamSid: sid,
-            mark: { name: `pcm-${i}` },
-          }),
-        );
-        await new Promise((r) => setTimeout(r, 18));
-      }
-    } finally {
-      this.outboundBusy = false;
-    }
-  }
-}
-
 export function registerTwilioVoiceRoutes(
   router: Router,
   runner: HermesApiRunner,
@@ -546,15 +195,25 @@ export function registerTwilioVoiceRoutes(
     const ownerCaller = resolveOwnerCaller();
     console.info(`[twilio-phone] inbound voice callSid=${callSid} from=${from}`);
 
-    const vr = new twilio.twiml.VoiceResponse();
-    const connect = vr.connect();
-    const stream = connect.stream({ url: wssUrl });
-    // Forward caller metadata so voice-realtime can apply owner-aware call policy.
-    stream.parameter({ name: "caller", value: normalizePhone(from) });
-    if (ownerCaller) {
-      stream.parameter({ name: "ownerCaller", value: normalizePhone(ownerCaller) });
+    // Call gate: voice-realtime authenticates the caller (passphrase / PIN) before
+    // any model hears the call. Caller-ID trust is decided here, where Twilio's
+    // original STIR/SHAKEN verdict is available; the redirect URL is signed by
+    // Twilio on the way in, so voice-realtime can rely on it.
+    const stirVerstat = typeof req.body?.StirVerstat === "string" ? req.body.StirVerstat : "";
+    const trusted = callerTrustedForGate({
+      from,
+      stirVerstat,
+      ownerCaller,
+      trustVerifiedCallerId: readTelephoneSettingsFile().trustVerifiedCallerId === true,
+    });
+    const gateUrl = voiceGateUrl("start", { mode: "inbound", trusted: trusted ? "1" : "0" });
+    if (!gateUrl) {
+      console.error("[twilio-phone] no call gate URL — set TWILIO_MEDIA_STREAM_WSS_URL (or JOSHU_VOICE_GATE_URL)");
+      res.type("text/xml").send("<Response><Say>This line is not available right now.</Say><Hangup/></Response>");
+      return;
     }
-    res.type("text/xml").send(vr.toString());
+    console.info(`[twilio-phone] inbound callSid=${callSid} → call gate trusted=${trusted} stir=${stirVerstat || "-"}`);
+    res.type("text/xml").send(gateRedirectTwiml(gateUrl));
   });
 
   router.get("/api/twilio/health", async (_req, res) => {
@@ -578,101 +237,8 @@ export function registerTwilioVoiceRoutes(
   });
 
   console.info("[twilio-phone] voice webhook expects POST URL:", webhookFullUrl);
-  console.info("[twilio-phone] media stream WSS:", wssUrl.replace(/token=[^&]+/, "token=(redacted)"));
-}
-
-/**
- * Returns true if this request was handled (including rejected connections).
- * Return false so another upgrade handler (e.g. noVNC) can process the socket.
- */
-export function createTwilioUpgradeHandler(
-  publicBasePath: string,
-  runner: HermesApiRunner,
-): ((req: IncomingMessage, socket: Duplex, head: Buffer) => boolean) | null {
-  if (!twilioGatewayEnabled()) return null;
-
-  const secret = envTrim("TWILIO_MEDIA_STREAM_SECRET");
-  const pathExpected = mediaStreamHttpPath(publicBasePath);
-
-  const wss = new WebSocketServer({ noServer: true });
-
-  wss.on("connection", (ws: WebSocket) => {
-    // Attach handlers immediately — Twilio can send `start` in the first ms after upgrade.
-    const session = new TwilioMediaStreamSession(
-      ws,
-      { silenceThreshold: 200, silenceDurationSec: 3 },
-      runner,
-    );
-    console.info("[twilio-phone] stream websocket open");
-
-    ws.on("message", (data: RawData) => {
-      try {
-        const raw = typeof data === "string" ? data : data.toString("utf8");
-        const msg = JSON.parse(raw) as Record<string, unknown>;
-        const ev = msg.event;
-
-        if (ev === "connected") {
-          console.info("[twilio-phone] stream protocol connected");
-          return;
-        }
-
-        if (ev === "start") {
-          const start = msg.start as Record<string, unknown> | undefined;
-          const streamSid = String(start?.streamSid ?? msg.streamSid ?? "");
-          const callSid = String(start?.callSid ?? "");
-          void session.handleStart(callSid, streamSid);
-          return;
-        }
-
-        if (ev === "stop") {
-          console.info("[twilio-phone] stream stop");
-          ws.close();
-          return;
-        }
-
-        if (ev === "media") {
-          const media = msg.media as Record<string, unknown> | undefined;
-          if (media?.track === "outbound") return;
-          const payload = media?.payload;
-          if (typeof payload === "string") session.handleInboundMulawPayload(payload);
-        }
-      } catch (e) {
-        console.warn("[twilio-phone] ws message error:", e);
-      }
-    });
-
-    ws.on("close", () => console.info("[twilio-phone] stream websocket closed"));
-  });
-
-  return (req: IncomingMessage, socket: Duplex, head: Buffer): boolean => {
-    try {
-      const reqUrl = new URL(req.url ?? "/", "http://localhost");
-      const pathname = reqUrl.pathname;
-      if (!isMediaStreamUpgradePath(pathname, pathExpected)) {
-        if (pathname.includes("media-stream") || pathname.includes("twilio")) {
-          console.warn(`[twilio-phone] media stream path mismatch: got ${pathname} expected ${pathExpected} or ${pathExpected}/<token>`);
-        }
-        return false;
-      }
-
-      const token = extractMediaStreamToken(reqUrl, pathExpected);
-      if (!safeEqualToken(token, secret)) {
-        console.warn(
-          `[twilio-phone] media stream rejected (bad token) path=${pathname} tokenLen=${token.length} expectedLen=${secret.length} hasQuery=${reqUrl.search.includes("token")} — token is in the WSS path (/media-stream/<secret>), not ?token=, for ngrok compatibility`,
-        );
-        socket.destroy();
-        return true;
-      }
-
-      console.info(`[twilio-phone] media stream websocket upgrade ok path=${pathname}`);
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit("connection", ws, req);
-      });
-      return true;
-    } catch (e) {
-      console.warn("[twilio-phone] media stream upgrade error:", e);
-      socket.destroy();
-      return true;
-    }
-  };
+  console.info(
+    "[twilio-phone] media stream WSS:",
+    wssUrl.replace(/token=[^&]+/, "token=(redacted)").replace(encodeURIComponent(secret), "(redacted)"),
+  );
 }

@@ -59,6 +59,21 @@ export function realtimeGoalCallbackWindow(
   return { ok: false, reason: proactive.reason || "outside owner working hours" };
 }
 
+/**
+ * Owner-local civil hours (07:00–22:00). Outside the call window a result may
+ * still be texted then, rather than waiting for tomorrow's call hours.
+ */
+export function withinCivilHours(
+  profile: NylasAgentProfile | null,
+  instant = Temporal.Now.instant(),
+): boolean {
+  const tz = profile?.timezone?.trim();
+  if (!tz) return true;
+  const local = instant.toZonedDateTimeISO(normalizeIanaTimezone(tz));
+  const minutes = local.hour * 60 + local.minute;
+  return minutes >= REQUESTED_CALLBACK_START && minutes < REQUESTED_CALLBACK_END;
+}
+
 /** First time (ISO) within the next week the callback may ring, on a 15-minute grid. */
 export function nextRealtimeGoalCallbackWindow(
   goal: CallbackGoal,

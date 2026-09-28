@@ -9,7 +9,6 @@ import {
   LOCK_PROMPT_KEYS,
   clearLockPromptCache,
   getLockPromptClip,
-  lockPromptsReady,
 } from "../dist/lockPrompts.js";
 
 /** One second of silent PCM16 mono @ 24 kHz, base64 — what the generator writes. */
@@ -35,23 +34,23 @@ test("every lock prompt has non-empty text the generator can render", () => {
   }
 });
 
-test("the rejection line never implies the caller was let in", () => {
-  // Regression: Gemini voiced a rejection as "Unlocked. What…", so the caller
+test("rejection lines never imply the caller was let in", () => {
+  // Regression: a model voiced a rejection as "Unlocked. What…", so the caller
   // kept talking to a locked line. Clips must state the refusal plainly.
-  assert.match(LOCK_PROMPTS.retry, /not the passphrase/i);
-  assert.doesNotMatch(LOCK_PROMPTS.retry, /unlocked/i);
-  assert.doesNotMatch(LOCK_PROMPTS.last_try, /unlocked/i);
+  for (const key of ["retry", "last_try", "locked_out", "unclear", "unclear_pin"]) {
+    assert.doesNotMatch(LOCK_PROMPTS[key], /unlocked/i, key);
+  }
+  assert.match(LOCK_PROMPTS.retry, /didn't match/i);
 });
 
 test("clips resolve to Twilio-ready mu-law with the right duration", () => {
   const dir = stageClips(LOCK_PROMPT_KEYS);
   try {
-    const clip = getLockPromptClip("retry");
+    const clip = getLockPromptClip("unlocked");
     assert.ok(clip, "expected a clip");
     // 24 kHz PCM16 downsampled to 8 kHz mu-law is one byte per sample.
     assert.equal(Buffer.byteLength(clip.mulawB64, "base64"), 8000);
     assert.equal(clip.durationMs, 1000);
-    assert.equal(lockPromptsReady(), true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
     delete process.env.VOICE_LOCK_PROMPT_DIR;
@@ -59,11 +58,10 @@ test("clips resolve to Twilio-ready mu-law with the right duration", () => {
   }
 });
 
-test("a partial clip set stays on the model path rather than risk silence", () => {
-  const dir = stageClips(LOCK_PROMPT_KEYS.filter((key) => key !== "time_up"));
+test("a missing clip is reported as missing (the gate then uses <Say>)", () => {
+  const dir = stageClips(LOCK_PROMPT_KEYS.filter((key) => key !== "locked_out"));
   try {
-    assert.equal(lockPromptsReady(), false);
-    assert.equal(getLockPromptClip("time_up"), null);
+    assert.equal(getLockPromptClip("locked_out"), null);
     assert.ok(getLockPromptClip("retry"));
   } finally {
     rmSync(dir, { recursive: true, force: true });

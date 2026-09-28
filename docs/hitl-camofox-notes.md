@@ -78,6 +78,32 @@ Trace `8a92b096` (canary box, 2026-09-24): after an idle stop, a kanban worker's
 | **Skill** | [`joshu-browser-handoff`](../integrations/hermes/skills/browser/joshu-browser-handoff/SKILL.md) — *Browser down = system problem*: never inspect the box, change Hermes config, or curl local browser APIs. |
 | **Terminal guard** | `hermes config set|edit|…` and writes to `~/.hermes/config.yaml` are blocked for the agent terminal ([`patch-hermes-terminal-secrets-guard.mjs`](../scripts/patch-hermes-terminal-secrets-guard.mjs)). |
 
+#### Stable CDP relay (cloud browser)
+
+Every Browser Use session has its own CDP URL. `retargetBrowserCdp()` wrote the
+new URL into Hermes config and restarted the gateway each time a session was
+created — five restarts on the canary box on 2026-09-26, each landing on a live
+voice turn or Kanban worker (api_server drains ~45 s, `/instance/health` 503).
+
+With the relay, Hermes is configured once with `http://127.0.0.1:9333`
+([`cdpRelay.ts`](../src/cdpRelay.ts), `JOSHU_CDP_RELAY_PORT`). The relay serves
+`/json/*` from the current session (WebSocket URLs rewritten to the relay) and
+pipes `/devtools/*` WebSockets to it, waking the browser first
+(`ensureLiveCloudBrowser()`). When the session changes, the relay closes client
+sockets (1012) and bumps `generation`; `/api/browser/ensure` returns
+`{ cdpUrl: <relay>, generation }` and the patched `browser_tool.py`
+(`joshu_cloud_browser_ensure_v2`) drops cached CDP sessions on a new generation.
+No config rewrite, no gateway restart. Joshu's own CDP use (live frame, window
+fill) keeps the direct URL.
+
+Independently, automatic gateway restarts (MCP catalog reload, LLM env sync,
+takeover) now wait while Hermes turns are in flight or the owner is on a live
+call, for up to 10 minutes (`deferGatewayRestartIfBusy` in
+[`hermesApi.ts`](../src/hermesApi.ts)); the 30 s watchdog retries pending ones.
+
+Tests: `npm run test:cdp-relay`, `npm run test:gateway-restart-guard`,
+`npm run test:hermes-tool-patches`.
+
 The old touch patch inserted its call right after each `def` line — inside `browser_snapshot`'s multi-line signature, a Python syntax error. The ensure patch inserts after the signature and docstring and removes those legacy lines on upgrade. It also adds a module-level `import requests`: upstream imports it only lazily, so the handoff-lock helper's `requests.get` raised `NameError` (swallowed) and the lock was silently off.
 
 #### Cloud handoff page (phone) — live view and form overlay
@@ -100,8 +126,8 @@ Fixes from the same canary-box session (AA passenger-details checkout, 2026-09-2
 | More headroom for long runs | Raise **`CLOUD_BROWSER_IDLE_TIMEOUT_MS`** on the box (e.g. 600000–900000). Fleet default matches `BROWSER_IDLE_TIMEOUT_MS=300000` from control-plane provision. |
 | Force stop now | Inside `joshu-stack`: `stopCloudBrowser()` (CP POST stop). Clear pending handoffs; close visible jWeb browser panes. |
 | Verify CP state | CP GET `/api/instances/browser-use/browsers` → `404 browser_not_running` when stopped. |
-| Patch drift | `bash scripts/hotpatch-realtime-goals.sh <slug>` copies the current browser + terminal patch scripts into the container, applies them, `py_compile`s both tools, and reloads the gateway. Manually: `docker cp` the script in, `node patch-hermes-browser-cdp-guards.mjs /opt/hermes-agent/tools/browser_tool.py`, reload gateway. Check: `grep joshu_cloud_browser_ensure /opt/hermes-agent/tools/browser_tool.py`. |
-| Tests | `npm run test:cloud-browser-lifecycle`, `npm run test:browser-handoff`, `npm run test:hermes-tool-patches` |
+| Patch drift | `bash scripts/hotpatch-realtime-goals.sh <slug>` copies the current browser + terminal patch scripts into the container, applies them, `py_compile`s both tools, and reloads the gateway. Manually: `docker cp` the script in, `node patch-hermes-browser-cdp-guards.mjs /opt/hermes-agent/tools/browser_tool.py`, reload gateway. Check: `grep joshu_cloud_browser_ensure_v2 /opt/hermes-agent/tools/browser_tool.py`. |
+| Tests | `npm run test:cloud-browser-lifecycle`, `npm run test:browser-handoff`, `npm run test:hermes-tool-patches`, `npm run test:cdp-relay` |
 
 #### Possible follow-ups (not implemented)
 

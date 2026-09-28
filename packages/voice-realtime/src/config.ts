@@ -191,18 +191,14 @@ export const PHONE_SYSTEM_PROMPT = envTrim(
 );
 
 /**
- * Env-only snapshot (boot). Prefer `resolveTwilioThinkPassword()` at call time so the
- * Telephone app can override via `.joshu/telephone/settings.json` without recreate.
+ * Phone `think` time budget (native path). Past it the model says it is still
+ * working and the answer is spoken when it lands — or, after a hang-up,
+ * delivered by Joshu's owner outbox.
  */
-export { resolveTwilioThinkPassword } from "./thinkPassword.js";
-export const TWILIO_THINK_PASSWORD = envTrim("TWILIO_THINK_PASSWORD").replace(/^["']|["']$/g, "");
+export const VOICE_THINK_BUDGET_MS = 10_000;
 
-/** PSTN: spoken time warning (default 60s). */
-export const TWILIO_PHONE_SESSION_WARN_MS = Number(
-  envTrim("TWILIO_PHONE_SESSION_WARN_MS", envTrim("TWILIO_PHONE_SESSION_MAX_MS", "60000")),
-);
-/** PSTN: goodbye + hang up (default 90s). */
-export const TWILIO_PHONE_SESSION_HANGUP_MS = Number(envTrim("TWILIO_PHONE_SESSION_HANGUP_MS", "90000"));
+/** Call-gate passphrase: Telephone app override, then TWILIO_THINK_PASSWORD. */
+export { resolveTwilioThinkPassword } from "./thinkPassword.js";
 
 /** Human-readable reasons when speech-to-speech is off (startup logs). */
 export function speechToSpeechDisableReasons(): string[] {

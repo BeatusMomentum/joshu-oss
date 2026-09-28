@@ -95,6 +95,16 @@ function keywordBody(body: string): string {
   return body.trim().replace(/\s+/g, " ").toUpperCase();
 }
 
+/** Sent once when an SMS turn is still running after `smsInterimAfterMs()`. */
+export const SMS_WORKING_INTERIM = "Working on it — I'll text you when it's done.";
+
+/** `JOSHU_SMS_INTERIM_SECONDS` (default 25; 0 turns the interim text off). */
+export function smsInterimAfterMs(): number {
+  const raw = Number.parseInt(process.env.JOSHU_SMS_INTERIM_SECONDS ?? "", 10);
+  const seconds = Number.isFinite(raw) && raw >= 0 ? raw : 25;
+  return seconds === 0 ? 2 ** 31 - 1 : seconds * 1000;
+}
+
 export function registerTwilioSmsRoutes(
   router: Router,
   runner: HermesApiRunner,
@@ -320,15 +330,22 @@ export function registerTwilioSmsRoutes(
             ...(brokerContext ? [{ role: "system" as const, content: brokerContext }] : []),
             { role: "user", content: body.trim() },
           ];
-          const { finalText } = await runner.streamHermesChat(
-            {
-              sessionId: sessionKey,
-              sessionKey,
-              messages,
-              signal: smsHermesAbortSignal(),
-            },
-            {},
-          );
+          // A slow turn gets one interim text so the owner is not left guessing.
+          const interim = setTimeout(() => {
+            void sendSms(from, SMS_WORKING_INTERIM).catch(() => undefined);
+          }, smsInterimAfterMs());
+          interim.unref?.();
+          const { finalText } = await runner
+            .streamHermesChat(
+              {
+                sessionId: sessionKey,
+                sessionKey,
+                messages,
+                signal: smsHermesAbortSignal(),
+              },
+              {},
+            )
+            .finally(() => clearTimeout(interim));
           const reply = await ownerSmsTextFromHermesTurn(sessionKey, finalText);
           if (!reply) {
             await sendSms(from, SMS_EMPTY_REPLY_FALLBACK);

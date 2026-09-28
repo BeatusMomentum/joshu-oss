@@ -3,15 +3,18 @@ import {
   isDay0LlmConfigured,
 } from "../day0/llm.js";
 import { formatSessionThreadForPrompt } from "./sessionThread.js";
-import type { RealtimeGoalRecord, SessionThreadTurn } from "./types.js";
+import type { OwnerRoute, RealtimeGoalRecord, SessionThreadTurn } from "./types.js";
 
 export type RealtimeGoalRouteDecision = {
-  decision: "pass" | "clarify" | "queue" | "update" | "cancel" | "status" | "ack";
+  decision: "pass" | "clarify" | "queue" | "update" | "cancel" | "status" | "ack" | "delivery";
   confidence: number;
   goalId?: string;
   title?: string;
   question?: string;
   reply?: string;
+  /** `delivery`: call the owner now, or change how results reach them. */
+  deliveryAction?: "call_now" | "set_route";
+  deliveryRoute?: OwnerRoute;
   reason: string;
 };
 
@@ -25,13 +28,29 @@ export type RouteRealtimeGoalMessageInput = {
   queueCapable: boolean;
   /** When set, classify continue-vs-pivot for the open branch (LLM, not phrase lists). */
   activeBranch?: RealtimeGoalRecord;
+  /** Owner outbox is on: "call me back" / "don't call, text me" are delivery commands. */
+  deliveryCommands?: boolean;
+  /** Minimum confidence to queue (default: queueConfidenceThreshold()). */
+  queueThreshold?: number;
 };
 
 export type RouteRealtimeGoalMessageOptions = {
   completionOverride?: (messages: Array<{ role: string; content: string }>) => Promise<string>;
 };
 
-function queueConfidenceThreshold(): number {
+/**
+ * Phone `think` turns: a slow answer is no longer a problem (it moves to the
+ * background after ~10 s and is delivered by the owner outbox), while a wrong
+ * queue is — "email me the link" became a background goal on the canary box
+ * (2026-09-26). Voice has explicit `start_task` for long work.
+ */
+export function voiceQueueConfidenceThreshold(): number {
+  const raw = Number.parseFloat(process.env.JOSHU_REALTIME_GOALS_VOICE_QUEUE_CONFIDENCE ?? "");
+  if (Number.isFinite(raw) && raw >= 0.5 && raw <= 1) return raw;
+  return 0.85;
+}
+
+export function queueConfidenceThreshold(): number {
   const raw = Number.parseFloat(process.env.JOSHU_REALTIME_GOALS_QUEUE_CONFIDENCE ?? "");
   if (Number.isFinite(raw) && raw >= 0.5 && raw <= 1) return raw;
   // Voice PSTN flight/research turns often classify queue at ~0.70–0.78 while
@@ -45,6 +64,62 @@ const CLASSIFIER_TIMEOUT_MS = 8_000;
 
 const EXPLICIT_CANCEL_PATTERN =
   /^(never mind|nevermind|cancel that|stop that|forget it)[.! ]*$/;
+
+/**
+ * Channel-neutral delivery commands (how to reach the owner, not what the task
+ * is). "No please call back" was routed as `ack` and answered "I'll stop the
+ * call request" (canary box 2026-09-26).
+ */
+const NEGATED_CALL_PATTERN =
+  /\b(?:don'?t|do not|dont|no need to|not need to|stop|never)\b[^.!?]{0,24}?\b(?:call|calling|ring|phone)\b/;
+const CALL_WHEN_PATTERN =
+  /\b(?:call|ring|phone) me (?:back )?(?:when|once|after|as soon as|if)\b/;
+const CALL_ME_BACK_PATTERN = /\b(?:call|ring|phone)\s+(?:me\s+)?back\b/;
+const CALL_ME_NOW_PATTERN =
+  /\b(?:call|ring|phone)\s+me(?:\s+(?:now|again|asap|please|right away|right now))?\s*[.!?]*$/;
+const GIVE_ME_A_CALL_PATTERN = /\bgive me a (?:call|ring)\b/;
+
+const DELIVERY_POLICY = `Delivery commands (in addition to the decisions above):
+- "delivery": the owner says HOW or WHETHER to reach them — not a new task.
+  "call me back", "please call me", "I'm asking you to call back" → delivery_action "call_now".
+  "don't call, text me instead", "no need to call me back" → delivery_action "set_route", delivery_route "sms".
+  "call me when it's done" → delivery_action "set_route", delivery_route "voice".
+  A request to be called is never "ack", and never a reason to stop anything.
+Add to the JSON: "delivery_action": "call_now" | "set_route" | null, "delivery_route": "sms" | "voice" | null.`;
+
+const DELIVERY_ROUTES = new Set<OwnerRoute>(["sms", "voice", "slack", "telegram"]);
+
+/** Deterministic delivery commands; everything subtler goes to the model. */
+export function deterministicDeliveryCommand(text: string): RealtimeGoalRouteDecision | undefined {
+  const normalized = text.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!normalized || normalized.split(" ").length > 24) return undefined;
+  if (NEGATED_CALL_PATTERN.test(normalized)) {
+    return {
+      decision: "delivery",
+      confidence: 1,
+      deliveryAction: "set_route",
+      deliveryRoute: "sms",
+      reason: "explicit_no_call",
+    };
+  }
+  if (CALL_WHEN_PATTERN.test(normalized)) {
+    return {
+      decision: "delivery",
+      confidence: 1,
+      deliveryAction: "set_route",
+      deliveryRoute: "voice",
+      reason: "explicit_call_when_done",
+    };
+  }
+  if (
+    CALL_ME_BACK_PATTERN.test(normalized) ||
+    CALL_ME_NOW_PATTERN.test(normalized) ||
+    GIVE_ME_A_CALL_PATTERN.test(normalized)
+  ) {
+    return { decision: "delivery", confidence: 1, deliveryAction: "call_now", reason: "explicit_call_request" };
+  }
+  return undefined;
+}
 
 const UNBOUND_SYSTEM_PROMPT = `You are a lightweight router for a personal AI assistant's realtime channels.
 Classify the owner's latest message when there is NO active branch already bound on this trunk.
@@ -183,12 +258,33 @@ function normalize(
   threadTurns: SessionThreadTurn[],
   queueCapable: boolean,
   bound = false,
+  deliveryCommands = false,
+  queueThresholdOverride?: number,
 ): RealtimeGoalRouteDecision {
   if (!queueCapable) {
     return { decision: "pass", confidence: 1, reason: "sync_only_channel" };
   }
 
   const raw = String(parsed.decision ?? "pass").trim().toLowerCase();
+  if (deliveryCommands && raw === "delivery") {
+    const confidence = clampConfidence(parsed.confidence);
+    const action = String(parsed.delivery_action ?? "").trim().toLowerCase();
+    const rawRoute = String(parsed.delivery_route ?? "").trim().toLowerCase();
+    const route = (rawRoute === "email" ? "sms" : rawRoute) as OwnerRoute;
+    if (confidence < RELATION_CONFIDENCE || (action !== "call_now" && action !== "set_route")) {
+      return { decision: "pass", confidence, reason: short(parsed.reason, 200) ?? "delivery_unclear" };
+    }
+    const goalId = short(parsed.goal_id, 100) ?? (bound ? activeGoals[0]?.id : undefined);
+    const knownGoal = goalId ? activeGoals.some((goal) => goal.id === goalId) : false;
+    return {
+      decision: "delivery",
+      confidence,
+      deliveryAction: action as "call_now" | "set_route",
+      ...(action === "set_route" ? { deliveryRoute: DELIVERY_ROUTES.has(route) ? route : "sms" } : {}),
+      ...(knownGoal && goalId ? { goalId } : {}),
+      reason: short(parsed.reason, 200) ?? "classified",
+    };
+  }
   const allowed = bound
     ? new Set(["pass", "queue", "update", "cancel", "status", "ack"])
     : new Set(["pass", "queue", "cancel", "status", "ack"]);
@@ -199,7 +295,7 @@ function normalize(
   const goalId = short(parsed.goal_id, 100) ?? (bound ? activeGoals[0]?.id : undefined);
   const knownGoal = goalId ? activeGoals.some((goal) => goal.id === goalId) : false;
 
-  const queueThreshold = queueConfidenceThreshold();
+  const queueThreshold = queueThresholdOverride ?? queueConfidenceThreshold();
 
   // Legacy classifier outputs — fold into the slim router.
   if (!bound && (raw === "clarify" || raw === "update")) {
@@ -265,9 +361,14 @@ function deterministicRoute(
   text: string,
   activeGoals: RealtimeGoalRecord[],
   queueCapable: boolean,
+  deliveryCommands = false,
 ): RealtimeGoalRouteDecision | undefined {
   if (!queueCapable) {
     return { decision: "pass", confidence: 1, reason: "sync_only_channel" };
+  }
+  if (deliveryCommands) {
+    const delivery = deterministicDeliveryCommand(text);
+    if (delivery) return delivery;
   }
 
   const normalized = normalizeAdmissionText(text);
@@ -315,6 +416,7 @@ async function runRouterCompletion(
     input.text,
     goalsForCancel,
     input.queueCapable,
+    input.deliveryCommands,
   );
   if (deterministic) return deterministic;
 
@@ -323,7 +425,10 @@ async function runRouterCompletion(
   }
 
   const messages = [
-    { role: "system", content: systemPrompt },
+    {
+      role: "system",
+      content: input.deliveryCommands ? `${systemPrompt}\n\n${DELIVERY_POLICY}` : systemPrompt,
+    },
     { role: "user", content: userContent },
   ];
 
@@ -366,6 +471,8 @@ async function runRouterCompletion(
       input.threadTurns,
       input.queueCapable,
       bound,
+      input.deliveryCommands,
+      input.queueThreshold,
     );
   } catch (error) {
     console.warn(`[realtime-goals] router failed open: ${(error as Error).message}`);

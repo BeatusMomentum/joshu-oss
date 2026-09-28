@@ -135,7 +135,10 @@ export class GeminiLiveClient implements VoiceS2sClient {
   private generationStreaming = false;
   private readonly model: string;
   private readonly audioFormat: RealtimeAudioFormat;
-  private readonly systemPrompt: string;
+  private systemPrompt: string;
+  /** systemPromptExtra resolved (or timed out); resumes reuse the result. */
+  private systemPromptSettled = false;
+  private extraApplied = false;
   private readonly injectPresentation: InjectPresentation;
   private readonly turnDetection: RealtimeTurnDetection | undefined;
 
@@ -151,8 +154,33 @@ export class GeminiLiveClient implements VoiceS2sClient {
     this.turnDetection = config.turnDetection;
   }
 
+  get systemPromptExtraApplied(): boolean {
+    return this.extraApplied;
+  }
+
   connect(): void {
     this.openSocket();
+  }
+
+  /** Fold `systemPromptExtra` into the system instruction once, waiting a bounded time. */
+  private async settleSystemPrompt(): Promise<void> {
+    if (this.systemPromptSettled) return;
+    const pending = this.config.systemPromptExtra;
+    if (pending) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const extra = await Promise.race([
+        pending.catch(() => undefined),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), this.config.systemPromptExtraWaitMs ?? 2_500);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (extra?.trim()) {
+        this.systemPrompt = `${this.systemPrompt}\n\n${extra.trim()}`;
+        this.extraApplied = true;
+      }
+    }
+    this.systemPromptSettled = true;
   }
 
   /** Socket factory — tests substitute a fake. */
@@ -167,7 +195,15 @@ export class GeminiLiveClient implements VoiceS2sClient {
     this.sessionReady = false;
 
     socket.on("open", () => {
-      if (socket === this.ws) this.sendSetup();
+      if (socket !== this.ws) return;
+      if (this.systemPromptSettled || !this.config.systemPromptExtra) {
+        this.systemPromptSettled = true;
+        this.sendSetup();
+        return;
+      }
+      void this.settleSystemPrompt().then(() => {
+        if (socket === this.ws && socket.readyState === WebSocket.OPEN && !this.closed) this.sendSetup();
+      });
     });
 
     socket.on("message", (data) => {

@@ -180,9 +180,29 @@ const upgraded = fs.readFileSync(legacy, "utf8");
 assert.ok(pyCompiles(legacy), "upgrade repairs the file");
 assert.equal((upgraded.match(/^    _joshu_cloud_browser_touch\(\)$/gm) || []).length, 0);
 assert.equal((upgraded.match(/^def _joshu_cloud_browser_touch/gm) || []).length, 1);
-assert.ok(upgraded.includes("joshu_cloud_browser_ensure"));
+assert.ok(upgraded.includes("joshu_cloud_browser_ensure_v2"));
 assert.ok(upgraded.includes("LEGACY_SENTINEL = 1"), "module code after the old helper survives");
 assert.match(runPatch(browserPatch, legacy), /already applied/);
+
+// --- Upgrade from v1 ensure (host-based drop, no relay generation) ---
+const v1 = path.join(tmp, "v1_browser_tool.py");
+fs.writeFileSync(
+  v1,
+  once
+    .replaceAll("joshu_cloud_browser_ensure_v2", "joshu_cloud_browser_ensure")
+    .replaceAll("_joshu_drop_cdp_sessions", "_joshu_drop_stale_cdp_sessions"),
+);
+assert.ok(pyCompiles(v1), "v1 fixture compiles");
+runPatch(browserPatch, v1);
+const v2 = fs.readFileSync(v1, "utf8");
+assert.ok(pyCompiles(v1), "v1 → v2 upgrade compiles");
+assert.ok(v2.includes("joshu_cloud_browser_ensure_v2"));
+assert.equal((v2.match(/^def _joshu_cloud_browser_touch/gm) || []).length, 1);
+assert.equal((v2.match(/^def _joshu_drop_cdp_sessions/gm) || []).length, 1);
+assert.equal((v2.match(/^def _joshu_drop_stale_cdp_sessions/gm) || []).length, 0, "v1 drop helper removed");
+assert.equal((v2.match(/^_JOSHU_BROWSER_UNAVAILABLE = \{/gm) || []).length, 1, "prelude not duplicated");
+assert.equal((v2.match(/_joshu_ensure_err = _joshu_cloud_browser_touch\(\)/g) || []).length, 10);
+assert.match(runPatch(browserPatch, v1), /already applied/);
 
 // --- Runtime: ensure adopts rotated CDP URLs and surfaces browser_unavailable ---
 const runtime = python(`
@@ -219,7 +239,7 @@ bt._active_sessions["local"] = {"cdp_url": "", "features": {}}
 
 state["ensure"] = (200, {"ok": True, "backend": "cloud", "cdpUrl": "https://new.cdp.browser-use.com"})
 nav = json.loads(bt.browser_navigate("https://example.com", task_id="t1"))
-out = {"nav": nav, "env": os.environ["BROWSER_CDP_URL"], "cleaned": bt.CLEANED, "left": sorted(bt._active_sessions)}
+out = {"nav": nav, "env": os.environ["BROWSER_CDP_URL"], "cleaned": list(bt.CLEANED), "left": sorted(bt._active_sessions)}
 
 state["ensure"] = (502, {"ok": False, "backend": "cloud", "error": "browser_unavailable"})
 out["down"] = json.loads(bt.browser_console())
@@ -230,6 +250,21 @@ out["touch"] = state["touch"]
 
 state["ensure"] = (200, {"ok": True, "backend": "local", "cdpUrl": ""})
 out["local_env"] = json.loads(bt.browser_scroll("down")) and os.environ["BROWSER_CDP_URL"]
+
+# Relay: the endpoint stays put; a new generation means the browser behind it changed.
+bt.CLEANED.clear()
+relay = "http://127.0.0.1:9333"
+state["ensure"] = (200, {"ok": True, "backend": "cloud", "cdpUrl": relay, "generation": 1})
+bt.browser_snapshot()
+bt._active_sessions["t2"] = {"cdp_url": "ws://127.0.0.1:9333/devtools/browser/a", "features": {"cdp_override": True}}
+bt.browser_snapshot()
+out["same_generation_kept"] = sorted(bt._active_sessions)
+state["ensure"] = (200, {"ok": True, "backend": "cloud", "cdpUrl": relay, "generation": 2})
+bt.browser_snapshot()
+out["relay_env"] = os.environ["BROWSER_CDP_URL"]
+out["relay_generation"] = os.environ["JOSHU_CDP_GENERATION"]
+out["relay_cleaned"] = [key for key, _ in bt.CLEANED]
+out["relay_left"] = sorted(bt._active_sessions)
 print(json.dumps(out))
 `, tmp);
 const r = JSON.parse(runtime.trim().split("\n").pop());
@@ -243,6 +278,11 @@ assert.match(r.down.message, /kanban_block/);
 assert.equal(r.old_stack.success, true, "older Joshu stack without /ensure still works");
 assert.equal(r.touch, 1, "falls back to the idle touch");
 assert.equal(r.local_env, "https://new.cdp.browser-use.com", "local backend leaves the env alone");
+assert.deepEqual(r.same_generation_kept, ["local", "t2"], "same relay generation keeps sessions");
+assert.equal(r.relay_env, "http://127.0.0.1:9333");
+assert.equal(r.relay_generation, "2");
+assert.deepEqual(r.relay_cleaned, ["t2"], "a new generation drops sessions bound to the old browser");
+assert.deepEqual(r.relay_left, ["local"]);
 
 // --- Terminal guard: Hermes config writes blocked, reads allowed ---
 const terminal = path.join(tmp, "terminal_tool.py");

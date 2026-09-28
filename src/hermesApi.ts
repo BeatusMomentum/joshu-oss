@@ -707,6 +707,9 @@ function composePrompt(params: StartRunParams): string {
   return lines.join("\n");
 }
 
+/** A busy gateway defers automatic restarts at most this long. */
+const GATEWAY_RESTART_MAX_DEFER_MS = 10 * 60_000;
+
 export class HermesApiRunner extends EventEmitter {
   private readonly runs = new Map<string, RunRecord>();
   private readonly activeControllers = new Map<string, AbortController>();
@@ -727,6 +730,12 @@ export class HermesApiRunner extends EventEmitter {
   private gatewayMcpReloadPending = false;
   private mcpGatewayReloadInFlight = false;
   private gatewayReviveInFlight = false;
+  /** Hermes turns this process has in flight (chat, SMS, jobs, Responses runs). */
+  private inFlightTurns = 0;
+  /** Other reasons not to restart the gateway now (e.g. the owner is on a live call). */
+  private readonly gatewayBusyProbes: Array<() => Promise<string | undefined>> = [];
+  /** When a busy gateway first deferred a restart (0 = not deferring). */
+  private restartDeferredSince = 0;
   private ensureApiServerWait: Promise<{ ok: true }> | null = null;
   private gatewayAutoStart: boolean;
 
@@ -748,23 +757,6 @@ export class HermesApiRunner extends EventEmitter {
 
   isAutoStartGateway(): boolean {
     return this.gatewayAutoStart;
-  }
-
-  /**
-   * Point Hermes at a replacement CDP websocket (Browser Use recreates the browser).
-   * Config is rewritten and the gateway reloads so navigate/click use the new socket.
-   * The URL is not logged.
-   */
-  async retargetBrowserCdp(cdpUrl: string): Promise<void> {
-    const next = cdpUrl.trim();
-    if (!next || next === (this.opts.cdpUrl || "").trim()) return;
-    this.opts.cdpUrl = next;
-    if (cloudBrowserEnabled()) {
-      const { noteHermesBrowserActivity } = await import("./cloudBrowser.js");
-      noteHermesBrowserActivity();
-    }
-    await this.ensureJoshuHermesConfig();
-    if (this.gatewayAutoStart) this.scheduleGatewayMcpReload("cloud browser CDP");
   }
 
   getRun(id: string): RunRecord | undefined {
@@ -878,6 +870,7 @@ export class HermesApiRunner extends EventEmitter {
     const controller = new AbortController();
     const abort = (): void => controller.abort();
     params.signal?.addEventListener("abort", abort, { once: true });
+    this.inFlightTurns += 1;
 
     try {
       const headers: Record<string, string> = {
@@ -916,6 +909,7 @@ export class HermesApiRunner extends EventEmitter {
       const finalText = await this.readChatCompletionStream(res.body, callbacks, params.clientToolNames);
       return { sessionId: responseSessionId, finalText };
     } finally {
+      this.inFlightTurns = Math.max(0, this.inFlightTurns - 1);
       params.signal?.removeEventListener("abort", abort);
     }
   }
@@ -995,7 +989,8 @@ export class HermesApiRunner extends EventEmitter {
       return;
     }
     if (this.mcpGatewayReloadInFlight) return;
-    if (await this.deferGatewayRestartIfCronActive(reason)) return;
+    // Stays pending; the watchdog retries once the gateway is idle.
+    if (await this.deferGatewayRestartIfBusy(reason)) return;
 
     this.mcpGatewayReloadInFlight = true;
     try {
@@ -1039,6 +1034,7 @@ export class HermesApiRunner extends EventEmitter {
     const historyKey = params.conversationId || "hitl-camofox";
     const conversationHistory = this.histories.get(historyKey) ?? [];
     this.activeControllers.set(record.id, controller);
+    this.inFlightTurns += 1;
 
     try {
       const res = await fetch(`${this.opts.apiBaseUrl.replace(/\/+$/, "")}/v1/responses`, {
@@ -1069,6 +1065,7 @@ export class HermesApiRunner extends EventEmitter {
         this.rememberHistory(historyKey, params.prompt, record.finalResponse);
       }
     } finally {
+      this.inFlightTurns = Math.max(0, this.inFlightTurns - 1);
       this.activeControllers.delete(record.id);
     }
   }
@@ -1315,6 +1312,47 @@ export class HermesApiRunner extends EventEmitter {
     return true;
   }
 
+  /** Something that must not lose the gateway mid-turn (voice call, SMS job, …). */
+  addGatewayBusyProbe(probe: () => Promise<string | undefined>): void {
+    this.gatewayBusyProbes.push(probe);
+  }
+
+  private async gatewayBusyReason(): Promise<string | undefined> {
+    if (this.inFlightTurns > 0) return `${this.inFlightTurns} Hermes turn(s) in flight`;
+    for (const probe of this.gatewayBusyProbes) {
+      const reason = await probe().catch(() => undefined);
+      if (reason) return reason;
+    }
+    return undefined;
+  }
+
+  /**
+   * Defer an automatic gateway restart while cron runs, Hermes turns are in
+   * flight, or the owner is on a live call — a restart drops api_server for
+   * ~45 s (canary box 2026-09-26: five restarts under live turns). The watchdog
+   * retries pending reloads every 30 s; after GATEWAY_RESTART_MAX_DEFER_MS the
+   * restart goes ahead anyway.
+   */
+  private async deferGatewayRestartIfBusy(reason: string): Promise<boolean> {
+    if (await this.deferGatewayRestartIfCronActive(reason)) return true;
+    const busy = await this.gatewayBusyReason();
+    if (!busy) {
+      this.restartDeferredSince = 0;
+      return false;
+    }
+    const now = Date.now();
+    if (!this.restartDeferredSince) this.restartDeferredSince = now;
+    if (now - this.restartDeferredSince >= GATEWAY_RESTART_MAX_DEFER_MS) {
+      console.warn(
+        `[hermes-api] gateway restart (${reason}) deferred ${Math.round((now - this.restartDeferredSince) / 1000)}s while ${busy} — restarting now`,
+      );
+      this.restartDeferredSince = 0;
+      return false;
+    }
+    console.log(`[hermes-api] deferring gateway restart (${reason}) — ${busy}`);
+    return true;
+  }
+
   private async ensureApiServer(): Promise<{ ok: true }> {
     // Concurrent callers (watchdog + POST + chat) must share one boot wait.
     // Otherwise a second call kills a mid-boot gateway (--replace) and can leave
@@ -1337,23 +1375,27 @@ export class HermesApiRunner extends EventEmitter {
       const connectorsOk = await probeMcpHttpHealth(resolveConnectorsMcpHealthUrl());
       const needsMcpCatalogRefresh = this.gatewayMcpReloadPending || !connectorsOk;
       if (llmEnvChanged) {
-        if (!(await this.deferGatewayRestartIfCronActive("LLM env sync"))) {
+        if (!(await this.deferGatewayRestartIfBusy("LLM env sync"))) {
           console.log("[hermes-api] restarting Hermes gateway with synchronized LLM credentials");
           await this.stopGatewayDaemon();
           this.gateway = undefined;
+        } else {
+          // The env is already synced on disk; keep the restart pending so the
+          // watchdog applies the new credentials once the gateway is idle.
+          this.gatewayMcpReloadPending = true;
         }
       } else if (ownsGateway && !needsMcpCatalogRefresh) {
         return { ok: true };
       } else if (!ownsGateway && !needsMcpCatalogRefresh && !this.gatewayAutoStart) {
         return { ok: true };
       } else if (ownsGateway && needsMcpCatalogRefresh) {
-        if (!(await this.deferGatewayRestartIfCronActive("MCP catalog refresh"))) {
+        if (!(await this.deferGatewayRestartIfBusy("MCP catalog refresh"))) {
           console.log("[hermes-api] restarting owned Hermes gateway to refresh MCP tool catalog");
           await this.stopGatewayDaemon();
           this.gateway = undefined;
         }
       } else if (!ownsGateway && this.gatewayAutoStart) {
-        if (!(await this.deferGatewayRestartIfCronActive("takeover"))) {
+        if (!(await this.deferGatewayRestartIfBusy("takeover"))) {
           console.log("[hermes-api] replacing existing Hermes gateway with current process env");
           await this.stopGatewayDaemon();
         } else {
@@ -1556,6 +1598,8 @@ export class HermesApiRunner extends EventEmitter {
       this.gatewayMcpReloadPending = false;
       return;
     }
+
+    if (await this.deferGatewayRestartIfBusy("connectors MCP ready")) return;
 
     this.mcpGatewayReloadInFlight = true;
     try {

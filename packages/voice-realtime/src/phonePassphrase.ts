@@ -106,70 +106,24 @@ export function matchesThinkPassphrase(transcript: string, password: string): bo
   return hits / passTokens.length >= 0.7;
 }
 
-/** Personal/desktop work language — not a passphrase-only unlock turn. */
-const PHONE_TASK_REQUEST_RE =
-  /\b(file|files|desktop|folder|journal|note|notes|email|mail|calendar|agenda|fetch|find|look up|lookup|read|open|write|send|remind|schedule|what's on|whats on)\b/i;
-
-export function looksLikePhoneTaskRequest(text: string): boolean {
-  return PHONE_TASK_REQUEST_RE.test(text);
-}
-
 /**
- * True when STT is the passphrase (or a near-miss of it) and nothing else.
- * Used so leftover unlock audio is not treated as a Hermes/Gemini request.
+ * Gate check (Twilio <Gather>). Same STT tolerance as
+ * matchesThinkPassphrase, minus its substring shortcut: "maze" alone must not
+ * open a "Falken's Maze" line. The recognizer is primed with the passphrase
+ * words there, so a dropped word is rare and a retry is cheap.
  */
-export function isPassphraseOnlyTurn(transcript: string, password: string): boolean {
+export function matchesGatePassphrase(transcript: string, password: string): boolean {
   if (!matchesThinkPassphrase(transcript, password)) return false;
-  return !looksLikePhoneTaskRequest(transcript);
+  const heard = compact(transcript).length;
+  const needed = compact(password).length;
+  return needed > 0 && heard >= needed * 0.6;
 }
-
-/** Words that carry no request on their own around a spoken passphrase. */
-const PASSPHRASE_FILLER = new Set([
-  "a", "again", "ah", "an", "and", "code", "er", "hello", "hey", "hi", "is", "it", "its",
-  "my", "oh", "ok", "okay", "passphrase", "password", "phrase", "so", "sorry", "that",
-  "the", "this", "uh", "um", "word", "yeah", "yep", "yes",
-]);
 
 /** True when one spoken word is (a piece of) the passphrase. */
 function isPassphraseWord(word: string, passTokens: string[], passCompact: string): boolean {
   if (passTokens.some((token) => tokenSimilar(word, token))) return true;
   // "redswoosh" heard as one word for a two-word passphrase.
   return word.length >= 5 && (passCompact.includes(word) || word.includes(passCompact));
-}
-
-function splitPassphraseWords(transcript: string, password: string): {
-  matched: number;
-  residue: string[];
-} {
-  const passTokens = normalizePassphraseText(password).split(" ").filter((tok) => tok.length >= 2);
-  const passCompact = compact(password);
-  let matched = 0;
-  const residue: string[] = [];
-  for (const word of normalizePassphraseText(transcript).split(" ").filter(Boolean)) {
-    if (passCompact && isPassphraseWord(word, passTokens, passCompact)) matched += 1;
-    else if (!PASSPHRASE_FILLER.has(word)) residue.push(word);
-  }
-  return { matched, residue };
-}
-
-/**
- * True when a transcript is leftover unlock audio: (part of) the passphrase plus
- * at most one other meaningful word. Such turns must never become a request —
- * "red swoosh … note" was queued as a "Save note" task (canary box 2026-09-24).
- *
- * Partial matches (one word of a multi-word passphrase) only count inside the
- * post-unlock grace window, since passphrase words can be ordinary words.
- */
-export function isPassphraseResidue(
-  transcript: string,
-  password: string,
-  options: { graceWindow: boolean },
-): boolean {
-  if (!password.trim() || !transcript.trim()) return false;
-  const { matched, residue } = splitPassphraseWords(transcript, password);
-  if (matched === 0) return false;
-  if (!options.graceWindow && !matchesThinkPassphrase(transcript, password)) return false;
-  return residue.length < 2;
 }
 
 /**
@@ -197,9 +151,8 @@ export function redactPassphrase(text: string, password: string): string {
 }
 
 /**
- * Carrier / handset voicemail greeting heard on an outbound callback. Used only
- * while a goal callback is still locked, so a live owner saying these words
- * after unlocking is unaffected.
+ * Carrier / handset voicemail greeting heard at the call gate on an outbound
+ * callback (the owner never reached the conversation).
  */
 const VOICEMAIL_GREETING_RE =
   /\b(leave (me )?(a|your) (message|voicemail|name)|after the (tone|beep)|at the (tone|beep)|record your message|voice ?mail|mailbox|(is|am|are) (not available|unavailable)|can'?t (come to|get to|take) the phone|the (person|party|number) you (are|have) (calling|called|dialed|reached))\b/i;

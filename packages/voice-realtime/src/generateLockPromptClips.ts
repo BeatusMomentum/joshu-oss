@@ -1,8 +1,9 @@
 /**
- * Render the fixed lock lines to audio in this box's own Joshu voice.
+ * Render the fixed call-gate lines to audio in this box's own Joshu voice.
  *
- * Locked calls are voiced by these clips rather than by the speech-to-speech
- * model, which paraphrases (see lockPrompts.ts). voice-realtime calls this on
+ * The gate is voiced by these clips rather than by the speech-to-speech model
+ * live, which paraphrases (see lockPrompts.ts). Gemini boxes render them with the
+ * Live model itself so they sound like the call that follows. voice-realtime calls this on
  * startup so a fresh clip volume heals itself; it is also runnable directly:
  *
  *   node dist/generateLockPromptClipsCli.js [--force]
@@ -17,6 +18,7 @@ import { join } from "node:path";
 import { resamplePcm16 } from "./audioResample.js";
 import {
   envTrim,
+  GEMINI_LIVE_MODEL,
   GEMINI_LIVE_VOICE,
   OPENAI_API_KEY,
   OPENAI_REALTIME_VOICE,
@@ -30,6 +32,10 @@ import {
   lockPromptDir,
   type LockPromptKey,
 } from "./lockPrompts.js";
+import { renderLineWithGeminiLive, spokenWords, trimSilence } from "./liveClipRenderer.js";
+
+/** Live renders per line before falling back to the standalone TTS model. */
+const LIVE_RENDER_ATTEMPTS = 4;
 
 const MANIFEST_BASENAME = "clips.json";
 const TARGET_SAMPLE_RATE = 24000;
@@ -54,6 +60,8 @@ const OPENAI_TTS_VOICES = new Set([
 type Manifest = {
   provider: string;
   voice: string;
+  /** Model the clips came from, e.g. `live:gemini-3.8-live` (a change re-renders every clip). */
+  model?: string;
   prompts: Partial<Record<LockPromptKey, string>>;
 };
 
@@ -102,14 +110,23 @@ function toPcm24k(raw: Buffer): Buffer {
   return Buffer.from(resampled.buffer, resampled.byteOffset, resampled.byteLength);
 }
 
+/** Gemini TTS model for the gate clips (same generation as the live voice model). */
+function geminiTtsModel(): string {
+  return envTrim("GEMINI_TTS_MODEL", "gemini-3.8-flash-tts");
+}
+
+function openaiTtsModel(): string {
+  return envTrim("OPENAI_TTS_MODEL", "gpt-4o-mini-tts");
+}
+
 async function synthesizeGemini(text: string, voice: string): Promise<Buffer> {
   const apiKey = resolveGeminiApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY required for JOSHU_VOICE_PROVIDER=gemini_live");
-  const model = envTrim("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts");
-  // Several lock lines are questions or instructions; handed over bare, the TTS
-  // model tries to answer them and the request fails. The style prefix before
-  // the colon is direction, not script — it is not spoken.
-  const prompt = `Read this aloud in a calm, clear, friendly voice: ${text}`;
+  const model = geminiTtsModel();
+  // 2.5 TTS tried to *answer* bare instructions ("Please say your passphrase"),
+  // so it got a style prefix it treated as direction. 3.x TTS reads bare lines
+  // verbatim — and reads any prefix aloud — so it gets exactly the line.
+  const prompt = /^gemini-2\./.test(model) ? `Read this aloud in a calm, clear, friendly voice: ${text}` : text;
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -137,6 +154,31 @@ async function synthesizeGemini(text: string, voice: string): Promise<Buffer> {
   return Buffer.from(inline.inlineData.data, "base64");
 }
 
+/**
+ * Gemini: render with the Live model the calls use, so the clip sounds like
+ * the voice that follows it. Keep a render only when the model's own
+ * transcript is the line word for word; otherwise retry, then fall back to
+ * the standalone TTS model (right words, slightly different voice).
+ */
+async function synthesizeGeminiClip(key: LockPromptKey, text: string, voice: string): Promise<Buffer> {
+  const apiKey = resolveGeminiApiKey();
+  if (!apiKey) throw new Error("GEMINI_API_KEY required for JOSHU_VOICE_PROVIDER=gemini_live");
+  const want = spokenWords(text);
+  for (let attempt = 1; attempt <= LIVE_RENDER_ATTEMPTS; attempt += 1) {
+    try {
+      const render = await renderLineWithGeminiLive(text, { apiKey, model: GEMINI_LIVE_MODEL, voice });
+      if (spokenWords(render.transcript) === want && render.pcm24k.length >= 2000) {
+        return trimSilence(render.pcm24k);
+      }
+      log(`${key}: live render ${attempt} said ${JSON.stringify(render.transcript)} — retrying`);
+    } catch (error) {
+      log(`${key}: live render ${attempt} failed (${(error as Error).message})`);
+    }
+  }
+  log(`${key}: no verbatim live render — using ${geminiTtsModel()}`);
+  return toPcm24k(await synthesizeGemini(text, voice));
+}
+
 async function synthesizeOpenai(text: string, voice: string): Promise<Buffer> {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY required for the openai voice provider");
   const requested = voice.toLowerCase();
@@ -150,7 +192,7 @@ async function synthesizeOpenai(text: string, voice: string): Promise<Buffer> {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: envTrim("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
+      model: openaiTtsModel(),
       input: text,
       voice: resolved,
       response_format: "pcm",
@@ -172,12 +214,14 @@ export async function ensureLockPromptClips(force = false): Promise<number> {
   const dir = lockPromptDir();
   mkdirSync(dir, { recursive: true });
 
+  const model = gemini ? `live:${GEMINI_LIVE_MODEL}` : openaiTtsModel();
   const previous = readManifest(dir);
-  // A voice change invalidates every clip; a text change invalidates just one.
-  const voiceChanged = previous?.voice !== voice || previous?.provider !== VOICE_S2S_PROVIDER;
-  const manifest: Manifest = { provider: VOICE_S2S_PROVIDER, voice, prompts: {} };
+  // A voice or model change invalidates every clip; a text change invalidates just one.
+  const voiceChanged =
+    previous?.voice !== voice || previous?.provider !== VOICE_S2S_PROVIDER || previous?.model !== model;
+  const manifest: Manifest = { provider: VOICE_S2S_PROVIDER, voice, model, prompts: {} };
 
-  log(`provider=${VOICE_S2S_PROVIDER} voice=${voice} dir=${dir}`);
+  log(`provider=${VOICE_S2S_PROVIDER} voice=${voice} model=${model} dir=${dir}`);
 
   let rendered = 0;
   for (const key of LOCK_PROMPT_KEYS) {
@@ -190,8 +234,9 @@ export async function ensureLockPromptClips(force = false): Promise<number> {
       continue;
     }
 
-    const raw = gemini ? await synthesizeGemini(text, voice) : await synthesizeOpenai(text, voice);
-    const pcm = toPcm24k(raw);
+    const pcm = gemini
+      ? await synthesizeGeminiClip(key, text, voice)
+      : toPcm24k(await synthesizeOpenai(text, voice));
     if (pcm.length < 2000) throw new Error(`${key}: synthesized audio too short (${pcm.length}B)`);
     writeFileSync(clipFile, `${pcm.toString("base64")}\n`, "utf8");
     manifest.prompts[key] = text;

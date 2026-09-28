@@ -137,9 +137,16 @@ SMS carrier keywords (`STOP`, etc.) stay in the SMS gateway, not the router.
    [`formatOwnerCompletion`](../src/realtimeGoals/ownerDelivery.ts) (owner voice,
    line breaks, and a real handoff URL when the summary only says "the handoff
    link"). The worker must not send that message itself.
+5. **Owner outbox** — delivery is decided per owner,
+   not per goal and channel. Results go where the owner is: offered on a live
+   call, texted to a thread they are using, or called back in one batched call.
+   A missed callback texts the full result and backs off instead of parking;
+   any owner message clears the backoff; "call me back" on any channel calls.
+   See [realtime-goals — Owner outbox](realtime-goals.md#owner-outbox-2026-09-27).
 
 Kanban owns execution truth; Joshu state owns intake, idempotency, thread,
-active branch pointer, delivery cursors, and the commit window.
+active branch pointer, delivery cursors, the commit window, and (outbox) the
+owner's reachability.
 
 ## Channel policy (summary)
 
@@ -166,6 +173,12 @@ Routing and delivery key off **`sessionKey`**, not ephemeral transport ids:
 
 Provider **`messageId`** (Twilio `MessageSid`, etc.) deduplicates retries on
 goals and thread appends.
+
+With the owner outbox on, **visibility is owner-scoped**: every channel sees the
+owner's goals and unheard results, whichever channel started them. On
+2026-09-26 SMS Hermes said a finished phone-started Cancun search did not exist
+and that it could not dial out; the session key had hidden it. Session keys
+still scope threads, active pointers, and idempotency.
 
 ## Design principles
 
