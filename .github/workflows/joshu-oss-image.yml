@@ -136,9 +136,24 @@ jobs:
       # current Docker version. Custom body (RELEASE.json notes + image pins) is
       # prepended; generate_release_notes appends the PR/commit diff since the
       # previous tag (GitHub's auto-changelog).
+      # A release that already has notes (published by hand while the images
+      # built) is left as written — the 0.1.47 build replaced 15k chars of
+      # upgrade notes with the RELEASE.json one-liner.
+      - name: Check for an existing release with notes
+        id: existing
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          body="$(gh release view "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" --json body -q .body 2>/dev/null || true)"
+          if [[ -n "${body//[[:space:]]/}" ]]; then
+            echo "keep=true" >> "$GITHUB_OUTPUT"
+            echo "[release] ${GITHUB_REF_NAME} already has notes; leaving the release as written"
+          fi
+
       - name: Compose release notes from RELEASE.json
         id: notes
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && steps.existing.outputs.keep != 'true'
         run: |
           node -e '
             const r = JSON.parse(require("fs").readFileSync("deploy/RELEASE.json", "utf8"));
@@ -165,7 +180,7 @@ jobs:
           '
 
       - name: Create GitHub Release
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && steps.existing.outputs.keep != 'true'
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.release.outputs.version }}
